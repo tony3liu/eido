@@ -1,0 +1,33 @@
+# Local development records, decisions, and agent instructions.
+/local-docs/
+/.local/
+**/[Aa][Gg][Ee][Nn][Tt][Ss].[Mm][Dd]
+**/[Cc][Ll][Aa][Uu][Dd][Ee].[Mm][Dd]
+**/[Gg][Ee][Mm][Ii][Nn][Ii].[Mm][Dd]
+
+# Development documents stay local by default.
+*.[Mm][Dd]
+*.[Mm][Aa][Rr][Kk][Dd][Oo][Ww][Nn]
+*.[Mm][Dd][Xx]
+*.[Dd][Oo][Cc]
+*.[Dd][Oo][Cc][Xx]
+*.[Dd][Oo][Cc][Mm]
+
+# Required upstream license/attribution documents are not development notes.
+!**/[Ll][Ii][Cc][Ee][Nn][Ss][Ee].[Mm][Dd]
+!**/[Ll][Ii][Cc][Ee][Nn][Cc][Ee].[Mm][Dd]
+!**/[Cc][Oo][Pp][Yy][Ii][Nn][Gg].[Mm][Dd]
+!**/[Nn][Oo][Tt][Ii][Cc][Ee].[Mm][Dd]
+!**/[Cc][Oo][Pp][Yy][Rr][Ii][Gg][Hh][Tt].[Mm][Dd]
+
+# Local configuration, dependencies, and generated files.
+.DS_Store
+.idea/
+.env
+.env.*
+!.env.example
+node_modules/
+target/
+dist/
+__pycache__/
+*.pyc
