@@ -1,8 +1,8 @@
 import { join } from "node:path";
-import { createAssistantMessageEventStream, type AssistantMessage, type ToolCall, type TranscriptContext } from "@earendil-works/pi-ai";
+import { createAssistantMessageEventStream, type AssistantMessage, type ToolCall, type TranscriptContext, type SimpleStreamOptions } from "@earendil-works/pi-ai";
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
 
-export type FixtureStep = (context: TranscriptContext, signal?: AbortSignal) => ToolCall[] | string | Promise<ToolCall[] | string>;
+export type FixtureStep = (context: TranscriptContext, signal?: AbortSignal, options?: SimpleStreamOptions) => ToolCall[] | string | Promise<ToolCall[] | string>;
 
 export async function fixtureModel(directory: string, steps: FixtureStep[]) {
   const runtime = await ModelRuntime.create({
@@ -21,7 +21,7 @@ export async function fixtureModel(directory: string, steps: FixtureStep[]) {
       const stream = createAssistantMessageEventStream();
       queueMicrotask(async () => {
         try {
-          const output = await steps[requests++]?.(context, options?.signal) ?? "Fixture complete. No model inference was performed.";
+          const output = await steps[requests++]?.(context, options?.signal, options) ?? "Fixture complete. No model inference was performed.";
           const message: AssistantMessage = {
             role: "assistant", api: model.api, provider: model.provider, model: model.id,
             content: typeof output === "string" ? [{ type: "text", text: output }] : output,

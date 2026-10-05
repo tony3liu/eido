@@ -45,6 +45,36 @@ test('tool defaults preserve modifiers, explicit empty lists and concurrent edit
   assert.equal(Object.hasOwn(await f.get(f.target,'settings.json'),'defaultTools'),false);
 });
 
+test('runtime controls save sparse pi settings, validate values and reject stale fields', async t => {
+  const f=await fixture(t);
+  const original=await f.get(f.target,'settings.json');
+  original.compaction={modelOverrides:{'eido-fixture/test-model':{reserveTokens:555}}};
+  original.retry={provider:{maxRetries:7}};
+  await f.put(f.target,'settings.json',original);
+  const before=(await f.bridge.status()).runtime;
+  assert.equal(before.find(field=>field.path==='images.autoResize').effective,true);
+  const expected=Object.fromEntries(before.map(field=>[field.path,field.value]));
+  const changes={'transport':'sse','images.blockImages':true,'retry.baseDelayMs':100,'thinkingBudgets.low':2048};
+  const result=await f.bridge.execute({operation:'runtime',changes,expected});
+  for(const [path,value] of Object.entries(changes)) assert.equal(result.runtime.find(field=>field.path===path).effective,value);
+  let stored=await f.get(f.target,'settings.json');
+  assert.deepEqual(stored.compaction,original.compaction);
+  assert.equal(stored.retry.provider.maxRetries,7);
+  assert.equal(stored.customSetting.retain,true);
+  const saved=await readFile(join(f.target,'settings.json'),'utf8');
+  for(const changes of [{'transport':'invalid'},{'images.blockImages':1},{'retry.maxRetries':-1},{'retry.maxRetries':1.5},{'eido.fullAccess':true},{'thinkingBudgets.low':Infinity}]) {
+    await assert.rejects(f.bridge.execute({operation:'runtime',changes,expected}));
+    assert.equal(await readFile(join(f.target,'settings.json'),'utf8'),saved);
+  }
+  await assert.rejects(f.bridge.execute({operation:'runtime',changes:{transport:'auto'},expected}),/changed while/);
+  await f.bridge.execute({operation:'runtime',changes:{transport:null},expected:{transport:'sse'}});
+  stored=await f.get(f.target,'settings.json');
+  assert.equal(Object.hasOwn(stored,'transport'),false);
+  assert.equal(stored.images.blockImages,true);
+  await f.bridge.execute({operation:'runtime',changes:{'images.blockImages':null},expected:{'images.blockImages':true}});
+  assert.equal(Object.hasOwn(await f.get(f.target,'settings.json'),'images'),false);
+});
+
 test("auth responses contain metadata only; edits preserve other providers, OAuth and env mappings", async t => {
   const f=await fixture(t);
   const oauth={type:"oauth",access:"private-access-fixture",refresh:"private-refresh-fixture",expires:9999999999999};

@@ -3,6 +3,7 @@ import { dirname, join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { browserCredentialId, browserDecisionSettings } from "./browser-config.mjs";
+import {runtimeSettings, mergeRuntimeSettings, PiRuntimeSettingsError} from './pi-runtime-settings.mjs';
 
 class PiConfigError extends Error {}
 
@@ -86,6 +87,7 @@ export function createPiSettings(directory = join(root, ".local/eido"), sourceDi
       defaultModel: manager.getDefaultModel() ?? "",
       defaultThinkingLevel: manager.getDefaultThinkingLevel() ?? "off",
       defaultTools: (await readJson(join(directory, "settings.json"))).defaultTools ?? null,
+      runtime: runtimeSettings(manager),
       fullAccess: (await readJson(join(directory, "settings.json"))).eido?.fullAccess === true,
       browserDecision: await browserDecisionSettings(directory),
       providers, update: await readJson(join(directory, "pi-update.json"), null) };
@@ -95,7 +97,13 @@ export function createPiSettings(directory = join(root, ".local/eido"), sourceDi
     const operation = request?.operation ?? "status";
     await mkdir(directory, { recursive: true, mode: 0o700 });
     if (!["status", "check-update", "import", "access"].includes(operation)) await status();
-    if (operation === "tool-defaults") {
+    if (operation === 'runtime') {
+      new FileSettingsStorage(directory, directory).withLock('global', current => {
+        try {return JSON.stringify(mergeRuntimeSettings(current?JSON.parse(current):{},request.changes,request.expected),null,2)+'\n';}
+        catch(error) {throw new PiConfigError(error instanceof PiRuntimeSettingsError ? error.message : 'Unable to read runtime settings. Repair settings.json before saving.');}
+      });
+      await chmod(join(directory, 'settings.json'), 0o600);
+    } else if (operation === "tool-defaults") {
       const selected = request.tools;
       if (selected !== null && (!Array.isArray(selected) || selected.length > 256
         || selected.some(name => typeof name !== 'string' || !/^[+-]?[A-Za-z0-9_][A-Za-z0-9_.-]{0,255}$/.test(name)))) {

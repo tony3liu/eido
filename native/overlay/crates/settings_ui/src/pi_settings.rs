@@ -1,4 +1,4 @@
-use std::{io::Write, process::{Command, Stdio}};
+use std::{collections::{HashMap, HashSet}, io::Write, process::{Command, Stdio}};
 
 use editor::Editor;
 use gpui::{Context, Entity, IntoElement, Render, Window};
@@ -12,6 +12,10 @@ pub(crate) struct PiSettingsView {
     model: String,
     thinking: String,
     default_tools: Entity<Editor>,
+    runtime_inputs: HashMap<String, Entity<Editor>>,
+    runtime_values: HashMap<String, Value>,
+    runtime_expected: HashMap<String, Value>,
+    runtime_open: HashSet<String>,
     key: Entity<Editor>,
     custom_provider: Entity<Editor>,
     custom_url: Entity<Editor>,
@@ -39,6 +43,7 @@ impl PiSettingsView {
         let mut view = Self {
             data: None, scroll_handle: gpui::ScrollHandle::new(), provider: String::new(), model: String::new(), thinking: "off".into(),
             default_tools: input("Leave blank to use Eido defaults", false, window, cx),
+            runtime_inputs: HashMap::new(), runtime_values: HashMap::new(), runtime_expected: HashMap::new(), runtime_open: HashSet::new(),
             key: input("API key or $ENV_VAR reference", true, window, cx),
             custom_provider: input("Provider ID, e.g. my-provider", false, window, cx),
             custom_url: input("Base URL, e.g. https://api.example.com/v1", false, window, cx),
@@ -84,6 +89,18 @@ impl PiSettingsView {
                 view.busy = false;
                 match result {
                     Ok(data) => {
+                        if view.data.is_none() || matches!(operation.as_str(), "status" | "runtime" | "import") {
+                            for field in data["runtime"].as_array().into_iter().flatten() {
+                                let Some(path) = field["path"].as_str() else { continue; };
+                                let value = field["value"].clone();
+                                view.runtime_expected.insert(path.into(), value.clone());
+                                view.runtime_values.insert(path.into(), value.clone());
+                                if field["kind"] == "number" {
+                                    let editor = view.runtime_inputs.entry(path.into()).or_insert_with(|| input("Use pi default", false, window, cx));
+                                    editor.update(cx, |editor, cx| editor.set_text(runtime_text(&value), window, cx));
+                                }
+                            }
+                        }
                         if view.data.is_none() || matches!(operation.as_str(), "status" | "tool-defaults" | "import") {
                             let text = data["defaultTools"].as_array().map(|names| {
                                 if names.is_empty() { "[]".to_owned() }
@@ -110,6 +127,7 @@ impl PiSettingsView {
                             "import" => "Local pi configuration imported. New tasks will use these settings.".into(),
                             "defaults" => "Defaults saved for new tasks. Existing tasks keep their models.".into(),
                             "tool-defaults" => "Tool defaults saved. New tasks use this list; /reload adds newly selected tools to the current task.".into(),
+                            "runtime" => "Runtime settings saved. Use /reload in an existing task to apply them.".into(),
                             "browser-decision" => "Browser decision settings saved. New tasks use this configuration.".into(),
                             "custom-model" => "Model saved. Select it above to make it the default.".into(),
                             _ => "pi credentials updated.".into(),
@@ -125,6 +143,79 @@ impl PiSettingsView {
 
     fn providers(&self) -> &[Value] {
         self.data.as_ref().and_then(|data| data["providers"].as_array()).map(Vec::as_slice).unwrap_or_default()
+    }
+
+    fn save_runtime(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let mut changes = serde_json::Map::new();
+        for (path, original) in &self.runtime_expected {
+            let value = if let Some(editor) = self.runtime_inputs.get(path) {
+                let text = editor.read(cx).text(cx);
+                if text.trim() == runtime_text(original) { continue; }
+                if text.trim().is_empty() { Value::Null }
+                else if let Ok(number) = text.trim().parse::<u64>() { json!(number) }
+                else {
+                    self.failed = true; self.notice = "Enter a non-negative whole number, or leave blank for the pi default.".into(); cx.notify(); return;
+                }
+            } else { self.runtime_values.get(path).cloned().unwrap_or(Value::Null) };
+            if &value != original { changes.insert(path.clone(), value); }
+        }
+        if changes.is_empty() { self.failed = false; self.notice = "No runtime changes to save.".into(); cx.notify(); return; }
+        self.request(json!({"operation":"runtime", "changes":changes,"expected":self.runtime_expected}), window, cx);
+    }
+
+    fn runtime_control(&self, field: &Value, window: &mut Window, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let path = field["path"].as_str().unwrap_or_default().to_owned();
+        if let Some(editor) = self.runtime_inputs.get(&path) { return text_field(editor.clone(), cx); }
+        let selected = self.runtime_values.get(&path).unwrap_or(&Value::Null).clone();
+        let choices = if field["kind"] == "boolean" { vec![json!(true), json!(false)] }
+            else { field["choices"].as_array().cloned().unwrap_or_default() };
+        let weak = cx.entity().downgrade();
+        let key = path.clone();
+        let menu = ContextMenu::build(window, cx, move |mut menu, _, _| {
+            for value in std::iter::once(Value::Null).chain(choices) {
+                let weak = weak.clone(); let key = key.clone();
+                menu = menu.entry(runtime_choice(&value), None, move |_, cx| {
+                    let _ = weak.update(cx, |view, cx| {
+                        if view.busy { return; }
+                        view.runtime_values.insert(key.clone(), value.clone()); cx.notify();
+                    });
+                });
+            }
+            menu
+        });
+        DropdownMenu::new(SharedString::from(format!("pi-runtime-{path}")), runtime_choice(&selected), menu)
+            .style(DropdownStyle::Outlined).full_width(true).into_any_element()
+    }
+
+    fn runtime_section(&self, window: &mut Window, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let fields = self.data.as_ref().and_then(|data| data["runtime"].as_array()).cloned().unwrap_or_default();
+        let mut section = v_flex().gap_3().pt_4().border_t_1().border_color(cx.theme().colors().border_variant)
+            .child(Label::new("Agent Runtime"))
+            .child(Label::new("Global pi settings. Leave numeric fields blank or choose Use pi default to inherit pi behavior.").size(LabelSize::Small).color(Color::Muted));
+        for group in ["Images", "Context", "Recovery", "Requests", "Thinking Budgets", "Tools"] {
+            let open = self.runtime_open.contains(group);
+            section = section.child(h_flex().child(Button::new(SharedString::from(format!("pi-runtime-group-{group}")), group)
+                .start_icon(Icon::new(if open { IconName::ChevronDown } else { IconName::ChevronRight }))
+                .on_click(cx.listener(move |view, _, _, cx| {
+                    if !view.runtime_open.remove(group) { view.runtime_open.insert(group.into()); } cx.notify();
+                }))));
+            if !open { continue; }
+            if group == "Requests" {
+                section = section.child(Label::new("Transport support depends on the provider. Cache warming makes additional requests and may increase usage.").size(LabelSize::Small).color(Color::Muted));
+            } else if group == "Thinking Budgets" {
+                section = section.child(Label::new("Token budgets apply to models that support them. The conversation's thinking level selects the budget.").size(LabelSize::Small).color(Color::Muted));
+            }
+            for field in fields.iter().filter(|field| field["group"] == group) {
+                let effective = if field["effective"].is_null() { "Provider default".to_owned() } else { runtime_text(&field["effective"]) };
+                section = section.child(v_flex().gap_1()
+                    .child(h_flex().gap_4().items_center().justify_between()
+                        .child(Label::new(field["label"].as_str().unwrap_or_default().to_owned()).size(LabelSize::Small))
+                        .child(div().w(px(240.)).child(self.runtime_control(field, window, cx))))
+                    .child(Label::new(format!("Current setting: {effective}")).size(LabelSize::XSmall).color(Color::Muted)));
+            }
+        }
+        section.child(h_flex().child(Button::new("pi-save-runtime", "Save Runtime Settings").style(ButtonStyle::Outlined).disabled(self.busy)
+            .on_click(cx.listener(|view, _, window, cx| view.save_runtime(window, cx))))).into_any_element()
     }
     fn selected_provider(&self) -> Option<&Value> {
         self.providers().iter().find(|p| p["id"].as_str() == Some(self.provider.as_str()))
@@ -169,6 +260,13 @@ impl PiSettingsView {
         });
         DropdownMenu::new(id, label, menu).style(DropdownStyle::Outlined).full_width(true).into_any_element()
     }
+}
+
+fn runtime_text(value: &Value) -> String {
+    if value.is_null() { String::new() } else { value.as_str().map(str::to_owned).unwrap_or_else(|| value.to_string()) }
+}
+fn runtime_choice(value: &Value) -> String {
+    match value { Value::Null => "Use pi default".into(), Value::Bool(true) => "On".into(), Value::Bool(false) => "Off".into(), _ => runtime_text(value) }
 }
 
 fn field(label: &str, element: impl IntoElement) -> gpui::AnyElement {
@@ -226,6 +324,7 @@ impl Render for PiSettingsView {
                         let expected = this.data.as_ref().map(|data| data["defaultTools"].clone()).unwrap_or(Value::Null);
                         this.request(json!({"operation":"tool-defaults", "tools":tools, "expected":expected}), window, cx);
                     }))))
+            .child(self.runtime_section(window, cx))
             .child(v_flex().gap_3().pt_4().border_t_1().border_color(cx.theme().colors().border_variant)
                 .child(Label::new(format!("Credentials · {auth_label}")))
                 .child(text_field(self.key.clone(), cx))

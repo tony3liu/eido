@@ -70,6 +70,16 @@ export async function startEidoAgent(agentDir: string, sessionDir: string, strea
             .map(tool => ({...tool, defaultActive: false})), preview.tool,
             ...(subagents.enabled ? [subagents.tool(options.sessionManager.getSessionId(), client)] : [])],
         });
+        // pi reads most runtime settings dynamically. These Agent properties
+        // are copied at creation, so refresh them at the same reload boundary.
+        const settings = created.session.settingsManager;
+        const reloadSettings = settings.reload.bind(settings);
+        settings.reload = async () => {
+          await reloadSettings();
+          created.session.agent.transport = settings.getTransport();
+          created.session.agent.thinkingBudgets = settings.getThinkingBudgets();
+          created.session.agent.maxRetryDelayMs = settings.getProviderRetrySettings().maxRetryDelayMs;
+        };
         const ledger = createDeliveryLedger(created.session, (id,state) => {
           if(supportsNativeUi)void nativeUiAction(client,created.session.sessionId,'delivery_state',{id,state})
             .catch(error=>console.error('Delivery UI update failed',error));
