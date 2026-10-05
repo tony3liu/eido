@@ -1038,6 +1038,30 @@ diff --git a/crates/acp_thread/src/connection.rs b/crates/acp_thread/src/connect
                      title,
                      Some(work_dirs),
                      self.clone(),
+diff --git a/crates/acp_thread/src/terminal.rs b/crates/acp_thread/src/terminal.rs
+--- a/crates/acp_thread/src/terminal.rs
++++ b/crates/acp_thread/src/terminal.rs
+@@ -696,6 +696,7 @@
+     command: String,
+     args: &[String],
+     env_vars: Vec<(String, String)>,
++    interactive: bool,
+     cwd: Option<PathBuf>,
+     project: &Entity<Project>,
+     cx: &mut AsyncApp,
+@@ -726,9 +727,9 @@
+         })
+         .unwrap_or_else(|| Shell::Program(get_default_system_shell_preferring_bash()));
+     let is_windows = project.read_with(cx, |project, cx| project.path_style(cx).is_windows());
+-    let (task_command, task_args) = task::ShellBuilder::new(&shell, is_windows)
+-        .redirect_stdin_to_dev_null()
+-        .build(Some(command.clone()), &args);
++    let builder = task::ShellBuilder::new(&shell, is_windows);
++    let builder = if interactive { builder } else { builder.redirect_stdin_to_dev_null() };
++    let (task_command, task_args) = builder.build(Some(command.clone()), &args);
+ 
+     project
+         .update(cx, |project, cx| {
 diff --git a/crates/action_log/src/action_log.rs b/crates/action_log/src/action_log.rs
 --- a/crates/action_log/src/action_log.rs
 +++ b/crates/action_log/src/action_log.rs
@@ -1697,6 +1721,14 @@ diff --git a/crates/agent_servers/src/acp.rs b/crates/agent_servers/src/acp.rs
  }
  
  fn handle_session_notification(
+@@ -4983,6 +5359,7 @@
+                     .into_iter()
+                     .map(|env| (env.name, env.value))
+                     .collect(),
++                args.meta.as_ref().and_then(|meta| meta.get("eidoPiComponent")).and_then(|value| value.as_bool()) == Some(true),
+                 args.cwd.clone(),
+                 &project,
+                 cx,
 diff --git a/crates/agent_servers/src/agent_servers.rs b/crates/agent_servers/src/agent_servers.rs
 --- a/crates/agent_servers/src/agent_servers.rs
 +++ b/crates/agent_servers/src/agent_servers.rs

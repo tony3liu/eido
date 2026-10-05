@@ -3,6 +3,8 @@ import { test } from "node:test";
 import { mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import {spawn, type ChildProcessWithoutNullStreams} from 'node:child_process';
+import {once} from 'node:events';
 import { client, methods, type CreateElicitationRequest, type CreateElicitationResponse, type SessionUpdate } from "@agentclientprotocol/sdk";
 import { startEidoAgent } from "../src/server.ts";
 import { fixtureModel, type FixtureStep } from "./fixture-model.ts";
@@ -14,6 +16,7 @@ async function harness(steps: FixtureStep[] = [], options: {
   configureRuntime?: (runtime: ModelRuntime) => void;
   form?: (params: CreateElicitationRequest, signal: AbortSignal) => Promise<CreateElicitationResponse>;
   native?: (params: {sessionId: string; action: string; data: Record<string, unknown>}) => Promise<Record<string, unknown>>;
+  terminal?: (method:string, params:any) => Promise<any>;
 } = {}) {
   const cwd = await realpath(await mkdtemp(join(tmpdir(), "eido-commands-")));
   const settings = JSON.stringify({defaultProvider: "eido-fixture", defaultModel: "scripted", defaultThinkingLevel: "off", compaction: {enabled: false, keepRecentTokens: 100, reserveTokens: 1000}});
@@ -29,11 +32,15 @@ async function harness(steps: FixtureStep[] = [], options: {
     .onNotification(methods.client.session.update, ({params}) => { updates.push(params); })
     .onNotification(methods.client.elicitation.complete, ({params}) => {completedElicitations.push(params.elicitationId);})
     .onRequest(methods.client.elicitation.create, ({params, signal}) => options.form?.(params, signal) ?? {action: "cancel"})
+    .onRequest(methods.client.terminal.create, ({params}) => options.terminal!(methods.client.terminal.create,params))
+    .onRequest(methods.client.terminal.release, ({params}) => options.terminal!(methods.client.terminal.release,params))
+    .onRequest(methods.client.terminal.waitForExit, ({params}) => options.terminal!(methods.client.terminal.waitForExit,params))
     .onRequest(NATIVE_UI_ACTION, {parse: raw => raw as {sessionId: string; action: string; data: Record<string, unknown>}},
       async ({params}) => ({result: await options.native?.(params) ?? {}}))
     .connect({readable: toClient.readable, writable: toAgent.writable});
   await connection.agent.request(methods.agent.initialize, {protocolVersion: 1, clientCapabilities: {
     ...(options.form ? {elicitation: {form: {}}} : {}), ...(options.native ? {_meta: {eidoNativeUi: 1}} : {}),
+    ...(options.terminal ? {terminal:true} : {}),
   }});
   return {
     cwd, settings, updates, completedElicitations, requests: fixture.requests, connection,
@@ -848,4 +855,51 @@ test('pi extension UI mirrors native drafts and keeps widgets and controls sessi
     assert.equal(nativeStates.get(a.sessionId)?.text, 'From extension + pasted');
     assert.equal(h.requests(), 0);
   } finally {await h.dispose();}
+});
+
+test('pi custom component commands use the same ACP session and return to native conversation', {timeout:30_000}, async()=>{
+  let child:ChildProcessWithoutNullStreams|undefined, exited:Promise<unknown>|undefined;
+  let owner='',released=0;
+  const h=await harness([],{
+    setup:async cwd=>{
+      await mkdir(join(cwd,'extensions'));
+      await writeFile(join(cwd,'extensions/component.js'),`export default function(pi) {
+        pi.registerCommand('component', {description:'Native component fixture',handler:async(_,ctx)=>{
+          if (!ctx.ui.setTheme('light').success || ctx.ui.theme.name !== 'light') throw new Error('Missing pi theme');
+          const value=await ctx.ui.custom((tui,theme,keys,done)=>({
+            render:()=>[theme.fg('accent','ACP COMPONENT READY')],invalidate(){},handleInput(data){if(data==='x')done('selected');}
+          }));
+          ctx.ui.notify('Component result: '+value);
+        }});
+        pi.registerCommand('theme-check',{description:'Theme isolation fixture',handler:async(_,ctx)=>{
+          ctx.ui.notify('Pi theme: '+ctx.ui.theme.name);
+        }});
+        pi.registerCommand('component-error',{description:'Failure fixture',handler:async()=>{throw new Error('Fixture extension failure');}});
+      }`);
+    },
+    form:async()=>({action:'cancel'}),native:async()=>({handled:true}),
+    terminal:async(method,params)=>{
+      if(method===methods.client.terminal.create){
+        owner=params.sessionId;
+        child=spawn(params.command,params.args,{stdio:'pipe'});exited=once(child,'exit');
+        let output='',sent=false;
+        child.stdout.on('data',data=>{output+=data;if(!sent&&output.includes('ACP COMPONENT READY')){sent=true;child!.stdin.write('x');}});
+        return {terminalId:'fixture-component'};
+      }
+      if(method===methods.client.terminal.waitForExit){await exited;return {exitCode:0};}
+      assert.equal(params.sessionId,owner);released++;child?.kill();await exited;return {};
+    },
+  });
+  try {
+    const a=await h.newTask(),b=await h.newTask();
+    await h.prompt(a.sessionId,'/component');
+    assert.equal(owner,a.sessionId,h.text(a.sessionId)); assert.equal(released,1);
+    assert.match(h.text(a.sessionId),/Component result: selected/);
+    await h.prompt(b.sessionId,'/theme-check');assert.match(h.text(b.sessionId),/Pi theme: dark/);
+    await h.prompt(a.sessionId,'/theme-check');assert.match(h.text(a.sessionId),/Pi theme: light/);
+    await h.prompt(a.sessionId,'/component-error');assert.match(h.text(a.sessionId),/command:component-error.*Fixture extension failure/);
+    await h.prompt(a.sessionId,'/reload');
+    await h.prompt(a.sessionId,'/theme-check');assert.match(h.text(a.sessionId),/Pi theme: dark/);
+    assert.equal(h.requests(),0);
+  } finally {child?.kill();await h.dispose();}
 });

@@ -1,11 +1,17 @@
 import { methods, type AgentContext, type ElicitationPropertySchema, type SessionUpdate } from "@agentclientprotocol/sdk";
 import type { AgentSession, ExtensionUIContext, ExtensionUIDialogOptions } from "@earendil-works/pi-coding-agent";
 import {createPiUIState, PI_UI_STATE} from './pi-ui-state.ts';
+import {showPiComponent} from './pi-component-terminal.ts';
+import {getThemeByName, getAvailableThemesWithPaths} from '../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js';
 
 /** Use the native ACP form surface for pi's dialog API. */
-export function createPiUI(pi: AgentSession, client: AgentContext, turnSignal: () => AbortSignal | undefined, emit: (update: SessionUpdate) => void, native = false): ExtensionUIContext {
+export function createPiUI(pi: AgentSession, client: AgentContext, turnSignal: () => AbortSignal | undefined, emit: (update: SessionUpdate) => void, native = false, agentDir = pi.sessionManager.getCwd()): ExtensionUIContext {
+  let lifetime = new AbortController();
+  let activeComponent = false;
+  const findTheme = (name:string) => pi.resourceLoader.getThemes().themes.find(theme => theme.name === name) ?? getThemeByName(name);
+  let theme = findTheme(pi.settingsManager.getTheme() ?? 'dark') ?? getThemeByName('dark')!;
   const request = async (title: string, property: ElicitationPropertySchema | undefined, opts?: ExtensionUIDialogOptions) => {
-    const signals = [turnSignal(), opts?.signal].filter((signal): signal is AbortSignal => !!signal);
+    const signals = [lifetime.signal, turnSignal(), opts?.signal].filter((signal): signal is AbortSignal => !!signal);
     const timeout = new AbortController();
     const timer = opts?.timeout === undefined ? undefined : setTimeout(() => timeout.abort(), opts.timeout);
     signals.push(timeout.signal);
@@ -34,16 +40,40 @@ export function createPiUI(pi: AgentSession, client: AgentContext, turnSignal: (
     });
   };
   const state = native ? createPiUIState(pi, client, message => notice(message), turnSignal) : undefined;
-  if (state) {
-    Object.defineProperty(pi, PI_UI_STATE, {value: state});
-    const dispose = pi.dispose.bind(pi);
-    pi.dispose = () => {state.close(); dispose();};
-    const reload = pi.reload.bind(pi);
-    pi.reload = async (...args) => {state.reset(); return reload(...args);};
-  }
+  if (state) Object.defineProperty(pi, PI_UI_STATE, {value: state});
+  const dispose = pi.dispose.bind(pi);
+  pi.dispose = () => {lifetime.abort(); state?.close(); dispose();};
+  const reload = pi.reload.bind(pi);
+  pi.reload = async (...args) => {
+    lifetime.abort(); lifetime = new AbortController(); state?.reset();
+    const result = await reload(...args);
+    theme = findTheme(pi.settingsManager.getTheme() ?? 'dark') ?? getThemeByName('dark')!;
+    return result;
+  };
   return {
     ...pi.extensionRunner.createContext().ui,
     ...state?.controls,
+    get theme() {return theme;},
+    getAllThemes() {
+      return [...new Map([...getAvailableThemesWithPaths(), ...pi.resourceLoader.getThemes().themes
+        .filter(theme => !!theme.name).map(theme => ({name:theme.name!, path:theme.sourcePath}))].map(theme => [theme.name,theme])).values()];
+    },
+    getTheme: findTheme,
+    setTheme(value) {
+      const next = typeof value === 'string' ? findTheme(value) : value;
+      if (!next) return {success:false,error:`Unknown pi theme: ${value}`};
+      theme = next;
+      return {success:true};
+    },
+    async custom(factory, options) {
+      if (!native) throw new Error('This client does not support interactive pi components.');
+      if (activeComponent) throw new Error('An extension interface is already open in this task.');
+      activeComponent = true;
+      try {
+        return await showPiComponent(pi, client, theme, agentDir, factory, options, emit,
+          AbortSignal.any([lifetime.signal, turnSignal()].filter((signal):signal is AbortSignal => !!signal)));
+      } finally {activeComponent=false;}
+    },
     ...(state ? {setWidget(key: string, content: Parameters<ExtensionUIContext['setWidget']>[1] | string[], options?: {placement?: 'aboveEditor' | 'belowEditor'}) {
       if (typeof content === 'function') throw new Error('Component widgets require the native component bridge.');
       state.setTextWidget(key, content, options?.placement);

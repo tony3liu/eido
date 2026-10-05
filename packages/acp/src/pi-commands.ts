@@ -9,6 +9,7 @@ import { createPiSettings } from "../../../scripts/pi-settings.mjs";
 import { shareCommand, bugCommand } from "./pi-sharing.ts";
 import { sessionCommand, treeCommand } from "./pi-session-commands.ts";
 import { loginPiProvider } from "./pi-auth.ts";
+import {basename} from 'node:path';
 
 // The audited adapter hook runs inside its existing turn boundary. Commands
 // share admission, cancellation and notification ordering with ordinary prompts.
@@ -97,9 +98,21 @@ export function installPiCommands(pi: AgentSession, client: AgentContext, suppor
   const ui = supportsForms ? createPiUI(pi, client, () => activeContext?.activeTurnSignal(), update => {
     if (activeContext) activeContext.enqueue(update);
     else void client.notify(methods.client.session.update, {sessionId: pi.sessionId, update}).catch(error => console.error("pi startup UI notification failed", error));
-  }, nativeUi) : undefined;
+  }, nativeUi, agentDir) : undefined;
   const bind = pi.bindExtensions.bind(pi);
-  pi.bindExtensions = options => bind({...options, ...(ui ? {uiContext: ui, mode: "rpc" as const} : {})});
+  pi.bindExtensions = options => bind({...options, ...(ui ? {uiContext: ui, mode: "rpc" as const} : {}),
+    onError(error) {
+      options.onError?.(error);
+      const text = `Extension ${basename(error.extensionPath)} (${error.event}): ${error.error}`;
+      if (ui) ui.notify(text, 'error');
+      else {
+        pi.sessionManager.appendCustomEntry('eido.notice.v1', {text});
+        const update:SessionUpdate = {sessionUpdate:'agent_message_chunk',content:{type:'text',text:`${text}\n\n`}};
+        if (activeContext) activeContext.enqueue(update);
+        else void client.notify(methods.client.session.update,{sessionId:pi.sessionId,update}).catch(error=>console.error('Extension error notification failed',error));
+      }
+    },
+  });
   const bridge = {
     get commands() { return catalogue(); },
     async run(text: string, images: unknown[] | undefined, context: CommandContext): Promise<boolean> {

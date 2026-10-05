@@ -80,6 +80,11 @@ await patchSource(path,
 // Pi normally keeps setup-only journals in memory. Include Eido's custom
 // command record in that persistence gate without adding it to model context.
 const piSessionManagerPath = new URL("../../@earendil-works/pi-coding-agent/dist/core/session-manager.js", directory);
+// pi's prompt wrapper spreads the UI context, eagerly reading its theme getter.
+// Keep the theme live when extensions switch it during the same session.
+await patchSource(new URL("../../@earendil-works/pi-coding-agent/dist/core/extensions/runner.js", directory),
+  '    wrapUIPromptContext(ui) {\n        return {\n            ...ui,',
+  '    wrapUIPromptContext(ui) {\n        return {\n            ...ui,\n            get theme() { return ui.theme; },');
 if (!(await readFile(piSessionManagerPath, "utf8")).includes('e.customType === "eido.subagent.v1"')) {
   await patchSource(piSessionManagerPath,
     'return this.fileEntries.some((e) => e.type === "message" && (e.message.role === "user" || e.message.role === "assistant"));',
