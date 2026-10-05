@@ -188,6 +188,10 @@ impl Render for Composer {
         } else {
             title
         };
+        let viewing_subagent = panel.active_conversation_view().is_some_and(|view| {
+            view.read(cx).as_connected().and_then(|connected| connected.active_view())
+                .is_some_and(|view| view.read(cx).thread.read(cx).parent_session_id().is_some())
+        });
         let thread = self.panel.read(cx).active_thread_view(cx);
         let focused = thread.as_ref().is_some_and(|thread| {
             thread
@@ -234,7 +238,7 @@ impl Render for Composer {
                     )
                     .child(
                         div().flex_1().min_w_0().child(
-                            Label::new(title)
+                            Label::new(if viewing_subagent { format!("To Main agent · {title}").into() } else { title })
                                 .truncate()
                                 .size(LabelSize::XSmall)
                                 .color(Color::Muted),

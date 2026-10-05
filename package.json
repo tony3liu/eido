@@ -13,7 +13,7 @@
     "check": "tsc --noEmit",
     "test": "npm run test:acp && npm run test:pi-settings && python3 scripts/test/test_native_prepare.py",
     "setup:acp": "npm ci --prefix packages/acp --ignore-scripts --no-audit --no-fund && node scripts/patch-acp.mjs",
-    "test:acp": "tsx --test packages/acp/test/acp.test.ts packages/acp/test/pi-commands.test.ts",
+    "test:acp": "tsx --test packages/acp/test/acp.test.ts packages/acp/test/pi-commands.test.ts packages/acp/test/subagents.test.ts",
     "setup:browser": "node scripts/install-browser.mjs",
     "check:docs": "python3 scripts/check-private-docs.py staged",
     "native:prepare": "python3 scripts/native.py prepare",

@@ -78,10 +78,23 @@ await patchSource(path,
 // A local command is a real interaction, even before the first model turn.
 // Pi normally keeps setup-only journals in memory. Include Eido's custom
 // command record in that persistence gate without adding it to model context.
-await patchSource(new URL("../../@earendil-works/pi-coding-agent/dist/core/session-manager.js", directory),
-  'return this.fileEntries.some((e) => e.type === "message" && (e.message.role === "user" || e.message.role === "assistant"));',
-  'return this.fileEntries.some((e) => (e.type === "message" && (e.message.role === "user" || e.message.role === "assistant")) || (e.type === "custom" && e.customType === "eido.command.v1"));');
+const piSessionManagerPath = new URL("../../@earendil-works/pi-coding-agent/dist/core/session-manager.js", directory);
+if (!(await readFile(piSessionManagerPath, "utf8")).includes('e.customType === "eido.subagent.v1"')) {
+  await patchSource(piSessionManagerPath,
+    'return this.fileEntries.some((e) => e.type === "message" && (e.message.role === "user" || e.message.role === "assistant"));',
+    'return this.fileEntries.some((e) => (e.type === "message" && (e.message.role === "user" || e.message.role === "assistant")) || (e.type === "custom" && e.customType === "eido.command.v1"));');
+}
 console.log("Applied Eido pi command discovery, dispatch and history patches.");
+
+await patchSource(agentPath,
+  '            bindingState.wrapper = wrapper;',
+  '            bindingState.wrapper = wrapper;\n            pi[Symbol.for("eido.pi.host")]?.attach(wrapper);');
+await patchSource(path,
+  '            if (entry.customType === "eido.notice.v1"',
+  '            if (entry.customType === "eido.subagent.v1" && entry.data?.kind === "parent") {\n                const child = entry.data;\n                return [{ sessionUpdate: "tool_call_update", toolCallId: child.toolCallId, title: child.title, status: "failed", content: [{type:"content", content:{type:"text", text:"Subagent interrupted before its result was recorded."}}], _meta: {subagent_session_info: {session_id: child.childSessionId, message_start_index: 0}} }];\n            }\n            if (entry.customType === "eido.notice.v1"');
+await patchSource(new URL("../../@earendil-works/pi-coding-agent/dist/core/session-manager.js", directory),
+  '(e.type === "custom" && e.customType === "eido.command.v1")',
+  '(e.type === "custom" && (e.customType === "eido.command.v1" || e.customType === "eido.subagent.v1"))');
 
 await patchSource(path,
   '        case "custom_message":\n            return entry.display\n                ? blocks(entry.content).map((content) => ({\n                    sessionUpdate: "user_message_chunk",',

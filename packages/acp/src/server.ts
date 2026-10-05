@@ -7,6 +7,7 @@ import { createPreview } from "./preview.ts";
 import { browserLifecycle } from "./browser-lifecycle.ts";
 import { accessPolicy } from "./access-policy.ts";
 import { installPiCommands } from "./pi-commands.ts";
+import { createSubagents } from "./subagents.ts";
 
 export async function startEidoAgent(agentDir: string, sessionDir: string, stream?: Stream, modelRuntime?: ModelRuntime) {
   const runtime = modelRuntime ?? await ModelRuntime.create({
@@ -14,6 +15,7 @@ export async function startEidoAgent(agentDir: string, sessionDir: string, strea
   });
   let connectClient!: (client: AgentContext) => void;
   let supportsForms = false;
+  const subagents = createSubagents(sessionDir);
   const clientReady = new Promise<AgentContext>(resolve => { connectClient = resolve; });
   const server = await runAcp({
     stream,
@@ -46,8 +48,9 @@ export async function startEidoAgent(agentDir: string, sessionDir: string, strea
         const created = await createAgentSession({
           ...options,
           agentDir,
-          tools: ["read", "edit", "write", "preview", "bash", ...browserNames],
-          customTools: [...editorTools(options.cwd, options.sessionManager.getSessionId(), client), preview.tool],
+          tools: ["read", "edit", "write", "preview", "bash", ...(subagents.enabled ? ["subagent"] : []), ...browserNames],
+          customTools: [...editorTools(options.cwd, options.sessionManager.getSessionId(), client), preview.tool,
+            ...(subagents.enabled ? [subagents.tool(options.sessionManager.getSessionId(), client)] : [])],
         });
         const browser = browserLifecycle(created.session);
         const prompt = created.session.prompt.bind(created.session);
@@ -71,12 +74,13 @@ export async function startEidoAgent(agentDir: string, sessionDir: string, strea
           tool.sourceInfo.path === "<inline:agentprism-pi-acp-mcp>"
           && tool.name.startsWith("mcp__eido_browser__")
         ).map(tool => tool.name);
-        const activeTools = new Set(["read", "edit", "write", "preview", ...browserTools]);
+        const child = subagents.register(created.session);
+        const activeTools = new Set(child ? ["read"] : ["read", "edit", "write", "preview", ...(subagents.enabled ? ["subagent"] : []), ...browserTools]);
         created.session.setActiveToolsByName([...activeTools]);
         const beforeToolCall = created.session.agent.beforeToolCall;
         created.session.agent.beforeToolCall = async (context, signal) => {
           if (!activeTools.has(context.toolCall.name)) {
-            return { block: true, reason: "This tool is not enabled in Eido. Use editor, preview and bundled browser tools." };
+            return { block: true, reason: "This tool is not enabled for this agent." };
           }
           browser.track(context.toolCall.name);
           return beforeToolCall?.(context, signal);
@@ -89,8 +93,10 @@ export async function startEidoAgent(agentDir: string, sessionDir: string, strea
   const initialize = server.agent.initialize.bind(server.agent);
   server.agent.initialize = context => {
     supportsForms = context.params.clientCapabilities?.elicitation?.form != null;
+    subagents.setEnabled(context.params.clientCapabilities?._meta?.eidoSubagents === 1);
     return initialize(context);
   };
+  await subagents.connect(server);
   connectClient(server.connection.client);
   return server;
 }
