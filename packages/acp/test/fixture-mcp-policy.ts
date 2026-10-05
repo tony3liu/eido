@@ -13,6 +13,8 @@ export async function policyRemote() {
   const calls: string[] = [];
   let mode: 'normal'|'unauthorized'|'bad-catalog'|'hang-open' = 'normal';
   let names = ['ping', 'slow', 'progress'];
+  let initialized = 0;
+  let announceTools = false;
   const http = createServer(async (req, res) => {
     if (mode === 'unauthorized') {res.writeHead(401, {'www-authenticate':'Bearer'}).end(); return;}
     if (req.method === 'GET') {res.writeHead(405).end(); return;}
@@ -22,11 +24,18 @@ export async function policyRemote() {
     if (message.id === undefined) {res.writeHead(202).end(); return;}
     if (mode === 'hang-open' && message.method === 'initialize') {streams.add(res); res.on('close', () => streams.delete(res)); return;}
     let result: unknown = {};
-    if (message.method === 'initialize') result = {protocolVersion:'2025-03-26', capabilities:{tools:{}}, serverInfo:{name:'Eido policy fixture', version:'1'}, instructions:'Use these local fixtures for policy tests.'};
+    if (message.method === 'initialize') {initialized++; result = {protocolVersion:'2025-03-26', capabilities:{tools:{listChanged:true}}, serverInfo:{name:'Eido policy fixture', version:'1'}, instructions:'Use these local fixtures for policy tests.'};}
     if (message.method === 'tools/list') result = {tools: (mode === 'bad-catalog' ? ['ping','ping'] : names).map(name => ({name, description:`${name} fixture marker`, inputSchema:{type:'object', properties:{}}}))};
     if (message.method === 'tools/call') {
       calls.push(message.params.name);
       result = {content:[{type:'text', text:`${message.params.name} fixture reached`}]};
+      if (announceTools) {
+        announceTools = false;
+        res.writeHead(200, {'content-type':'text/event-stream'});
+        res.write(`event: message\ndata: ${JSON.stringify({jsonrpc:'2.0',method:'notifications/tools/list_changed'})}\n\n`);
+        res.end(`event: message\ndata: ${JSON.stringify({jsonrpc:'2.0',id:message.id,result})}\n\n`);
+        return;
+      }
       if (['slow','progress'].includes(message.params.name)) {
         res.writeHead(200, {'content-type':'text/event-stream', 'cache-control':'no-cache'});
         res.write(': waiting\n\n'); streams.add(res);
@@ -49,8 +58,9 @@ export async function policyRemote() {
   await new Promise<void>(resolve => http.listen(0, '127.0.0.1', resolve));
   const address = http.address(); if (!address || typeof address === 'string') throw new Error('Missing fixture port');
   return {
-    url:`http://127.0.0.1:${address.port}/mcp`, calls, streams,
+    url:`http://127.0.0.1:${address.port}/mcp`, calls, streams, initialized:()=>initialized,
     mode(value:typeof mode) {mode = value;}, tools(value:string[]) {names = value;},
+    changeTools(value:string[]) {names = value; announceTools = true;},
     async close() {for (const timer of timers) clearInterval(timer); for (const stream of streams) stream.end(); http.closeAllConnections(); await new Promise<void>(resolve => http.close(() => resolve()));},
   };
 }

@@ -8,6 +8,7 @@ import { startEidoAgent } from "../src/server.ts";
 import { SUBAGENT_RUN } from "../src/subagents.ts";
 import { call, fixtureModel, lastToolText, type FixtureStep } from "./fixture-model.ts";
 import { createExtensionCenter } from "../../../scripts/pi-extensions.mjs";
+import {policyRemote} from './fixture-mcp-policy.ts';
 
 type Run = {childSessionId: string; parentSessionId: string; task: string; toolCallId: string};
 async function harness(steps: FixtureStep[], runHooks: {prepare?: (cwd: string) => Promise<void>; beforeLoad?: () => Promise<void>; settled?: () => void} = {}) {
@@ -327,7 +328,7 @@ r.method==='tools/call'?{content:[{type:'text',text:'MCP fixture reached'}]}:{};
 process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:r.id,result})+'\\n');});`);
     const center = createExtensionCenter(cwd);
     await center.execute({operation: "install", source: pkg});
-    await center.execute({operation: "mcp-save", text: JSON.stringify({mcpServers: {fixture: {command: process.execPath, args: [script]}}})});
+    await center.execute({operation: "mcp-save", text: JSON.stringify({mcpServers: {fixture: {command: process.execPath, args: [script], exposure:"direct"}}})});
     await mkdir(join(cwd, "agents"));
     await writeFile(join(cwd, "agents", "integrator.md"), '---\nname: integrator\ndescription: Check plugin and MCP integration\ntools: [read, "tool:fixture_plugin", "mcp:fixture"]\n---\nUse only assigned integrations.\n');
   }});
@@ -338,6 +339,31 @@ process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:r.id,result})+'\\n');});`)
     assert.ok(h.permissions.includes(h.runs[0]!.childSessionId), "MCP permission belongs to the child task");
     assert.equal(h.writes(), 0);
   } finally {await h.dispose();}
+});
+
+test('codemode respects child role boundaries and assigns nested native and MCP calls to their child', {timeout:30_000}, async () => {
+  const remote = await policyRemote(); remote.tools(['ping']);
+  const h = await harness([
+    () => call('subagent',{agent:'restricted',title:'Read with script',task:'Check your callable tools and read source.ts.'}),
+    () => call('codemode',{code:'text("mcp__remote__ping" in tools); text(await tools.read({path:"source.ts"}));'}),
+    context => {assert.match(lastToolText(context,'codemode'),/false/); assert.match(lastToolText(context,'codemode'),/current unsaved buffer/); return 'Role boundary verified.';},
+    () => call('subagent',{agent:'integrator',title:'MCP with script',task:'Call the remote ping fixture.'}),
+    () => call('codemode',{code:'const result = await tools.mcp__remote__ping({}); text(result.content[0].text);'}),
+    context => {assert.match(lastToolText(context,'codemode'),/ping fixture reached/); return 'Child MCP verified.';},
+    context => {assert.match(lastToolText(context,'subagent'),/Child MCP verified/); return 'Both roles verified.';},
+  ], {prepare: async cwd => {
+    await writeFile(join(cwd,'mcp.json'),JSON.stringify({mcpServers:{remote:{url:remote.url}}}));
+    await mkdir(join(cwd,'agents'));
+    await writeFile(join(cwd,'agents/restricted.md'),'---\nname: restricted\ndescription: Read through pi codemode\ntools: [read, "tool:codemode"]\n---\nRead only.\n');
+    await writeFile(join(cwd,'agents/integrator.md'),'---\nname: integrator\ndescription: Use the MCP fixture\ntools: ["mcp:remote"]\n---\nCheck the fixture.\n');
+  }});
+  try {
+    assert.equal((await h.prompt('Verify script role boundaries.')).stopReason,'end_turn');
+    assert.equal(h.requests(),7); assert.deepEqual(remote.calls,['ping']);
+    assert.deepEqual(h.readSessions,[h.runs[0]!.childSessionId]);
+    assert.equal(h.permissions.filter(id => id === h.runs[0]!.childSessionId).length,2);
+    assert.equal(h.permissions.filter(id => id === h.runs[1]!.childSessionId).length,2);
+  } finally {await h.dispose(); await remote.close();}
 });
 
 

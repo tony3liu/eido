@@ -45,7 +45,7 @@ for(const type of ['http','sse'] as const) test(`configured ${type} MCP uses the
     await mkdir(join(dir,'work'));
     await writeFile(join(dir,'settings.json'),JSON.stringify({defaultProvider:'eido-fixture',defaultModel:'scripted',compaction:{enabled:false}}));
     const center=createExtensionCenter(dir);
-    await center.execute({operation:'mcp-save',text:JSON.stringify({mcpServers:{remote:{type,url:remote.url,headers:{Authorization:'Bearer fixture-mcp-secret'}}}})});
+    await center.execute({operation:'mcp-save',text:JSON.stringify({mcpServers:{remote:{exposure:'direct',type,url:remote.url,headers:{Authorization:'Bearer fixture-mcp-secret'}}}})});
     const model=await fixtureModel(dir,[()=>call('mcp__remote__ping'),context=>{assert.match(lastToolText(context,'mcp__remote__ping'),new RegExp(`${type} fixture reached`));return 'Remote tool verified.';}]);
     const toAgent=new TransformStream(),toClient=new TransformStream();
     active=await startEidoAgent(dir,join(dir,'sessions'),{readable:toAgent.readable,writable:toClient.writable},model.runtime);
@@ -81,7 +81,7 @@ test('MCP OAuth uses pi PKCE, refreshes rotating credentials once, and never sta
   let connection:ReturnType<ReturnType<typeof client>['connect']>|undefined;
   try {
     const center=createExtensionCenter(dir);
-    await center.execute({operation:'mcp-save',text:JSON.stringify({mcpServers:{remote:{url:remote.url}}})});
+    await center.execute({operation:'mcp-save',text:JSON.stringify({mcpServers:{remote:{url:remote.url,exposure:'direct'}}})});
     let browser:Promise<Response>|undefined;
     await signIn(dir,'remote',{
       showAuthorizationUrl(url){browser=fetch(url);},
@@ -129,7 +129,7 @@ test('cancelled or superseded MCP sign-in closes its callback and cannot save cr
   const remote=await oauthFixture(),dir=await realpath(await mkdtemp(join(tmpdir(),'eido-mcp-cancel-')));
   try {
     const center=createExtensionCenter(dir);
-    await center.execute({operation:'mcp-save',text:JSON.stringify({mcpServers:{remote:{url:remote.url}}})});
+    await center.execute({operation:'mcp-save',text:JSON.stringify({mcpServers:{remote:{url:remote.url,exposure:'direct'}}})});
     let callback='';const stop=new AbortController();
     await assert.rejects(signIn(dir,'remote',{
       showAuthorizationUrl(url){callback=url.searchParams.get('redirect_uri')!;stop.abort();},
@@ -154,7 +154,7 @@ test('Extensions sign-in helper exits on owner EOF and releases the callback lis
   const remote=await oauthFixture(),dir=await realpath(await mkdtemp(join(tmpdir(),'eido-mcp-owner-')));
   let child:ReturnType<typeof spawn>|undefined;
   try {
-    await createExtensionCenter(dir).execute({operation:'mcp-save',text:JSON.stringify({mcpServers:{remote:{url:remote.url}}})});
+    await createExtensionCenter(dir).execute({operation:'mcp-save',text:JSON.stringify({mcpServers:{remote:{url:remote.url,exposure:'direct'}}})});
     child=spawn(process.execPath,['scripts/pi-mcp-auth.mjs','remote'],{cwd:process.cwd(),env:{...process.env,EIDO_PI_CONFIG_DIR:dir},stdio:['pipe','pipe','pipe']});
     const exited=new Promise(resolve=>child!.once('exit',resolve));
     const lines=createInterface({input:child.stdout!});
@@ -177,7 +177,7 @@ test('unavailable, unresolved and unsigned-in MCP servers do not block healthy t
   const h = await mcpHarness({mcpServers:{
     absent:{command:'/eido-test-missing-executable', env:{SECRET:'never-display-this-secret'}},
     unresolved:{command:process.execPath, env:{KEY:'${EIDO_FIXTURE_ENV_THAT_DOES_NOT_EXIST}'}},
-    denied:{url:denied.url}, invalid:{url:invalid.url}, healthy:{url:healthy.url},
+    denied:{url:denied.url}, invalid:{url:invalid.url}, healthy:{url:healthy.url,exposure:'direct'},
   }}, [context => {
     assert.deepEqual(declaredTools(context).filter(t => t.startsWith('mcp__')), ['mcp__healthy__ping','mcp__healthy__slow','mcp__healthy__progress']);
     return call('mcp__healthy__ping');
@@ -197,7 +197,7 @@ test('unavailable, unresolved and unsigned-in MCP servers do not block healthy t
 
 test('MCP per-server deadlines include initialization and tool progress extends the request deadline', {timeout:20_000}, async () => {
   const timed = await policyRemote(), hung = await policyRemote(); hung.mode('hang-open');
-  const h = await mcpHarness({mcpServers:{hung:{url:hung.url,timeout:0.2}, timed:{url:timed.url,timeout:0.2}}}, [
+  const h = await mcpHarness({mcpServers:{hung:{url:hung.url,timeout:0.2}, timed:{url:timed.url,timeout:0.2,exposure:'direct'}}}, [
     () => call('mcp__timed__progress'), context => {assert.match(lastToolText(context,'mcp__timed__progress'), /progress fixture reached/); return 'Progress completed.';},
     () => call('mcp__timed__slow'), context => {
       const result = context.messages.findLast(m => m.role === 'toolResult' && m.toolName === 'mcp__timed__slow');
@@ -217,7 +217,7 @@ test('MCP per-server deadlines include initialization and tool progress extends 
 
 test('cancelling a progressing MCP request releases the stream and allows the next prompt', {timeout:20_000}, async () => {
   const remote = await policyRemote();
-  const h = await mcpHarness({mcpServers:{remote:{url:remote.url,timeout:0.2}}}, [
+  const h = await mcpHarness({mcpServers:{remote:{url:remote.url,timeout:0.2,exposure:'direct'}}}, [
     () => call('mcp__remote__progress'), () => call('mcp__remote__ping'),
     context => {assert.match(lastToolText(context,'mcp__remote__ping'), /ping fixture reached/); return 'Cancellation recovered.';},
   ]);
@@ -231,5 +231,158 @@ test('cancelling a progressing MCP request releases the stream and allows the ne
     assert.equal(remote.streams.size,0);
     assert.equal((await h.prompt(task.sessionId)).stopReason,'end_turn');
     assert.deepEqual(remote.calls,['progress','ping']);
+  } finally {await h.close(); await remote.close();}
+});
+
+test('pi discovers deferred MCP tools, keeps hidden tools unreachable, and checks nested call permission', {timeout:20_000}, async () => {
+  const remote = await policyRemote(); remote.tools(['ping','secret','search_a','search_exact']);
+  const h = await mcpHarness({mcpServers:{remote:{url:remote.url,description:'Local policy namespace',toolExposure:{secret:'hidden','search_*':'deferred',search_exact:'direct'}}}}, [
+    context => {
+      const declared = declaredTools(context);
+      assert.ok(declared.includes('codemode') && declared.includes('tool_search'));
+      assert.ok(declared.includes('mcp__remote__search_exact'));
+      assert.ok(!declared.includes('mcp__remote__ping') && !declared.includes('mcp__remote__search_a'));
+      assert.doesNotMatch(JSON.stringify(context.messages.filter(m => m.role === 'system')), /mcp__remote__secret/);
+      return call('tool_search',{query:'search_a',limit:1});
+    }, context => {
+      assert.ok(declaredTools(context).includes('mcp__remote__search_a'));
+      return call('codemode',{code:'text("mcp__remote__secret" in tools); const result = await tools.mcp__remote__ping({}); text(result.content[0].text);'});
+    }, context => {
+      assert.match(lastToolText(context,'codemode'), /false/);
+      assert.match(lastToolText(context,'codemode'), /ping fixture reached/); return 'Discovery completed.';
+    }, () => call('codemode',{code:'try { await tools.mcp__remote__ping({}); } catch(error) { text(error.message); }'}),
+    context => {assert.match(lastToolText(context,'codemode'), /denied by user/); return 'Nested denial respected.';},
+  ], `import {appendFileSync} from 'node:fs'; import {join} from 'node:path';
+export default pi => {pi.on('tool_call', (event,ctx) => {appendFileSync(join(ctx.cwd,'calls.jsonl'),JSON.stringify(event)+'\\n');});};`);
+  try {
+    const task = await h.newTask();
+    assert.equal((await h.prompt(task.sessionId)).stopReason,'end_turn');
+    assert.deepEqual(remote.calls,['ping']);
+    const events = (await readFile(join(h.dir,'work/calls.jsonl'),'utf8')).trim().split('\n').map(line => JSON.parse(line));
+    const nested = events.filter(event => event.toolName === 'mcp__remote__ping');
+    assert.equal(nested.length,1); assert.ok(nested[0].parentToolCallId);
+    assert.deepEqual(h.permissions,['tool_search','codemode','mcp__remote__ping']);
+    h.reject('mcp__remote__ping');
+    assert.equal((await h.prompt(task.sessionId)).stopReason,'end_turn');
+    assert.deepEqual(remote.calls,['ping']);
+    assert.equal(h.model.requests(),5);
+  } finally {await h.close(); await remote.close();}
+});
+
+test('disabling automatic codemode activation does not expose its MCP tools directly', {timeout:15_000}, async () => {
+  const remote = await policyRemote();
+  const h = await mcpHarness({autoEnableCodemode:false,mcpServers:{remote:{url:remote.url}}}, [context => {
+    assert.ok(declaredTools(context).every(name => name !== 'codemode' && !name.startsWith('mcp__remote__')));
+    return 'Automatic activation disabled.';
+  }]);
+  try {const task = await h.newTask(); assert.equal((await h.prompt(task.sessionId)).stopReason,'end_turn'); assert.equal(h.model.requests(),1);}
+  finally {await h.close(); await remote.close();}
+});
+
+test('runtime plugin registrations refresh the role policy without activating dormant tools', {timeout:15_000}, async () => {
+  const h = await mcpHarness({mcpServers:{}}, [context => {
+    assert.ok(declaredTools(context).includes('runtime_fixture'));
+    assert.ok(!declaredTools(context).includes('runtime_dormant'));
+    return call('runtime_fixture');
+  }, context => {assert.match(lastToolText(context,'runtime_fixture'),/Registered during a command/); return 'Dynamic tool verified.';}],
+  `export default pi => {pi.registerCommand('register-fixture',{description:'Register a fixture',handler:async()=>{
+    for(const name of ['runtime_fixture','runtime_dormant']) pi.registerTool({name,label:name,description:'Runtime fixture',defaultActive:name!=='runtime_dormant',parameters:{type:'object',properties:{}},execute:async()=>({content:[{type:'text',text:'Registered during a command'}]})});
+  }});};`);
+  try {
+    const task = await h.newTask();
+    assert.equal((await h.prompt(task.sessionId,'/register-fixture')).stopReason,'end_turn');
+    assert.equal((await h.prompt(task.sessionId)).stopReason,'end_turn'); assert.equal(h.model.requests(),2);
+  } finally {await h.close();}
+});
+
+test('plugin MCP registration, replacement, removal and reload reuse canonical aliases and one connection', {timeout:20_000}, async () => {
+  const first = await policyRemote(), second = await policyRemote(); first.tools(['ping']); second.tools(['ping']);
+  const verify = (context:Parameters<typeof lastToolText>[0]) => {assert.match(lastToolText(context,'mcp__plugin__ping'),/ping fixture reached/); return 'Plugin MCP called.';};
+  const h = await mcpHarness({mcpServers:{}}, [
+    () => call('mcp__plugin__ping'), verify,
+    context => {assert.ok(declaredTools(context).includes('mcp__plugin__ping')); assert.ok(!declaredTools(context).some(name => name.startsWith('mcp__plugin_2'))); return call('mcp__plugin__ping');}, verify,
+    context => {assert.ok(!declaredTools(context).some(name => name.startsWith('mcp__plugin__'))); return 'Removed.';},
+    () => call('mcp__plugin__ping'), verify,
+  ], `export default pi => {
+    pi.registerMcpServer('plugin',{url:${JSON.stringify(first.url)},exposure:'direct'});
+    pi.registerCommand('swap-mcp',{description:'Replace fixture',handler:async()=>{pi.registerMcpServer('plugin',{url:${JSON.stringify(second.url)},exposure:'direct'});}});
+    pi.registerCommand('drop-mcp',{description:'Remove fixture',handler:async()=>{pi.unregisterMcpServer('plugin');}});
+  };`);
+  try {
+    const task = await h.newTask();
+    assert.equal(first.initialized(),1); assert.equal(second.initialized(),0);
+    assert.equal((await h.prompt(task.sessionId)).stopReason,'end_turn');
+    await h.prompt(task.sessionId,'/swap-mcp');
+    assert.equal((await h.prompt(task.sessionId)).stopReason,'end_turn');
+    assert.deepEqual(first.calls,['ping']); assert.deepEqual(second.calls,['ping']);
+    await h.prompt(task.sessionId,'/drop-mcp');
+    assert.equal((await h.prompt(task.sessionId)).stopReason,'end_turn');
+    await h.prompt(task.sessionId,'/reload');
+    assert.equal((await h.prompt(task.sessionId)).stopReason,'end_turn');
+    assert.deepEqual(first.calls,['ping','ping']);
+    assert.equal(first.initialized(),2); assert.equal(second.initialized(),1); assert.equal(h.model.requests(),7);
+    assert.doesNotMatch(JSON.stringify(h.updates),/no loaded extension connects|mcp_init_error/);
+  } finally {await h.close(); await first.close(); await second.close();}
+});
+
+test('global disabled MCP configuration overrides a plugin registration with the same name', {timeout:15_000}, async () => {
+  const remote = await policyRemote();
+  const h = await mcpHarness({mcpServers:{plugin:{url:remote.url,enabled:false}}}, [context => {
+    assert.ok(!declaredTools(context).some(name => name.startsWith('mcp__plugin__'))); return 'Global configuration kept.';
+  }], `export default pi => {pi.registerMcpServer('plugin',{url:${JSON.stringify(remote.url)},exposure:'direct'});};`);
+  try {
+    const task = await h.newTask(); assert.equal((await h.prompt(task.sessionId)).stopReason,'end_turn');
+    assert.equal(remote.initialized(),0); assert.equal(h.model.requests(),1);
+  } finally {await h.close(); await remote.close();}
+});
+
+test('a malformed global MCP file leaves other tools usable and a reload recovers after repair', {timeout:15_000}, async () => {
+  const remote = await policyRemote();
+  const h = await mcpHarness({mcpServers:{}}, [() => 'Task is usable.', () => call('mcp__remote__ping'),
+    context => {assert.match(lastToolText(context,'mcp__remote__ping'),/ping fixture reached/); return 'Recovered.';}]);
+  try {
+    await writeFile(join(h.dir,'mcp.json'),'{invalid');
+    const task = await h.newTask(); assert.equal((await h.prompt(task.sessionId)).stopReason,'end_turn');
+    assert.match(JSON.stringify(h.updates),/MCP configuration could not be loaded/);
+    await writeFile(join(h.dir,'mcp.json'),JSON.stringify({mcpServers:{remote:{url:remote.url,exposure:'direct'}}}));
+    await h.prompt(task.sessionId,'/reload');
+    assert.equal((await h.prompt(task.sessionId)).stopReason,'end_turn');
+    assert.deepEqual(remote.calls,['ping']); assert.equal(h.model.requests(),3);
+  } finally {await h.close(); await remote.close();}
+});
+
+test('a superseded MCP connection cannot delay the next prompt or publish stale tools', {timeout:15_000}, async () => {
+  const hung = await policyRemote(), ready = await policyRemote(); hung.mode('hang-open'); ready.tools(['ping']);
+  const h = await mcpHarness({mcpServers:{}}, [context => {
+    assert.ok(declaredTools(context).includes('mcp__changing__ping'));
+    assert.ok(!declaredTools(context).some(name => name.startsWith('mcp__changing_2')));
+    return call('mcp__changing__ping');
+  }, context => {assert.match(lastToolText(context,'mcp__changing__ping'),/ping fixture reached/); return 'Replacement settled.';}],
+  `export default pi => {pi.registerCommand('change-mcp',{description:'Replace a connecting server',handler:async()=>{
+    pi.registerMcpServer('changing',{url:${JSON.stringify(hung.url)},timeout:10,exposure:'direct'});
+    setTimeout(()=>pi.registerMcpServer('changing',{url:${JSON.stringify(ready.url)},exposure:'direct'}),75);
+  }});};`);
+  try {
+    const task = await h.newTask(), start = performance.now();
+    await h.prompt(task.sessionId,'/change-mcp');
+    assert.equal((await h.prompt(task.sessionId)).stopReason,'end_turn');
+    assert.ok(performance.now()-start<3000,'superseded initialization is cancelled');
+    assert.deepEqual(ready.calls,['ping']); assert.equal(ready.initialized(),1);
+  } finally {await h.close(); await hung.close(); await ready.close();}
+});
+
+test('MCP catalog refresh hides removed tools from scripts and reload preserves the current catalog', {timeout:15_000}, async () => {
+  const remote = await policyRemote(); remote.tools(['ping']);
+  const h = await mcpHarness({mcpServers:{remote:{url:remote.url}}}, [
+    () => call('codemode',{code:'text((await tools.mcp__remote__ping({})).content[0].text);'}), () => 'Catalog changed.',
+    () => call('codemode',{code:'text("mcp__remote__ping" in tools); text((await tools.mcp__remote__replacement({})).content[0].text);'}),
+    context => {assert.match(lastToolText(context,'codemode'),/false/); assert.match(lastToolText(context,'codemode'),/replacement fixture reached/); return 'Current catalog verified.';},
+  ]);
+  try {
+    const task = await h.newTask(); remote.changeTools(['replacement']);
+    assert.equal((await h.prompt(task.sessionId)).stopReason,'end_turn');
+    await h.prompt(task.sessionId,'/reload');
+    assert.equal((await h.prompt(task.sessionId)).stopReason,'end_turn');
+    assert.deepEqual(remote.calls,['ping','replacement']); assert.equal(remote.initialized(),1); assert.equal(h.model.requests(),4);
   } finally {await h.close(); await remote.close();}
 });

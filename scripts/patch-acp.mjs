@@ -184,6 +184,9 @@ await patchSource(mcpBridgePath,
   '            command: server.command,\n            args: server.args,',
   '            command: server.command,\n            cwd: server[Symbol.for("eido.pi.mcp.options")]?.cwd,\n            args: server.args,');
 await (await import('./patch-acp-mcp.mjs')).patchMcpBridge(mcpBridgePath);
+await (await import('./patch-acp-mcp.mjs')).patchMcpExposure(mcpBridgePath);
+await (await import('./patch-acp-mcp-registry.mjs')).patchMcpRegistry(mcpBridgePath, agentPath, patchSource);
+await (await import('./patch-acp-tools.mjs')).patchPiTools(directory, patchSource);
 
 if (!(await readFile(new URL('dist/server.js', directory), 'utf8')).includes('.onRequest("_eido/ui/shortcut"'))
 await patchSource(new URL('dist/server.js', directory),

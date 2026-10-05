@@ -21,7 +21,7 @@ readline.createInterface({input:process.stdin}).on('line',line=>{
 });`);
   await writeFile(join(dir,"settings.json"),JSON.stringify({defaultProvider:"eido-fixture",defaultModel:"scripted",compaction:{enabled:false}}));
   const center = createExtensionCenter(dir);
-  await center.execute({operation:"mcp-save",text:JSON.stringify({mcpServers:{fixture:{command:process.execPath,args:[script]}}})});
+  await center.execute({operation:"mcp-save",text:JSON.stringify({mcpServers:{fixture:{command:process.execPath,args:[script],exposure:"direct"}}})});
   const fixture = await fixtureModel(dir,[
     () => call("mcp__fixture__ping"),
     context => {assert.match(lastToolText(context,"mcp__fixture__ping"),/MCP fixture reached/);return "MCP verified.";},

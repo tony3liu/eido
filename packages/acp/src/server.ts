@@ -1,4 +1,4 @@
-import {connectMcp} from './mcp.ts';
+import {createMcpConnector} from './mcp.ts';
 import {createDeliveryLedger, DELIVERY} from './delivery.ts';
 import {nativeUiAction} from './native-ui.ts';
 import { runAcp } from "@automatalabs/pi-acp";
@@ -12,7 +12,7 @@ import { browserLifecycle } from "./browser-lifecycle.ts";
 import { accessPolicy } from "./access-policy.ts";
 import { installPiCommands } from "./pi-commands.ts";
 import { createSubagents } from "./subagents.ts";
-import { resolveAgentTools } from "./agent-tools.ts";
+import { installAgentToolPolicy } from "./agent-tools.ts";
 import { configuredMcp } from "../../../scripts/pi-extensions.mjs";
 import { browserDecisionEnvironment } from "../../../scripts/browser-config.mjs";
 
@@ -31,7 +31,7 @@ export async function startEidoAgent(agentDir: string, sessionDir: string, strea
     deps: {
       agentDir,
       sessionDir,
-      connectMcpClient: connectMcp,
+      connectMcpClient: createMcpConnector(agentDir),
       modelRuntime: runtime,
       createAgentSession: async options => {
         if (!options.cwd || !options.sessionManager) throw new Error("Missing ACP session context.");
@@ -95,23 +95,18 @@ export async function startEidoAgent(agentDir: string, sessionDir: string, strea
         // keep pi-acp's permission, cancellation, image and lifecycle handling.
         const child = subagents.register(created.session);
         const decisionTools = new Set(["do", "check", "choose"].map(name => `mcp__eido_browser__browser_${name}`));
-        const selectedTools = () => resolveAgentTools(child ? child.role?.tools ?? ["read"] : undefined,
-          created.session.getAllTools().filter(tool => browserDecision.TYPESAFE_API_KEY || !decisionTools.has(tool.name)));
-        let activeTools: Set<string>;
-        try { activeTools = new Set(selectedTools()); }
+        let toolPolicy: ReturnType<typeof installAgentToolPolicy>;
+        try { toolPolicy = installAgentToolPolicy(created.session, child ? child.role?.tools ?? ["read"] : undefined,
+          tool => !!browserDecision.TYPESAFE_API_KEY || !decisionTools.has(tool.name)); }
         catch (error) {created.session.dispose(); throw error;}
-        created.session.setActiveToolsByName([...activeTools]);
         const reload = created.session.reload.bind(created.session);
         created.session.reload = async (...args) => {
           await reload(...args);
-          activeTools.clear();
-          created.session.setActiveToolsByName([]);
-          activeTools = new Set(selectedTools());
-          created.session.setActiveToolsByName([...activeTools]);
+          toolPolicy.reset();
         };
         const beforeToolCall = created.session.agent.beforeToolCall;
         created.session.agent.beforeToolCall = async (context, signal) => {
-          if (!activeTools.has(context.toolCall.name)) {
+          if (!toolPolicy.allows(context.toolCall.name)) {
             return { block: true, reason: "This tool is not enabled for this agent." };
           }
           browser.track(context.toolCall.name);
@@ -142,7 +137,10 @@ export async function startEidoAgent(agentDir: string, sessionDir: string, strea
   };
   // The configured servers enter the same ACP MCP bridge as built-in tools.
   const withMcp = async <T extends {params: {mcpServers?: McpServer[]; cwd: string}}>(context: T): Promise<T> => {
-    const configured = await configuredMcp(agentDir, context.params.cwd), bundled = context.params.mcpServers ?? [];
+    let configured: McpServer[] = [];
+    try {configured = await configuredMcp(agentDir, context.params.cwd);}
+    catch { /* The bridge reports invalid configuration after the task opens. */ }
+    const bundled = context.params.mcpServers ?? [];
     const servers = [...bundled, ...configured.filter(server => !bundled.some(s => s.name === server.name))].map(server =>
       server.name === "eido_browser" && "command" in server
         ? {...server, env: [...server.env?.filter(entry => entry.name !== "EIDO_PI_CONFIG_DIR") ?? [], {name: "EIDO_PI_CONFIG_DIR", value: agentDir}]}

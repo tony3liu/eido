@@ -1,6 +1,6 @@
 import {connectDefaultMcpClient} from '../node_modules/@automatalabs/pi-acp/dist/mcp-bridge.js';
 import {realSleep, type PiAcpDeps} from '../node_modules/@automatalabs/pi-acp/dist/deps.js';
-import {authenticatedMcpFetch, MCP_FETCH, MCP_OPTIONS} from '../../../scripts/pi-mcp.mjs';
+import {authenticatedMcpFetch, MCP_FETCH, MCP_OPTIONS, registeredMcp} from '../../../scripts/pi-mcp.mjs';
 
 export const connectMcp: PiAcpDeps['connectMcpClient'] = async (server, signal, binding) => {
   const options = (server as unknown as {[MCP_OPTIONS]?: {timeoutMs:number; unresolved?:boolean}})[MCP_OPTIONS];
@@ -15,3 +15,9 @@ export const connectMcp: PiAcpDeps['connectMcpClient'] = async (server, signal, 
     return handle;
   } catch(error) {await auth.settled(); throw error;}
 };
+
+export function createMcpConnector(directory:string): PiAcpDeps['connectMcpClient'] {
+  return Object.assign((...args:Parameters<typeof connectMcp>) => connectMcp(...args), {
+    [Symbol.for('eido.pi.mcp.registered')]: (cwd:string, registrations:Parameters<typeof registeredMcp>[2]) => registeredMcp(directory, cwd, registrations),
+  });
+}

@@ -94,3 +94,71 @@ export async function patchMcpBridge(path) {
   replace('            api.on("before_agent_start", (event) => {', '            api.on("before_agent_start", (event) => {\n                for (const text of pendingDiagnostics.splice(0)) binding?.emitDiagnostic(text);');
   await writeFile(path, marker + source);
 }
+
+export async function patchMcpExposure(path) {
+  let source = await readFile(path, 'utf8');
+  const marker = '// Eido MCP exposure v1';
+  if (source.includes(marker)) return;
+  if (createHash('sha256').update(source).digest('hex') !== 'e3c889b52fc3635074d0d869e9096e058bcbcf98b5fdba2657fd274a85001e41') {
+    throw new Error('Review the MCP bridge before applying pi tool exposure.');
+  }
+  const replace = (before, after, count = 1) => {
+    if (source.split(before).length !== count + 1) throw new Error(`Unexpected MCP exposure source: ${before.slice(0,100)}`);
+    source = source.replaceAll(before, after);
+  };
+  replace('import { basename } from "node:path";', `import { basename } from "node:path";
+import { getMcpToolExposure } from "../../../@earendil-works/pi-coding-agent/dist/core/mcp-servers.js";
+import { toToolExposure, createMcpResultSchema } from "../../../@earendil-works/pi-coding-agent/dist/extensions/mcp/tools.js";
+${marker}
+function toolPolicy(state, name, synthetic = false) {
+    const options = state.server[Symbol.for("eido.pi.mcp.options")];
+    const config = options?.config;
+    const exposure = config ? (synthetic ? config.exposure ?? "codemode" : getMcpToolExposure(config, name)) : "direct";
+    return {
+        exposure: toToolExposure(exposure),
+        eidoMcpExposure: exposure,
+        eidoMcpAutoEnableCodemode: options?.autoEnableCodemode !== false,
+        namespace: { name: "mcp__" + state.token, description: config?.description, instructions: state.handle.getInstructions?.() },
+    };
+}`);
+  replace('function syntheticTool(alias, description, parameters, execute) {\n    return { name: alias, label: alias, description, parameters, execute };',
+    'function syntheticTool(policy, alias, description, parameters, execute) {\n    return { ...policy, name: alias, label: alias, description, parameters, execute };');
+  replace('return syntheticTool(alias,', 'return syntheticTool(toolPolicy(state, operation, true), alias,', 8);
+  replace('    const remoteDefinition = (state, remote, alias) => ({\n        name: alias,',
+    '    const remoteDefinition = (state, remote, alias) => ({\n        ...toolPolicy(state, remote.name),\n        annotations: remote.annotations,\n        outputSchema: createMcpResultSchema(remote.outputSchema),\n        name: alias,');
+  replace('    return { content: result.content.map(convertMcpContent), details: result };',
+    '    const { _meta, ...structuredContent } = result;\n    return { content: result.content.map(convertMcpContent), details: structuredContent, structuredContent };');
+  // Keep removal and peer death effective for script calls, not just declarations.
+  replace('            for (const alias of removed)\n                active.delete(alias);\n            for (const definition of definitions)\n                active.add(definition.name);', `            for (const alias of removed) {
+                active.delete(alias);
+                const definition = piSession.getToolDefinition(alias);
+                if (definition) extensionApi.registerTool({ ...definition, exposure: "hidden" });
+            }
+            for (const definition of definitions) {
+                if (definition.exposure === "direct" && !state.validAliases.has(definition.name)) active.add(definition.name);
+                if (definition.exposure === "hidden") active.delete(definition.name);
+            }`);
+  replace('                            for (const alias of [...state.syntheticAliases, ...state.aliases.values()])\n                                active.delete(alias);', `                            for (const alias of [...state.syntheticAliases, ...state.aliases.values()]) {
+                                active.delete(alias);
+                                const definition = piSession.getToolDefinition(alias);
+                                if (definition) extensionApi.registerTool({ ...definition, exposure: "hidden" });
+                            }`);
+  replace('                    .filter((state) => !state.disabled)', '                    .filter((state) => !state.disabled && !state.peerDead && [...state.validAliases].some(alias => piSession?.getActiveToolNames().includes(alias)))');
+  replace('            state.validAliases = new Set([...state.syntheticAliases, ...definitions.map(({ name }) => name)]);', `            state.validAliases = new Set([...state.syntheticAliases, ...definitions.map(({ name }) => name)]);
+            for (const alias of removed) {
+                const index = tools.findIndex(tool => tool.name === alias);
+                if (index >= 0) tools[index] = { ...tools[index], exposure: "hidden" };
+            }
+            for (const definition of definitions) {
+                const index = tools.findIndex(tool => tool.name === definition.name);
+                if (index >= 0) tools[index] = definition;
+                else tools.push(definition);
+            }`);
+  replace('                            state.validAliases.clear();\n                            state.disabled = true;', `                            for (const alias of state.validAliases) {
+                                const index = tools.findIndex(tool => tool.name === alias);
+                                if (index >= 0) tools[index] = { ...tools[index], exposure: "hidden" };
+                            }
+                            state.validAliases.clear();
+                            state.disabled = true;`);
+  await writeFile(path, source);
+}

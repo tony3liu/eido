@@ -15,6 +15,7 @@ const expandHome = value => value === '~' ? homedir() : value.startsWith('~/') ?
 
 export function validateMcp(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('MCP configuration must contain a mcpServers object.');
+  if (value.autoEnableCodemode !== undefined && typeof value.autoEnableCodemode !== 'boolean') throw new Error('autoEnableCodemode must be a boolean.');
   const raw = value.mcpServers ?? {};
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('mcpServers must be an object.');
   const servers = Object.create(null);
@@ -50,7 +51,23 @@ export async function readMcp(directory) {
 }
 
 export async function configuredMcp(directory, cwd = directory) {
-  const config = await readMcp(directory);
+  return resolveMcp(await readMcp(directory), directory, cwd);
+}
+
+export async function registeredMcp(directory, cwd, registrations) {
+  const global = await readMcp(directory);
+  const entries = Object.create(null);
+  for (const {name, config} of registrations) {
+    if (name === 'eido_browser' || Object.hasOwn(global.mcpServers, name)) continue;
+    const validated = validateMcpServerConfig(name, config);
+    if (typeof validated === 'string') throw new Error('Invalid registered MCP server.');
+    entries[name] = validated;
+  }
+  // Global entries, including disabled ones, take precedence over plugins.
+  return resolveMcp({...global, mcpServers:{...entries,...global.mcpServers}}, directory, cwd);
+}
+
+function resolveMcp(config, directory, cwd) {
   return Object.entries(config.mcpServers).filter(([, s]) => s.enabled !== false).map(([name, s]) => {
     const description = `MCP server "${name}"`;
     let unresolved = false;
@@ -64,7 +81,7 @@ export async function configuredMcp(directory, cwd = directory) {
       unresolved = true;
       server = s.command ? {name, command:s.command, args:[], env:[]} : {name, type:s.type ?? 'http', url:s.url, headers:[]};
     }
-    Object.defineProperty(server, MCP_OPTIONS, {value:{config:s, directory, unresolved, timeoutMs:Math.min((s.timeout ?? 60) * 1000, 2_147_483_647), cwd:resolve(cwd,expandHome(s.cwd ?? '.'))}});
+    Object.defineProperty(server, MCP_OPTIONS, {value:{config:s, directory, unresolved, autoEnableCodemode:config.autoEnableCodemode, timeoutMs:Math.min((s.timeout ?? 60) * 1000, 2_147_483_647), cwd:resolve(cwd,expandHome(s.cwd ?? '.'))}});
     return server;
   });
 }
