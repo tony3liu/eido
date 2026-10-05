@@ -57,6 +57,7 @@ await patchSource(sessionPath,
 await patchSource(sessionPath,
   '    finish(turn, outcome) {',
   '    async applyConfigAtBoundary(configId, value) {\n        const result = await applyConfig(this.pi, this.deps.modelRuntime, this.availableModels, configId, value, this.settingsManager.getEnabledModels());\n        this.availableModels = result.availableModels;\n        this.modelPreferences = result.preferences;\n        return result.configOptions;\n    }\n    finish(turn, outcome) {');
+if (!(await readFile(sessionPath, 'utf8')).includes('await this.pi[Symbol.for("eido.pi.ui.state")]?.flush();'))
 await patchSource(sessionPath,
   '                piPromise = this.pi.prompt(text, { images: converted.images });',
   '                piPromise = (async () => {\n                    const commands = this.pi[Symbol.for("eido.pi.commands")];\n                    if (commands && await commands.run(text, converted.images, this)) return;\n                    return this.pi.prompt(text, { images: converted.images });\n                })();');
@@ -126,3 +127,15 @@ await patchSource(sessionPath,
 await patchSource(agentPath,
   '({ sessionId: session.sessionId, configOptions: session.configOptions(), modes: null }))',
   '({ sessionId: session.sessionId, configOptions: session.configOptions(), modes: null, _meta: {eidoCommands: session.pi[Symbol.for("eido.pi.commands")]?.commands ?? []} }))');
+
+
+// Live native editor state backs pi's synchronous UI getters in RPC mode.
+await patchSource(new URL("dist/server.js", directory),
+  '        .onRequest(LOADED_TURN_QUERY_METHOD, loadedTurnQueryParser, (context) => impl.loadedTurnQuery(context))',
+  '        .onRequest("_eido/ui/state", {parse(value) { if (!value || typeof value.sessionId !== "string" || typeof value.instance !== "string" || !Number.isSafeInteger(value.revision) || typeof value.text !== "string") throw new Error("Invalid native editor state"); return value; }}, ({params}) => { const ui = impl.live.get(params.sessionId)?.pi[Symbol.for("eido.pi.ui.state")]; if (!ui) return {handled: false}; ui.receive(params); return {handled: true}; })\n        .onRequest(LOADED_TURN_QUERY_METHOD, loadedTurnQueryParser, (context) => impl.loadedTurnQuery(context))');
+await patchSource(sessionPath,
+  '                    return this.pi.prompt(text, { images: converted.images });',
+  '                    const result = await this.pi.prompt(text, { images: converted.images });\n                    await this.pi[Symbol.for("eido.pi.ui.state")]?.flush();\n                    return result;');
+await patchSource(sessionPath,
+  '                    if (commands && await commands.run(text, converted.images, this)) return;',
+  '                    if (commands && await commands.run(text, converted.images, this)) { await this.pi[Symbol.for("eido.pi.ui.state")]?.flush(); return; }');

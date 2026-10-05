@@ -767,3 +767,85 @@ test("Radius sharing and bug upload require confirmation and use pi payloads", a
     assert.equal(h.requests(),0);
   } finally {await h.dispose();}
 });
+
+test('pi extension UI mirrors native drafts and keeps widgets and controls session-scoped', {timeout: 30_000}, async () => {
+  const nativeStates = new Map<string, {instance: string; revision: number; text: string; toolsExpanded: boolean}>();
+  const actions: {sessionId: string; action: string; data: Record<string, any>}[] = [];
+  const h = await harness([], {
+    setup: async cwd => {
+      await mkdir(join(cwd, 'extensions'));
+      await writeFile(join(cwd, 'extensions/native-ui.js'), `export default function(pi) {
+        pi.registerCommand('ui-check', {description: 'Exercise native UI', handler: async (args, ctx) => {
+          if (ctx.ui.getEditorText() !== args) throw new Error('Native draft mirror is stale');
+          ctx.ui.setStatus('fixture', '\\x1b[34mChecking plugin UI\\x1b[0m');
+          ctx.ui.setWidget('help', ['First line', 'Second line']);
+          ctx.ui.setWidget('result', ['Below editor'], {placement: 'belowEditor'});
+          ctx.ui.setWorkingMessage('Verifying fixture');
+          ctx.ui.setWorkingIndicator({frames: ['·', '●'], intervalMs: 100});
+          ctx.ui.setWorkingVisible(false);
+          ctx.ui.setHiddenThinkingLabel('Reasoning');
+          ctx.ui.setEditorText('From extension');
+          if (ctx.ui.getEditorText() !== 'From extension') throw new Error('Synchronous setter failed');
+          ctx.ui.pasteToEditor(' + pasted');
+          ctx.ui.setToolsExpanded(true);
+          if (!ctx.ui.getToolsExpanded()) throw new Error('Tool expansion failed');
+        }});
+        pi.registerCommand('ui-read', {description: 'Read native UI', handler: async (args, ctx) => {
+          pi.sendMessage({customType:'fixture-ui', content:ctx.ui.getEditorText(), display:true});
+        }});
+        pi.registerCommand('ui-clear', {description: 'Clear native UI', handler: async (_, ctx) => {
+          ctx.ui.setStatus('fixture', undefined); ctx.ui.setWidget('help', undefined); ctx.ui.setWidget('result', undefined);
+          ctx.ui.setWorkingMessage(); ctx.ui.setWorkingIndicator(); ctx.ui.setWorkingVisible(true); ctx.ui.setHiddenThinkingLabel();
+          ctx.ui.setToolsExpanded(false);
+        }});
+      }`);
+    },
+    form: async () => ({action:'cancel'}),
+    native: async request => {
+      actions.push(request);
+      const state = nativeStates.get(request.sessionId)!;
+      if (request.action === 'set_editor') {state.text = request.data.text as string; state.revision++;}
+      if (request.action === 'paste_editor') {state.text += request.data.text; state.revision++;}
+      if (request.action === 'expand_tools') state.toolsExpanded = request.data.expanded as boolean;
+      return {handled:true, editor:{...state}};
+    },
+  });
+  const sync = async (sessionId: string, text: string, revision: number) => {
+    const state = {instance:sessionId, revision, text, toolsExpanded:false};
+    nativeStates.set(sessionId, state);
+    return h.connection.agent.request('_eido/ui/state', {sessionId, ...state});
+  };
+  try {
+    const a = await h.newTask(), b = await h.newTask();
+    await sync(a.sessionId, 'Draft A', 1);
+    await sync(b.sessionId, 'Draft B', 1);
+    await h.prompt(a.sessionId, '/ui-check Draft A');
+    assert.equal(nativeStates.get(a.sessionId)?.text, 'From extension + pasted');
+    assert.equal(nativeStates.get(b.sessionId)?.text, 'Draft B');
+    const last = actions.findLast(x => x.action === 'extension_state' && x.sessionId === a.sessionId)!.data;
+    assert.equal(last.statuses.fixture, 'Checking plugin UI');
+    assert.equal(last.widgets.result.placement, 'belowEditor');
+    assert.deepEqual(last.workingIndicator.frames, ['·', '●']);
+    assert.equal(last.workingVisible, false);
+    assert.equal(last.hiddenThinkingLabel, 'Reasoning');
+    await h.prompt(a.sessionId, '/ui-read');
+    assert.match(h.text(a.sessionId), /From extension \+ pasted/);
+    await h.prompt(b.sessionId, '/ui-read');
+    assert.match(h.text(b.sessionId), /Draft B/);
+    await sync(a.sessionId, 'User edit after plugin', 20);
+    await h.connection.agent.request('_eido/ui/state', {sessionId:a.sessionId, instance:a.sessionId, revision:2, text:'Stale notification'});
+    await h.prompt(a.sessionId, '/ui-read');
+    assert.match(h.text(a.sessionId), /User edit after plugin/);
+    await h.prompt(a.sessionId, '/ui-clear');
+    const cleared = actions.findLast(x => x.action === 'extension_state')!.data;
+    assert.deepEqual(cleared.statuses, {}); assert.deepEqual(cleared.widgets, {});
+    assert.equal(cleared.workingIndicator, null); assert.equal(cleared.workingVisible, true);
+    assert.equal(cleared.workingMessage, null); assert.equal(cleared.hiddenThinkingLabel, null);
+    await h.prompt(a.sessionId, '/ui-check User edit after plugin');
+    await h.prompt(a.sessionId, '/reload');
+    const reloaded = actions.findLast(x => x.action === 'extension_state')!.data;
+    assert.deepEqual(reloaded.statuses, {}); assert.deepEqual(reloaded.widgets, {});
+    assert.equal(nativeStates.get(a.sessionId)?.text, 'From extension + pasted');
+    assert.equal(h.requests(), 0);
+  } finally {await h.dispose();}
+});
