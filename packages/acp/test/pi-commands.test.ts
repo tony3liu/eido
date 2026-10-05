@@ -1219,3 +1219,36 @@ test('slash commands cannot enter steering as model text or claim a delivery ID'
     assert.equal(h.requests(),0);
   }finally{await h.dispose();}
 });
+
+test('pi extension shortcuts use native drafts and reject stale, repeated and cross-task invocations',{timeout:20_000},async()=>{
+  const states=new Map<string,Record<string,unknown>>(),writes:string[]=[];
+  const h=await harness([],{
+    setup:async cwd=>{
+      await mkdir(join(cwd,'extensions'));
+      await writeFile(join(cwd,'extensions','shortcut.js'),`export default pi=>pi.registerShortcut('ctrl+alt+9',{description:'Use the current native draft',async handler(ctx){await new Promise(resolve=>setTimeout(resolve,30));ctx.ui.setEditorText(ctx.ui.getEditorText()+' · shortcut');}});`);
+    },
+    form:async()=>({action:'cancel'}),
+    native:async params=>{if(params.action==='extension_state')states.set(params.sessionId,params.data);if(params.action==='set_editor')writes.push(params.data.text as string);return {};},
+  });
+  try {
+    const first=await h.newTask();
+    const sync=async(sessionId:string)=>{
+      await h.connection.agent.request('_eido/ui/state',{sessionId,instance:sessionId,revision:1,text:'中文 draft'});
+      await h.prompt(sessionId,'/name Shortcut fixture');
+    };
+    await sync(first.sessionId);
+    const [shortcut]=states.get(first.sessionId)!.shortcuts as {key:string;generation:string;binding:string}[];
+    assert.equal(shortcut!.binding,'ctrl-alt-9');
+    const invoke=(sessionId=first.sessionId,generation=shortcut!.generation)=>h.connection.agent.request('_eido/ui/shortcut',{sessionId,key:shortcut!.key,generation});
+    await Promise.all([invoke(),invoke()]);
+    await h.prompt(first.sessionId,'/name After shortcut');
+    assert.deepEqual(writes,['中文 draft · shortcut']);
+    const second=await h.newTask();await sync(second.sessionId);
+    assert.deepEqual(await invoke(second.sessionId),{handled:false});
+    await rm(join(h.cwd,'extensions','shortcut.js'));
+    await h.prompt(first.sessionId,'/reload');
+    assert.deepEqual(states.get(first.sessionId)!.shortcuts,[]);
+    assert.deepEqual(await invoke(),{handled:false});
+    assert.equal(writes.length,1);assert.equal(h.requests(),0);
+  }finally{await h.dispose();}
+});

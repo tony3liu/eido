@@ -1,3 +1,4 @@
+import {PI_SHORTCUTS, type createPiShortcuts} from './pi-shortcuts.ts';
 import { methods, type AgentContext, type AvailableCommand, type SessionConfigOption, type SessionUpdate } from "@agentclientprotocol/sdk";
 import { resolveModelScopeWithDiagnostics, type AgentSession, type SessionEntry } from "@earendil-works/pi-coding-agent";
 import type { Api, Model } from "@earendil-works/pi-ai";
@@ -100,19 +101,23 @@ export function installPiCommands(pi: AgentSession, client: AgentContext, suppor
     else void client.notify(methods.client.session.update, {sessionId: pi.sessionId, update}).catch(error => console.error("pi startup UI notification failed", error));
   }, nativeUi, agentDir, catalogue) : undefined;
   const bind = pi.bindExtensions.bind(pi);
-  pi.bindExtensions = options => bind({...options, ...(ui ? {uiContext: ui, mode: "rpc" as const} : {}),
-    onError(error) {
-      options.onError?.(error);
-      const text = `Extension ${basename(error.extensionPath)} (${error.event}): ${error.error}`;
-      if (ui) ui.notify(text, 'error');
-      else {
-        pi.sessionManager.appendCustomEntry('eido.notice.v1', {text});
-        const update:SessionUpdate = {sessionUpdate:'agent_message_chunk',content:{type:'text',text:`${text}\n\n`}};
-        if (activeContext) activeContext.enqueue(update);
-        else void client.notify(methods.client.session.update,{sessionId:pi.sessionId,update}).catch(error=>console.error('Extension error notification failed',error));
-      }
-    },
-  });
+  pi.bindExtensions = async options => {
+    const result = await bind({...options, ...(ui ? {uiContext: ui, mode: "rpc" as const} : {}),
+      onError(error) {
+        options.onError?.(error);
+        const text = `Extension ${basename(error.extensionPath)} (${error.event}): ${error.error}`;
+        if (ui) ui.notify(text, 'error');
+        else {
+          pi.sessionManager.appendCustomEntry('eido.notice.v1', {text});
+          const update:SessionUpdate = {sessionUpdate:'agent_message_chunk',content:{type:'text',text:`${text}\n\n`}};
+          if (activeContext) activeContext.enqueue(update);
+          else void client.notify(methods.client.session.update,{sessionId:pi.sessionId,update}).catch(error=>console.error('Extension error notification failed',error));
+        }
+      },
+    });
+    (pi as AgentSession & {[PI_SHORTCUTS]?:ReturnType<typeof createPiShortcuts>})[PI_SHORTCUTS]?.refresh();
+    return result;
+  };
   const bridge = {
     get commands() { return catalogue(); },
     async run(text: string, images: unknown[] | undefined, context: CommandContext): Promise<boolean> {
@@ -170,6 +175,10 @@ export function installPiCommands(pi: AgentSession, client: AgentContext, suppor
             if (name === "copy" && !text) throw new Error("No pi assistant response to copy yet.");
             await nativeUiAction(client, pi.sessionId, name, text ? {text} : {}, signal);
             output = name === "copy" ? "Copied the last pi assistant response." : name === "settings" ? "Opened global pi settings." : "Opened Eido keyboard shortcuts.";
+            if(name === "hotkeys") {
+              const shortcuts = (pi as AgentSession & {[PI_SHORTCUTS]?:ReturnType<typeof createPiShortcuts>})[PI_SHORTCUTS]?.list() ?? [];
+              if(shortcuts.length)output += "\n\npi extension shortcuts (focus the conversation input):\n" + shortcuts.map(item=>`- ${item.key}: ${item.description}`).join("\n");
+            }
             break;
           }
           case "trust": {

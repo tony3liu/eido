@@ -1,3 +1,4 @@
+import {createPiShortcuts, PI_SHORTCUTS} from './pi-shortcuts.ts';
 import { methods, type AgentContext, type AvailableCommand, type ElicitationPropertySchema, type SessionUpdate } from "@agentclientprotocol/sdk";
 import type { AgentSession, ExtensionUIContext, ExtensionUIDialogOptions } from "@earendil-works/pi-coding-agent";
 import {createPiUIState, PI_UI_STATE} from './pi-ui-state.ts';
@@ -43,17 +44,20 @@ export function createPiUI(pi: AgentSession, client: AgentContext, turnSignal: (
   };
   const state = native ? createPiUIState(pi, client, message => notice(message), turnSignal) : undefined;
   const decorations=state?createPiDecorations(pi,state,()=>theme,notice):undefined;
+  const shortcuts = state ? createPiShortcuts(pi, agentDir, state.setShortcuts, notice) : undefined;
+  if(shortcuts)Object.defineProperty(pi,PI_SHORTCUTS,{value:shortcuts});
   const autocomplete = native ? createPiAutocomplete(pi, catalogue, notice) : undefined;
   if (autocomplete) Object.defineProperty(pi, PI_AUTOCOMPLETE, {value: autocomplete});
   if (state) Object.defineProperty(pi, PI_UI_STATE, {value: state});
   const dispose = pi.dispose.bind(pi);
-  pi.dispose = () => {lifetime.abort(); autocomplete?.close(); decorations?.close();state?.close(); dispose();};
+  pi.dispose = () => {lifetime.abort(); shortcuts?.close(); autocomplete?.close(); decorations?.close();state?.close(); dispose();};
   const reload = pi.reload.bind(pi);
   pi.reload = async (...args) => {
-    lifetime.abort(); lifetime = new AbortController(); autocomplete?.reset(); decorations?.reset();state?.reset();
+    lifetime.abort(); lifetime = new AbortController(); shortcuts?.reset(); autocomplete?.reset(); decorations?.reset();state?.reset();
     const result = await reload(...args);
     theme = findTheme(pi.settingsManager.getTheme() ?? 'dark') ?? getThemeByName('dark')!;
     decorations?.refreshTheme();
+    shortcuts?.refresh();
     return result;
   };
   return {

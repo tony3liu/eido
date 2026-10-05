@@ -1,3 +1,4 @@
+import type {NativeShortcut} from './pi-shortcuts.ts';
 import {stripVTControlCharacters} from 'node:util';
 import type {AgentContext} from '@agentclientprotocol/sdk';
 import type {AgentSession, ExtensionUIContext} from '@earendil-works/pi-coding-agent';
@@ -22,6 +23,7 @@ export function createPiUIState(pi: AgentSession, client: AgentContext, reportEr
   const layoutListeners=new Set<()=>void>();
   const state = {
     statuses: {} as Record<string, string>,
+    shortcuts: [] as NativeShortcut[],
     widgets: {} as Record<string, {lines: string[]; placement: 'aboveEditor' | 'belowEditor'; component?:boolean}>,
     header:null as string[]|null,
     footer:null as string[]|null,
@@ -72,6 +74,7 @@ export function createPiUIState(pi: AgentSession, client: AgentContext, reportEr
   };
   return {
     controls,
+    setShortcuts(shortcuts:NativeShortcut[]){state.shortcuts=shortcuts;publish();},
     columns:()=>columns,
     onLayout(listener:()=>void){layoutListeners.add(listener);return()=>{layoutListeners.delete(listener);};},
     receive(value: EditorState & {toolsExpanded?: boolean; columns?:number}) {
@@ -93,7 +96,7 @@ export function createPiUIState(pi: AgentSession, client: AgentContext, reportEr
     setDecoration(placement:'header'|'footer',lines:string[]|undefined){state[placement]=lines??null;publish();},
     flush: () => pending,
     reset() {
-      state.statuses = {}; state.widgets = {}; state.header=null;state.footer=null; state.workingMessage = null; state.workingVisible = true;
+      state.shortcuts = []; state.statuses = {}; state.widgets = {}; state.header=null;state.footer=null; state.workingMessage = null; state.workingVisible = true;
       state.workingIndicator = null; state.hiddenThinkingLabel = null; publish();
     },
     close() {closed = true; markReady();},

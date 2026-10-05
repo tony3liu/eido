@@ -183,3 +183,8 @@ await patchSource(mcpBridgePath,
 await patchSource(mcpBridgePath,
   '            command: server.command,\n            args: server.args,',
   '            command: server.command,\n            cwd: server[Symbol.for("eido.pi.mcp.options")]?.cwd,\n            args: server.args,');
+
+if (!(await readFile(new URL('dist/server.js', directory), 'utf8')).includes('.onRequest("_eido/ui/shortcut"'))
+await patchSource(new URL('dist/server.js', directory),
+  '        .onRequest(LOADED_TURN_QUERY_METHOD, loadedTurnQueryParser, (context) => impl.loadedTurnQuery(context))',
+  '        .onRequest("_eido/ui/shortcut", {parse(value) { if (!value || typeof value.sessionId !== "string" || typeof value.key !== "string" || value.key.length > 100 || typeof value.generation !== "string" || value.generation.length > 100) throw new Error("Invalid shortcut input"); return value; }}, ({params, signal}) => impl.live.get(params.sessionId)?.pi[Symbol.for("eido.pi.shortcuts")]?.invoke(params, signal) ?? {handled: false})\n        .onRequest(LOADED_TURN_QUERY_METHOD, loadedTurnQueryParser, (context) => impl.loadedTurnQuery(context))');

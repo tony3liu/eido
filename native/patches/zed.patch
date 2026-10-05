@@ -1155,7 +1155,7 @@ diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thr
 diff --git a/crates/acp_thread/src/connection.rs b/crates/acp_thread/src/connection.rs
 --- a/crates/acp_thread/src/connection.rs
 +++ b/crates/acp_thread/src/connection.rs
-@@ -194,6 +194,23 @@
+@@ -194,6 +194,27 @@
  
      fn prompt(&self, params: acp::PromptRequest, cx: &mut App)
      -> Task<Result<acp::PromptResponse>>;
@@ -1166,6 +1166,10 @@ diff --git a/crates/acp_thread/src/connection.rs b/crates/acp_thread/src/connect
 +
 +    fn eido_sync_ui(&self, _session_id: acp::SessionId, _state: serde_json::Value, _cx: &mut App) -> Task<Result<()>> {
 +        Task::ready(Ok(()))
++    }
++
++    fn eido_shortcut(&self, _session_id: acp::SessionId, _key: String, _generation: String, _cx: &mut App) -> Task<Result<bool>> {
++        Task::ready(Ok(false))
 +    }
 +
 +    fn eido_complete(&self, _session_id: acp::SessionId, _text: String, _cursor: usize, _selection: Option<String>, _force: bool, _cx: &mut App) -> Task<Result<serde_json::Value>> {
@@ -1179,7 +1183,23 @@ diff --git a/crates/acp_thread/src/connection.rs b/crates/acp_thread/src/connect
  
      fn retry(&self, _session_id: &acp::SessionId, _cx: &App) -> Option<Rc<dyn AgentSessionRetry>> {
          None
-@@ -830,10 +847,14 @@
+@@ -757,6 +778,7 @@
+         sessions: Arc<Mutex<HashMap<acp::SessionId, Session>>>,
+         permission_requests: HashMap<acp::ToolCallId, PermissionOptions>,
+         next_prompt_updates: Arc<Mutex<Vec<acp::SessionUpdate>>>,
++        pub eido_shortcut_calls: Arc<Mutex<Vec<(acp::SessionId, String, String)>>>,
+         supports_load_session: bool,
+         supports_session_additional_directories: bool,
+         agent_id: AgentId,
+@@ -778,6 +800,7 @@
+         pub fn new() -> Self {
+             Self {
+                 next_prompt_updates: Default::default(),
++                eido_shortcut_calls: Default::default(),
+                 permission_requests: HashMap::default(),
+                 sessions: Arc::default(),
+                 supports_load_session: false,
+@@ -830,10 +853,14 @@
              title: Option<SharedString>,
              cx: &mut gpui::App,
          ) -> Entity<AcpThread> {
@@ -1195,6 +1215,18 @@ diff --git a/crates/acp_thread/src/connection.rs b/crates/acp_thread/src/connect
                      title,
                      Some(work_dirs),
                      self.clone(),
+@@ -895,6 +922,11 @@
+     }
+ 
+     impl AgentConnection for StubAgentConnection {
++        fn eido_shortcut(&self, session_id: acp::SessionId, key: String, generation: String, _cx: &mut App) -> Task<Result<bool>> {
++            self.eido_shortcut_calls.lock().push((session_id, key, generation));
++            Task::ready(Ok(true))
++        }
++
+         fn agent_id(&self) -> AgentId {
+             self.agent_id.clone()
+         }
 diff --git a/crates/acp_thread/src/terminal.rs b/crates/acp_thread/src/terminal.rs
 --- a/crates/acp_thread/src/terminal.rs
 +++ b/crates/acp_thread/src/terminal.rs
@@ -1499,7 +1531,7 @@ diff --git a/crates/agent_servers/src/acp.rs b/crates/agent_servers/src/acp.rs
  
              Ok(thread)
          })
-@@ -1752,6 +1784,42 @@
+@@ -1752,6 +1784,49 @@
                      }
                  }
              }
@@ -1519,6 +1551,13 @@ diff --git a/crates/agent_servers/src/acp.rs b/crates/agent_servers/src/acp.rs
 +        cx.foreground_executor().spawn(async move {
 +            conn.send_request(EidoUiState {session_id, state}).block_task().await?;
 +            Ok(())
++        })
++    }
++
++    fn eido_shortcut(&self, session_id: acp::SessionId, key: String, generation: String, cx: &mut App) -> Task<Result<bool>> {
++        let conn = self.connection.clone();
++        cx.foreground_executor().spawn(async move {
++            Ok(conn.send_request(EidoShortcut {session_id, key, generation}).block_task().await?.handled)
 +        })
 +    }
 +
@@ -1542,7 +1581,7 @@ diff --git a/crates/agent_servers/src/acp.rs b/crates/agent_servers/src/acp.rs
          })
      }
  
-@@ -2459,6 +2527,52 @@
+@@ -2459,6 +2534,52 @@
      }
  
      #[gpui::test]
@@ -1595,7 +1634,7 @@ diff --git a/crates/agent_servers/src/acp.rs b/crates/agent_servers/src/acp.rs
      async fn client_capabilities_include_elicitation_without_acp_beta(
          cx: &mut gpui::TestAppContext,
      ) {
-@@ -3759,7 +3873,7 @@
+@@ -3759,7 +3880,7 @@
          });
  
          let fs = fs::FakeFs::new(cx.executor());
@@ -1604,7 +1643,7 @@ diff --git a/crates/agent_servers/src/acp.rs b/crates/agent_servers/src/acp.rs
          let project = project::Project::test(fs, [std::path::Path::new("/a")], cx).await;
  
          let load_count = Arc::new(AtomicUsize::new(0));
-@@ -3804,7 +3918,9 @@
+@@ -3804,7 +3925,9 @@
              )
              .on_receive_request(
                  async move |_req: acp::NewSessionRequest, responder, _cx| {
@@ -1615,7 +1654,7 @@ diff --git a/crates/agent_servers/src/acp.rs b/crates/agent_servers/src/acp.rs
                  },
                  agent_client_protocol::on_receive_request!(),
              )
-@@ -3956,6 +4072,66 @@
+@@ -3956,6 +4079,66 @@
      }
  
      #[gpui::test]
@@ -1682,7 +1721,7 @@ diff --git a/crates/agent_servers/src/acp.rs b/crates/agent_servers/src/acp.rs
      async fn test_loaded_sessions_keep_state_until_last_handle_drops(
          cx: &mut gpui::TestAppContext,
      ) {
-@@ -4382,6 +4558,22 @@
+@@ -4382,6 +4565,22 @@
  }
  
  fn mcp_servers_for_project(project: &Entity<Project>, cx: &App) -> Vec<acp::McpServer> {
@@ -1705,7 +1744,7 @@ diff --git a/crates/agent_servers/src/acp.rs b/crates/agent_servers/src/acp.rs
      let context_server_store = project.read(cx).context_server_store().read(cx);
      let is_local = project.read(cx).is_local();
      context_server_store
-@@ -4566,6 +4758,66 @@
+@@ -4566,6 +4765,66 @@
      }
  }
  
@@ -1772,7 +1811,7 @@ diff --git a/crates/agent_servers/src/acp.rs b/crates/agent_servers/src/acp.rs
  fn handle_request_permission(
      args: acp::RequestPermissionRequest,
      responder: Responder<acp::RequestPermissionResponse>,
-@@ -4581,15 +4833,15 @@
+@@ -4581,15 +4840,15 @@
      let tool_call_id = args.tool_call.tool_call_id.clone();
      cx.spawn(async move |cx| {
          let result: Result<_, acp::Error> = async {
@@ -1797,7 +1836,7 @@ diff --git a/crates/agent_servers/src/acp.rs b/crates/agent_servers/src/acp.rs
                  .flatten_acp()?;
              cancellation
                  .run_until_cancelled(async { Ok(task.await) })
-@@ -4736,12 +4988,51 @@
+@@ -4736,12 +4995,51 @@
      .detach();
  }
  
@@ -1849,7 +1888,7 @@ diff --git a/crates/agent_servers/src/acp.rs b/crates/agent_servers/src/acp.rs
      let thread = match session_thread(ctx, &args.session_id) {
          Ok(t) => t,
          Err(e) => return respond_err(responder, e),
-@@ -4751,7 +5042,8 @@
+@@ -4751,7 +5049,8 @@
          let result: Result<_, acp::Error> = async {
              thread
                  .update(cx, |thread, cx| {
@@ -1859,7 +1898,7 @@ diff --git a/crates/agent_servers/src/acp.rs b/crates/agent_servers/src/acp.rs
                  })
                  .map_err(acp::Error::from)?
                  .await?;
-@@ -4777,6 +5069,9 @@
+@@ -4777,6 +5076,9 @@
      cx: &mut AsyncApp,
      ctx: &ClientContext,
  ) {
@@ -1869,7 +1908,7 @@ diff --git a/crates/agent_servers/src/acp.rs b/crates/agent_servers/src/acp.rs
      let thread = match session_thread(ctx, &args.session_id) {
          Ok(t) => t,
          Err(e) => return respond_err(responder, e),
-@@ -4788,16 +5083,174 @@
+@@ -4788,16 +5090,179 @@
              .run_until_cancelled(async {
                  thread
                      .update(cx, |thread, cx| {
@@ -1915,6 +1954,11 @@ diff --git a/crates/agent_servers/src/acp.rs b/crates/agent_servers/src/acp.rs
 +}
 +#[derive(Debug, Clone, Serialize, Deserialize, agent_client_protocol::JsonRpcResponse)]
 +struct EidoUiStateResponse { handled: bool }
++
++#[derive(Debug, Clone, Serialize, Deserialize, agent_client_protocol::JsonRpcRequest)]
++#[request(method = "_eido/ui/shortcut", response = EidoUiStateResponse)]
++#[serde(rename_all = "camelCase")]
++struct EidoShortcut { session_id: acp::SessionId, key: String, generation: String }
 +
 +#[derive(Debug, Clone, Serialize, Deserialize, agent_client_protocol::JsonRpcRequest)]
 +#[request(method = "_eido/ui/complete", response = EidoCompletionResponse)]
@@ -2046,7 +2090,7 @@ diff --git a/crates/agent_servers/src/acp.rs b/crates/agent_servers/src/acp.rs
  }
  
  fn handle_session_notification(
-@@ -4983,6 +5436,7 @@
+@@ -4983,6 +5448,7 @@
                      .into_iter()
                      .map(|env| (env.name, env.value))
                      .collect(),
@@ -11964,7 +12008,7 @@ diff --git a/crates/agent_ui/src/conversation_view.rs b/crates/agent_ui/src/conv
              ServerState::Loading { .. } => self
                  .loading_status
                  .clone()
-@@ -1615,6 +1639,92 @@
+@@ -1615,6 +1639,95 @@
  
      pub fn is_loading(&self) -> bool {
          matches!(self.server_state, ServerState::Loading { .. })
@@ -12016,7 +12060,10 @@ diff --git a/crates/agent_ui/src/conversation_view.rs b/crates/agent_ui/src/conv
 +                let view = self.thread_view(session_id).ok_or("Task editor is unavailable")?;
 +                return view.update(cx, |view, cx| {
 +                    match request.action.as_str() {
-+                        "extension_state" => view.eido_pi_ui = serde_json::from_value(request.data.clone()).map_err(|e| e.to_string())?,
++                        "extension_state" => {
++                            view.eido_pi_ui = serde_json::from_value(request.data.clone()).map_err(|e| e.to_string())?;
++                            view.message_editor.update(cx, |editor, _| editor.eido_set_shortcuts(&request.data["shortcuts"]));
++                        },
 +                        "set_editor" | "paste_editor" => {
 +                            let text = request.data["text"].as_str().ok_or("Missing editor text")?;
 +                            view.message_editor.update(cx, |editor, cx| {
@@ -12057,7 +12104,7 @@ diff --git a/crates/agent_ui/src/conversation_view.rs b/crates/agent_ui/src/conv
      }
  
      fn handle_thread_event(
-@@ -1636,6 +1746,11 @@
+@@ -1636,6 +1749,11 @@
              cx.emit(RootThreadUpdated);
          }
          match event {
@@ -12069,7 +12116,7 @@ diff --git a/crates/agent_ui/src/conversation_view.rs b/crates/agent_ui/src/conv
              AcpThreadEvent::StatusChanged => {
                  if let Some(active) = self.thread_view(&session_id) {
                      active.update(cx, |active, cx| {
-@@ -1645,21 +1760,26 @@
+@@ -1645,21 +1763,26 @@
              }
              AcpThreadEvent::NewEntry => {
                  let len = thread.read(cx).entries().len();
@@ -12105,7 +12152,7 @@ diff --git a/crates/agent_ui/src/conversation_view.rs b/crates/agent_ui/src/conv
                          active.sync_editor_mode(cx);
                          active.sync_generating_indicator(cx);
                      });
-@@ -1715,6 +1835,7 @@
+@@ -1715,6 +1838,7 @@
                          matches!(thread.read(cx).status(), ThreadStatus::Generating);
                      active.update(cx, |active, cx| {
                          if !is_generating {
@@ -12113,7 +12160,7 @@ diff --git a/crates/agent_ui/src/conversation_view.rs b/crates/agent_ui/src/conv
                              active.thread_retry_status.take();
                              active.clear_auto_expand_tracking(cx);
                              if active.list_state.is_following_tail() {
-@@ -1730,11 +1851,28 @@
+@@ -1730,11 +1854,28 @@
                              thread.mark_as_subagent_output(cx);
                          });
                      }
@@ -12142,7 +12189,7 @@ diff --git a/crates/agent_ui/src/conversation_view.rs b/crates/agent_ui/src/conv
                          // Don't auto-send while the user is editing the next message.
                          let is_first_editor_focused = active
                              .message_queue
-@@ -1792,6 +1930,7 @@
+@@ -1792,6 +1933,7 @@
                          matches!(thread.read(cx).status(), ThreadStatus::Generating);
                      active.update(cx, |active, cx| {
                          if !is_generating {
@@ -12150,7 +12197,7 @@ diff --git a/crates/agent_ui/src/conversation_view.rs b/crates/agent_ui/src/conv
                              active.thread_retry_status.take();
                              if active.list_state.is_following_tail() {
                                  active.list_state.scroll_to_end();
-@@ -3431,10 +3570,43 @@
+@@ -3431,10 +3573,43 @@
  impl Render for ConversationView {
      fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
          self.sync_request_elicitation_states(window, cx);
@@ -12194,7 +12241,7 @@ diff --git a/crates/agent_ui/src/conversation_view.rs b/crates/agent_ui/src/conv
              ServerState::Loading { .. } => {
                  let label_text = self
                      .loading_status
-@@ -3496,7 +3668,7 @@
+@@ -3496,7 +3671,7 @@
          v_flex()
              .track_focus(&self.focus_handle)
              .size_full()
@@ -12203,10 +12250,44 @@ diff --git a/crates/agent_ui/src/conversation_view.rs b/crates/agent_ui/src/conv
              .child(v_flex().flex_1().min_h_0().child(content))
              .when(!active_thread_renders_request_elicitations, |this| {
                  this.children(request_elicitation_connection.as_ref().map_or_else(
-@@ -3752,6 +3924,86 @@
+@@ -3752,6 +3927,120 @@
  
      use super::*;
  
++    #[gpui::test]
++    async fn test_eido_extension_shortcuts_route_only_from_the_composer(cx: &mut TestAppContext) {
++        init_test(cx);
++        let connection = StubAgentConnection::new().with_agent_id(AgentId::new("eido-pi"));
++        let (view, cx) = setup_conversation_view(StubAgentServer::new(connection.clone()), cx).await;
++        add_to_workspace(view.clone(), cx);
++        cx.run_until_parked();
++        let active = view.read_with(cx, |view, _| view.root_thread_view().unwrap().clone());
++        let thread = active.read_with(cx, |view, _| view.thread.clone());
++        let editor = active.read_with(cx, |view, _| view.message_editor.clone());
++        let shortcut = json!({"key":"ctrl+alt+9","binding":"ctrl-alt-9","generation":"fixture"});
++        editor.update_in(cx, |editor, window, cx| {
++            editor.eido_set_shortcuts(&json!([shortcut]));
++            editor.set_text("Preserved draft", window, cx);
++            editor.focus_handle(cx).focus(window, cx);
++        });
++        cx.simulate_keystrokes("ctrl-alt-9");
++        cx.run_until_parked();
++        let session_id = thread.read_with(cx, |thread, _| thread.session_id().clone());
++        assert_eq!(*connection.eido_shortcut_calls.lock(), vec![(session_id,"ctrl+alt+9".into(),"fixture".into())]);
++        editor.read_with(cx, |editor, cx| assert_eq!(editor.text(cx), "Preserved draft"));
++        cx.update(|window, cx| window.blur(cx));
++        cx.simulate_keystrokes("ctrl-alt-9");
++        cx.run_until_parked();
++        assert_eq!(connection.eido_shortcut_calls.lock().len(),1);
++        editor.update_in(cx, |editor, window, cx| {
++            editor.eido_set_shortcuts(&json!([]));
++            editor.focus_handle(cx).focus(window,cx);
++        });
++        cx.simulate_keystrokes("ctrl-alt-9");
++        cx.run_until_parked();
++        assert_eq!(connection.eido_shortcut_calls.lock().len(),1);
++    }
++
 +    #[gpui::test]
 +    async fn test_eido_native_ui_uses_requesting_editor_and_rejects_unknown_actions(cx: &mut TestAppContext) {
 +        init_test(cx);
@@ -12290,7 +12371,7 @@ diff --git a/crates/agent_ui/src/conversation_view.rs b/crates/agent_ui/src/conv
      #[test]
      fn test_data_retention_error_maps_from_provider_error() {
          // The agent wraps the provider error in a fresh `anyhow::Error`, so
-@@ -4250,6 +4502,213 @@
+@@ -4250,6 +4539,213 @@
              0,
              "No notification should fire when a queued message will be auto-sent on Stopped"
          );
@@ -17615,23 +17696,25 @@ diff --git a/crates/agent_ui/src/mention_set.rs b/crates/agent_ui/src/mention_se
 diff --git a/crates/agent_ui/src/message_editor.rs b/crates/agent_ui/src/message_editor.rs
 --- a/crates/agent_ui/src/message_editor.rs
 +++ b/crates/agent_ui/src/message_editor.rs
-@@ -50,6 +50,7 @@
+@@ -50,6 +50,8 @@
      prompt_capabilities: acp::PromptCapabilities,
      available_commands: Vec<acp::AvailableCommand>,
      available_skills: Vec<AvailableSkill>,
 +    pub(crate) eido_thread: Option<WeakEntity<acp_thread::AcpThread>>,
++    eido_shortcuts: Vec<(String, String, gpui::KeybindingKeystroke)>,
  }
  
  impl SessionCapabilities {
-@@ -62,6 +63,7 @@
+@@ -62,6 +64,8 @@
              prompt_capabilities,
              available_commands,
              available_skills,
 +            eido_thread: None,
++            eido_shortcuts: Vec::new(),
          }
      }
  
-@@ -150,6 +152,18 @@
+@@ -150,6 +154,18 @@
  }
  
  impl PromptCompletionProviderDelegate for MessageEditorCompletionDelegate {
@@ -17650,7 +17733,46 @@ diff --git a/crates/agent_ui/src/message_editor.rs b/crates/agent_ui/src/message
      fn supports_images(&self, _cx: &App) -> bool {
          self.session_capabilities.read().supports_images()
      }
-@@ -2019,19 +2033,35 @@
+@@ -616,6 +632,30 @@
+ 
+     pub fn set_local_commands(&self, commands: Vec<PromptLocalCommand>) {
+         *self.local_commands.write() = commands;
++    }
++
++    pub(crate) fn eido_set_shortcuts(&mut self, value: &serde_json::Value) {
++        self.session_capabilities.write().eido_shortcuts = value.as_array().into_iter().flatten().take(256).filter_map(|item| {
++            let key = item["key"].as_str()?;
++            let generation = item["generation"].as_str()?;
++            let binding = gpui::Keystroke::parse(item["binding"].as_str()?).ok()?;
++            Some((key.to_owned(), generation.to_owned(), gpui::KeybindingKeystroke::from_keystroke(binding)))
++        }).collect();
++    }
++
++    fn eido_key_down(&mut self, event: &gpui::KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
++        let capabilities = self.session_capabilities.read();
++        let Some((key, generation, _)) = capabilities.eido_shortcuts.iter().find(|(_, _, binding)| event.keystroke.should_match(binding)) else { return; };
++        let Some(thread) = capabilities.eido_thread.as_ref().and_then(|thread| thread.upgrade()) else { return; };
++        cx.stop_propagation();
++        if event.is_held { return; }
++        let key = key.clone();
++        let generation = generation.clone();
++        drop(capabilities);
++        let thread = thread.read(cx);
++        let connection = thread.connection().clone();
++        let session_id = thread.session_id().clone();
++        connection.eido_shortcut(session_id, key, generation, cx).detach_and_log_err(cx);
+     }
+ 
+     pub fn set_session_capabilities(
+@@ -2005,6 +2045,7 @@
+     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+         div()
+             .key_context("MessageEditor")
++            .capture_key_down(cx.listener(Self::eido_key_down))
+             .on_action(cx.listener(Self::chat))
+             .on_action(cx.listener(Self::send_immediately))
+             .on_action(cx.listener(Self::chat_with_follow))
+@@ -2019,19 +2060,35 @@
  
                  let text_style = TextStyle {
                      color: cx.theme().colors().text,
@@ -17690,7 +17812,7 @@ diff --git a/crates/agent_ui/src/message_editor.rs b/crates/agent_ui/src/message
                          local_player: cx.theme().players().local(),
                          text: text_style,
                          syntax: cx.theme().syntax().clone(),
-@@ -2772,6 +2802,73 @@
+@@ -2772,6 +2829,73 @@
      impl Render for MessageEditorItem {
          fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
              self.0.clone().into_any_element()
