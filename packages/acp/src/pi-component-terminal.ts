@@ -76,7 +76,8 @@ export async function showPiComponent<T>(pi: AgentSession, client: AgentContext,
     socket=connection;
     let buffered='';
     connection.setEncoding('utf8');
-    connection.on('error', fail);
+    connection.on('error', error => fail(['EPIPE', 'ECONNRESET'].includes((error as NodeJS.ErrnoException).code ?? '')
+      ? new Error('Extension terminal closed.', {cause:error}) : error));
     connection.on('close', () => fail(new Error('Extension terminal closed.')));
     connection.on('data', chunk => {
       buffered += chunk;
