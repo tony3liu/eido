@@ -1,0 +1,43 @@
+{
+  "name": "eido",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "scripts": {
+    "pi": "node packages/acp/node_modules/@earendil-works/pi-coding-agent/dist/cli.js",
+    "dev": "npm run native:run",
+    "doctor": "tsx scripts/tools.ts doctor",
+    "check": "tsc --noEmit",
+    "test": "npm run test:acp && npm run test:pi-settings && python3 scripts/test/test_native_prepare.py",
+    "setup:acp": "npm ci --prefix packages/acp --ignore-scripts --no-audit --no-fund && node scripts/patch-acp.mjs",
+    "test:acp": "tsx --test packages/acp/test/acp.test.ts packages/acp/test/pi-commands.test.ts",
+    "setup:browser": "node scripts/install-browser.mjs",
+    "check:docs": "python3 scripts/check-private-docs.py staged",
+    "native:prepare": "python3 scripts/native.py prepare",
+    "native:check": "python3 scripts/native.py check",
+    "native:build": "python3 scripts/native.py build",
+    "native:run": "python3 scripts/native.py run",
+    "native:fetch": "python3 scripts/native.py fetch",
+    "native:fetch-assets": "python3 scripts/native-assets.py fetch",
+    "native:verify-assets": "python3 scripts/native-assets.py verify",
+    "sync:pi": "node scripts/sync-pi-config.mjs",
+    "test:acp-native": "python3 scripts/native.py test-acp",
+    "test:pi-settings": "node --test scripts/test/pi-settings.test.mjs",
+    "probe": "tsx scripts/tools.ts probe",
+    "test:native": "python3 scripts/native.py test-native",
+    "test:browser": "tsx --test packages/acp/test/browser.test.ts",
+    "test:preview": "tsx --test packages/acp/test/preview.test.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.32.0",
+    "jev-browser": "0.1.1"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.5",
+    "tsx": "4.23.15",
+    "typescript": "7.0.2"
+  }
+}

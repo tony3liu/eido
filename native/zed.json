@@ -1,0 +1,9 @@
+{
+  "repository": "https://github.com/zed-industries/zed",
+  "tag": "v1.22.0",
+  "commit": "76659a55a8c10ed355a070f8764a0b1733e3c115",
+  "archiveUrl": "https://codeload.github.com/zed-industries/zed/tar.gz/76659a55a8c10ed355a070f8764a0b1733e3c115",
+  "archiveName": "zed-76659a55.tar.gz",
+  "sha256": "e668acb395b67102bd05fd1169781ce466f280701b7c41024a1e995d3716c2b0",
+  "rust": "1.98.1"
+}

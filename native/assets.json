@@ -1,0 +1,9 @@
+{
+  "webrtc": {
+    "repository": "zed-industries/livekit-rust-sdks",
+    "tag": "webrtc-0001d84-4",
+    "target": "aarch64-apple-darwin",
+    "asset": "webrtc-mac-arm64-release.zip",
+    "directory": "mac-arm64-release"
+  }
+}

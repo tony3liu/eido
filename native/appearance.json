@@ -1,0 +1,25 @@
+{
+  "theme": {
+    "mode": "system",
+    "light": "Eido Light",
+    "dark": "Eido Dark"
+  },
+  "ui_font_family": ".ZedSans",
+  "ui_font_size": 14,
+  "agent_ui_font_family": ".ZedSans",
+  "agent_ui_font_size": 14,
+  "agent_buffer_font_size": 12,
+  "buffer_font_size": 14,
+  "agent": {
+    "max_content_width": 760,
+    "message_editor_min_lines": 3
+  },
+  "terminal": {
+    "font_size": 13
+  },
+  "title_bar": {
+    "show_sign_in": false,
+    "show_user_menu": false,
+    "show_worktree_name": false
+  }
+}

@@ -29,5 +29,9 @@
 node_modules/
 target/
 dist/
+coverage/
+.pi/
+playwright-report/
+test-results/
 __pycache__/
 *.pyc
