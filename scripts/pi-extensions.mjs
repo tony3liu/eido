@@ -64,11 +64,11 @@ export function createExtensionCenter(directory = join(root, ".local/eido"), fet
   const manager = s => new DefaultPackageManager({cwd: directory, agentDir: directory, settingsManager: s});
   const configured = () => readJson(join(directory, "settings.json"), {});
   const mutateSettings = fn => new FileSettingsStorage(directory, directory).withLock("global", raw => JSON.stringify(fn(raw ? JSON.parse(raw) : {}), null, 2) + "\n");
-  async function locked(fn) {
+  async function locked(fn, wait = false) {
     await mkdir(directory, {recursive: true, mode: 0o700});
     const lockPath = join(directory, ".extensions.lock");
     // pi's lock implementation refreshes live operations and recovers crashed owners.
-    const release = await lockfile.lock(lockPath, {realpath: false, stale: 10_000, retries: 0})
+    const release = await lockfile.lock(lockPath, {realpath: false, stale: 10_000, retries: wait ? {retries: 60, minTimeout: 250, maxTimeout: 250, factor: 1} : 0})
       .catch(() => {throw new Error("Another extension operation is running. Try again when it finishes.");});
     try { return await fn(); } finally {await release();}
   }
@@ -212,7 +212,7 @@ export function createExtensionCenter(directory = join(root, ".local/eido"), fet
       await applyPending(); await mkdir(leases, {recursive: true, mode: 0o700});
       const path = join(leases, `${process.pid}.json`); await atomic(path, {startedAt: new Date().toISOString()});
       return () => rm(path, {force: true});
-    });
+    }, true);
   }};
 }
 

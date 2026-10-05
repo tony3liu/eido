@@ -1284,7 +1284,7 @@ diff --git a/crates/agent_servers/src/acp.rs b/crates/agent_servers/src/acp.rs
  
              Ok(thread)
          })
-@@ -1752,6 +1780,33 @@
+@@ -1752,6 +1780,34 @@
                      }
                  }
              }
@@ -1313,12 +1313,13 @@ diff --git a/crates/agent_servers/src/acp.rs b/crates/agent_servers/src/acp.rs
 +            let response = conn.send_request(EidoSteering {
 +                session_id: params.session_id,
 +                prompt: params.prompt,
++                meta: params.meta,
 +            }).block_task().await?;
 +            Ok(response.outcome == "injected")
          })
      }
  
-@@ -2459,6 +2514,52 @@
+@@ -2459,6 +2515,52 @@
      }
  
      #[gpui::test]
@@ -1371,7 +1372,7 @@ diff --git a/crates/agent_servers/src/acp.rs b/crates/agent_servers/src/acp.rs
      async fn client_capabilities_include_elicitation_without_acp_beta(
          cx: &mut gpui::TestAppContext,
      ) {
-@@ -3759,7 +3860,7 @@
+@@ -3759,7 +3861,7 @@
          });
  
          let fs = fs::FakeFs::new(cx.executor());
@@ -1380,7 +1381,7 @@ diff --git a/crates/agent_servers/src/acp.rs b/crates/agent_servers/src/acp.rs
          let project = project::Project::test(fs, [std::path::Path::new("/a")], cx).await;
  
          let load_count = Arc::new(AtomicUsize::new(0));
-@@ -3804,7 +3905,9 @@
+@@ -3804,7 +3906,9 @@
              )
              .on_receive_request(
                  async move |_req: acp::NewSessionRequest, responder, _cx| {
@@ -1391,7 +1392,7 @@ diff --git a/crates/agent_servers/src/acp.rs b/crates/agent_servers/src/acp.rs
                  },
                  agent_client_protocol::on_receive_request!(),
              )
-@@ -3956,6 +4059,66 @@
+@@ -3956,6 +4060,66 @@
      }
  
      #[gpui::test]
@@ -1458,7 +1459,7 @@ diff --git a/crates/agent_servers/src/acp.rs b/crates/agent_servers/src/acp.rs
      async fn test_loaded_sessions_keep_state_until_last_handle_drops(
          cx: &mut gpui::TestAppContext,
      ) {
-@@ -4382,6 +4545,22 @@
+@@ -4382,6 +4546,22 @@
  }
  
  fn mcp_servers_for_project(project: &Entity<Project>, cx: &App) -> Vec<acp::McpServer> {
@@ -1481,7 +1482,7 @@ diff --git a/crates/agent_servers/src/acp.rs b/crates/agent_servers/src/acp.rs
      let context_server_store = project.read(cx).context_server_store().read(cx);
      let is_local = project.read(cx).is_local();
      context_server_store
-@@ -4566,6 +4745,66 @@
+@@ -4566,6 +4746,66 @@
      }
  }
  
@@ -1548,7 +1549,7 @@ diff --git a/crates/agent_servers/src/acp.rs b/crates/agent_servers/src/acp.rs
  fn handle_request_permission(
      args: acp::RequestPermissionRequest,
      responder: Responder<acp::RequestPermissionResponse>,
-@@ -4581,15 +4820,15 @@
+@@ -4581,15 +4821,15 @@
      let tool_call_id = args.tool_call.tool_call_id.clone();
      cx.spawn(async move |cx| {
          let result: Result<_, acp::Error> = async {
@@ -1573,7 +1574,7 @@ diff --git a/crates/agent_servers/src/acp.rs b/crates/agent_servers/src/acp.rs
                  .flatten_acp()?;
              cancellation
                  .run_until_cancelled(async { Ok(task.await) })
-@@ -4777,6 +5016,9 @@
+@@ -4777,6 +5017,9 @@
      cx: &mut AsyncApp,
      ctx: &ClientContext,
  ) {
@@ -1583,7 +1584,7 @@ diff --git a/crates/agent_servers/src/acp.rs b/crates/agent_servers/src/acp.rs
      let thread = match session_thread(ctx, &args.session_id) {
          Ok(t) => t,
          Err(e) => return respond_err(responder, e),
-@@ -4788,16 +5030,165 @@
+@@ -4788,16 +5031,167 @@
              .run_until_cancelled(async {
                  thread
                      .update(cx, |thread, cx| {
@@ -1636,6 +1637,8 @@ diff --git a/crates/agent_servers/src/acp.rs b/crates/agent_servers/src/acp.rs
 +struct EidoSteering {
 +    session_id: acp::SessionId,
 +    prompt: Vec<acp::ContentBlock>,
++    #[serde(rename = "_meta", skip_serializing_if = "Option::is_none")]
++    meta: Option<acp::Meta>,
 +}
 +#[derive(Debug, Clone, Serialize, Deserialize, agent_client_protocol::JsonRpcResponse)]
 +struct EidoSteeringResponse { outcome: String }
@@ -1751,7 +1754,7 @@ diff --git a/crates/agent_servers/src/acp.rs b/crates/agent_servers/src/acp.rs
  }
  
  fn handle_session_notification(
-@@ -4983,6 +5374,7 @@
+@@ -4983,6 +5377,7 @@
                      .into_iter()
                      .map(|env| (env.name, env.value))
                      .collect(),
@@ -10175,16 +10178,17 @@ diff --git a/crates/agent_ui/src/conversation_view/elicitation.rs b/crates/agent
 diff --git a/crates/agent_ui/src/conversation_view/message_queue.rs b/crates/agent_ui/src/conversation_view/message_queue.rs
 --- a/crates/agent_ui/src/conversation_view/message_queue.rs
 +++ b/crates/agent_ui/src/conversation_view/message_queue.rs
-@@ -8,6 +8,8 @@
+@@ -8,6 +8,9 @@
  pub struct QueueEntry {
      pub id: QueueEntryId,
      pub content: Vec<acp::ContentBlock>,
 +    pub delivery_id: String,
 +    pub needs_review: bool,
++    pub boundary: bool,
      pub tracked_buffers: Vec<Entity<Buffer>>,
      /// When true, this message interrupts the agent at the next turn boundary
      /// instead of waiting for generation to fully complete. Only the front
-@@ -31,6 +33,7 @@
+@@ -31,6 +34,7 @@
  /// the state machine that decides when they're auto-sent.
  pub struct MessageQueue {
      entries: VecDeque<QueueEntry>,
@@ -10192,7 +10196,7 @@ diff --git a/crates/agent_ui/src/conversation_view/message_queue.rs b/crates/age
      processing_state: ProcessingState,
      can_fast_track: bool,
      next_id: usize,
-@@ -40,6 +43,7 @@
+@@ -40,6 +44,7 @@
      fn default() -> Self {
          Self {
              entries: VecDeque::new(),
@@ -10200,7 +10204,7 @@ diff --git a/crates/agent_ui/src/conversation_view/message_queue.rs b/crates/age
              processing_state: ProcessingState::AutoProcess,
              can_fast_track: false,
              next_id: 0,
-@@ -48,6 +52,45 @@
+@@ -48,12 +53,52 @@
  }
  
  impl MessageQueue {
@@ -10222,6 +10226,7 @@ diff --git a/crates/agent_ui/src/conversation_view/message_queue.rs b/crates/age
 +            let mut entry = self.in_flight.remove(index);
 +            if !completed {
 +                entry.needs_review = true;
++                entry.boundary = false;
 +                self.entries.push_front(entry);
 +                self.pause();
 +            }
@@ -10244,9 +10249,22 @@ diff --git a/crates/agent_ui/src/conversation_view/message_queue.rs b/crates/age
 +    }
 +
      pub fn is_empty(&self) -> bool {
-         self.entries.is_empty()
+-        self.entries.is_empty()
++        self.entries.is_empty() && !self.in_flight.iter().any(|entry| entry.boundary)
      }
-@@ -85,7 +128,7 @@
+ 
+     pub fn len(&self) -> usize {
+-        self.entries.len()
++        self.entries.len() + self.in_flight.iter().filter(|entry| entry.boundary).count()
+     }
+ 
+     pub fn first(&self) -> Option<&QueueEntry> {
+@@ -81,11 +126,11 @@
+     }
+ 
+     pub fn iter(&self) -> impl Iterator<Item = &QueueEntry> {
+-        self.entries.iter()
++        self.in_flight.iter().filter(|entry| entry.boundary).chain(self.entries.iter())
      }
  
      pub fn can_fast_track(&self) -> bool {
@@ -10255,7 +10273,18 @@ diff --git a/crates/agent_ui/src/conversation_view/message_queue.rs b/crates/age
      }
  
      pub fn entry_by_id(&self, id: QueueEntryId) -> Option<&QueueEntry> {
-@@ -131,7 +174,7 @@
+@@ -111,6 +156,10 @@
+         self.entries.push_back(entry);
+         self.processing_state = ProcessingState::AutoProcess;
+         self.can_fast_track = true;
++    }
++
++    pub fn prioritize(&mut self, id: QueueEntryId) {
++        if let Some(entry) = self.remove(id) { self.entries.push_front(entry); }
+     }
+ 
+     pub fn remove(&mut self, id: QueueEntryId) -> Option<QueueEntry> {
+@@ -131,7 +180,7 @@
      /// the dispatch will cancel it, so we must absorb that cancellation's
      /// Stopped event to avoid double-sending the next entry.
      pub fn try_fast_track(&mut self, is_generating: bool) -> Option<QueueEntry> {
@@ -10264,7 +10293,7 @@ diff --git a/crates/agent_ui/src/conversation_view/message_queue.rs b/crates/age
              return None;
          }
          self.can_fast_track = false;
-@@ -157,7 +200,7 @@
+@@ -157,7 +206,7 @@
              ProcessingState::Paused => None,
              ProcessingState::AutoProcess => {
                  // Don't auto-send while the user is editing the next message.
@@ -10273,7 +10302,7 @@ diff --git a/crates/agent_ui/src/conversation_view/message_queue.rs b/crates/age
                      None
                  } else {
                      self.entries.pop_front()
-@@ -170,6 +213,7 @@
+@@ -170,6 +219,7 @@
      /// flight, the dispatch will cancel it, so we must absorb that
      /// cancellation's Stopped event.
      pub fn send_now(&mut self, id: QueueEntryId, is_generating: bool) -> Option<QueueEntry> {
@@ -10281,7 +10310,7 @@ diff --git a/crates/agent_ui/src/conversation_view/message_queue.rs b/crates/age
          let entry = self.remove(id)?;
          if is_generating {
              self.processing_state = ProcessingState::AbsorbingCancel;
-@@ -179,6 +223,14 @@
+@@ -179,6 +229,14 @@
  
      /// Called when the user stops generation; queued messages stay put until
      /// the user re-engages.
@@ -10444,7 +10473,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
          }
      }
  
-@@ -1477,7 +1529,93 @@
+@@ -1477,7 +1529,166 @@
          }
      }
  
@@ -10462,34 +10491,107 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
 +        cx.notify();
 +    }
 +
++    pub(super) fn eido_reconcile_boundary(&mut self, cx: &mut Context<Self>) {
++        let ids: Vec<_> = self.message_queue.iter().filter(|entry| entry.boundary).map(|entry| entry.delivery_id.clone()).collect();
++        if ids.is_empty() { return; }
++        let connection = self.thread.read(cx).connection().clone();
++        let session = self.session_id.clone();
++        cx.spawn(async move |this, cx| {
++            for ids in ids.chunks(256) {
++                let response = cx.update(|cx| connection.eido_delivery_status(session.clone(), ids.to_vec(), cx)).await;
++                this.update(cx, |this, cx| {
++                    match response {
++                        Ok(response) => {
++                            if let Some(rows) = response["deliveries"].as_array() {
++                                for row in rows {
++                                    if let (Some(id), Some(state)) = (row["id"].as_str(), row["state"].as_str()) {
++                                        if state != "running" { this.eido_delivery_settled(id, state == "completed", cx); }
++                                    }
++                                }
++                            }
++                        }
++                        Err(error) => {
++                            for id in ids { this.eido_delivery_settled(id, false, cx); }
++                            this.eido_delivery_status = Some(format!("Check agent history before resending: {error}").into());
++                            cx.notify();
++                        }
++                    }
++                }).ok();
++            }
++        }).detach();
++    }
++
++    pub(super) fn eido_delivery_settled(&mut self, id: &str, completed: bool, cx: &mut Context<Self>) {
++        self.message_queue.finish_delivery(id, completed);
++        if completed {
++            self.message_queue.reconcile(&serde_json::json!({"deliveries":[{"id":id,"state":"completed"}]}));
++        }
++        let _ = self.eido_persist_queue(cx);
++        cx.notify();
++    }
++
 +    pub fn eido_send_next(&mut self, window: &mut Window, cx: &mut Context<Self>) {
 +        if self.message_editor.read(cx).is_empty(cx) || self.is_loading_contents { return; }
-+        let thread = self.eido_recipient().map(|view| view.read(cx).thread.clone()).unwrap_or_else(|| self.thread.clone());
++        let selected = self.eido_recipient();
++        let thread = selected.as_ref().map(|recipient| recipient.read(cx).thread.clone()).unwrap_or_else(|| self.thread.clone());
++        let recipient = selected.unwrap_or_else(|| cx.entity());
 +        let target = thread.read(cx).title().unwrap_or_else(|| "Main agent".into());
 +        let session_id = thread.read(cx).session_id().clone();
 +        let connection = thread.read(cx).connection().clone();
 +        let editor = self.message_editor.clone();
 +        let snapshot = editor.read(cx).text(cx);
++        let is_command = snapshot.trim_start().starts_with('/');
 +        let contents = self.resolve_message_contents(&editor, cx);
 +        self.is_loading_contents = true;
 +        self.eido_delivery_status = Some(format!("Sending to {target}…").into());
 +        cx.notify();
 +        cx.spawn_in(window, async move |this, cx| {
++            let mut delivery_id = None;
 +            let result: Result<()> = async {
-+                let (content, _) = contents.await?;
++                let (content, tracked_buffers) = contents.await?;
 +                if content.is_empty() { return Ok(()); }
-+                let injected = cx.update(|_, cx| connection.eido_send_next(acp::PromptRequest::new(session_id, content.clone()), cx))?.await?;
-+                // If pi became idle before delivery, send a normal explicit user turn.
-+                if !injected {
-+                    thread.update(cx, |thread, cx| thread.send(content, cx)).await?;
++                let (id, queue_id, persisted) = recipient.update_in(cx, |recipient, window, cx| {
++                    recipient.add_to_queue(content.clone(), tracked_buffers, window, cx);
++                    let id = recipient.message_queue.last_id().unwrap();
++                    let delivery_id = recipient.message_queue.entry_by_id(id).unwrap().delivery_id.clone();
++                    if is_command {
++                        // pi.steer does not execute slash commands. Preserve command
++                        // dispatch and give it first place after the current turn.
++                        recipient.message_queue.prioritize(id);
++                    } else {
++                        let mut entry = recipient.message_queue.remove(id).unwrap();
++                        entry.boundary = true;
++                        recipient.message_queue.begin_delivery(entry);
++                    }
++                    let persisted = recipient.eido_persist_queue(cx);
++                    cx.notify();
++                    (delivery_id, id, persisted)
++                })?;
++                delivery_id = Some(id.clone());
++                persisted.await.map_err(anyhow::Error::msg)?;
++                if is_command {
++                    recipient.update_in(cx, |recipient, window, cx| {
++                        if !recipient.eido_is_generating(cx) { recipient.send_queued_message_now(queue_id, window, cx); }
++                    })?;
++                } else {
++                    let mut request = acp::PromptRequest::new(session_id, content.clone());
++                    request.meta = Some(acp::Meta::from_iter([("eidoDeliveryId".into(), id.clone().into())]));
++                    let injected = cx.update(|_, cx| connection.eido_send_next(request, cx))?.await?;
++                    if !injected {
++                        let response = thread.update(cx, |thread, cx| thread.eido_send_delivery(content, false, id.clone(), cx)).await?;
++                        recipient.update(cx, |recipient, cx| recipient.eido_delivery_settled(&id, response.is_some_and(|response| response.stop_reason == acp::StopReason::EndTurn), cx));
++                    }
 +                }
 +                this.update_in(cx, |this, window, cx| {
 +                    if editor.read(cx).text(cx) == snapshot { editor.update(cx, |editor, cx| editor.clear(window, cx)); }
 +                    this.eido_recipient = None;
-+                    this.eido_delivery_status = Some(format!("{} · {target}", if injected { "Queued for next boundary" } else { "Reply received" }).into());
++                    this.eido_delivery_status = is_command.then(|| format!("Command queued first for {target}").into());
 +                })?;
 +                Ok(())
 +            }.await;
++            if result.is_err() {
++                if let Some(id) = delivery_id { recipient.update(cx, |recipient, cx| recipient.eido_delivery_settled(&id, false, cx)); }
++            }
 +            this.update(cx, |this, cx| {
 +                this.is_loading_contents = false;
 +                if let Err(error) = result { this.eido_delivery_status = Some(format!("Message not delivered: {error}").into()); }
@@ -10538,7 +10640,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
          let thread = &self.thread;
  
          if self.is_loading_contents {
-@@ -1504,7 +1642,7 @@
+@@ -1504,7 +1715,7 @@
  
          let text = message_editor.read(cx).text(cx);
          let text = text.trim();
@@ -10547,7 +10649,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
              let connection = thread.read(cx).connection().clone();
              let can_login = !connection.auth_methods().is_empty();
              // Does the agent have a specific logout command? Prefer that in case they need to reset internal state.
-@@ -1662,6 +1800,17 @@
+@@ -1662,6 +1873,17 @@
          window: &mut Window,
          cx: &mut Context<Self>,
      ) {
@@ -10565,7 +10667,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
          let session_id = self.thread.read(cx).session_id().clone();
          let parent_session_id = self.thread.read(cx).parent_session_id().cloned();
          let agent_telemetry_id = self.thread.read(cx).connection().telemetry_id();
-@@ -1681,9 +1830,10 @@
+@@ -1681,9 +1903,10 @@
  
          let side = crate::agent_sidebar_side(cx);
  
@@ -10577,7 +10679,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
              };
  
              let generation = this.update(cx, |this, cx| {
-@@ -1753,7 +1903,9 @@
+@@ -1753,7 +1976,9 @@
                      side = side
                  );
  
@@ -10588,7 +10690,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
                      thread.send_command(contents, cx)
                  } else {
                      thread.send(contents, cx)
-@@ -1785,11 +1937,19 @@
+@@ -1785,11 +2010,19 @@
                  turn_time_ms,
                  side = side
              );
@@ -10610,7 +10712,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
                  this.update(cx, |this, cx| {
                      this.handle_thread_error(err, cx);
                  })
-@@ -1811,6 +1971,10 @@
+@@ -1811,6 +2044,10 @@
      }
  
      pub fn interrupt_and_send(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -10621,7 +10723,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
          let thread = &self.thread;
  
          if self.is_loading_contents {
-@@ -2104,6 +2268,76 @@
+@@ -2104,6 +2341,76 @@
          .detach_and_log_err(cx);
      }
  
@@ -10698,16 +10800,17 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
      pub fn add_to_queue(
          &mut self,
          content: Vec<acp::ContentBlock>,
-@@ -2143,6 +2377,8 @@
+@@ -2143,6 +2450,9 @@
          self.message_queue.enqueue(QueueEntry {
              id,
              content,
 +            delivery_id: uuid::Uuid::new_v4().to_string(),
 +            needs_review: false,
++            boundary: false,
              tracked_buffers,
              steer: false,
              editor,
-@@ -2201,6 +2437,7 @@
+@@ -2201,6 +2511,7 @@
                      entry.content = content;
                      entry.tracked_buffers = tracked_buffers;
                  }
@@ -10715,7 +10818,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
                  cx.notify();
              })?;
  
-@@ -2215,6 +2452,7 @@
+@@ -2215,6 +2526,7 @@
          cx: &mut Context<Self>,
      ) -> Option<QueueEntry> {
          let removed = self.message_queue.remove(id);
@@ -10723,7 +10826,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
          if removed.is_some() {
              self.sync_queue_flag_to_native_thread(cx);
          }
-@@ -2227,7 +2465,8 @@
+@@ -2227,7 +2539,8 @@
          cx.notify();
      }
  
@@ -10733,7 +10836,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
          if let Some(native_thread) = self.as_native_thread(cx) {
              // By default queued messages wait for the turn to fully complete.
              // Only a "steering" front message ends the turn at the next boundary.
-@@ -2244,6 +2483,11 @@
+@@ -2244,6 +2557,11 @@
          window: &mut Window,
          cx: &mut Context<Self>,
      ) {
@@ -10745,7 +10848,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
          let is_generating = self.thread.read(cx).status() == acp_thread::ThreadStatus::Generating;
          if let Some(entry) = self.message_queue.send_now(id, is_generating) {
              self.dispatch_queued_entry(entry, window, cx);
-@@ -2259,14 +2503,18 @@
+@@ -2259,14 +2577,18 @@
          window: &mut Window,
          cx: &mut Context<Self>,
      ) {
@@ -10766,7 +10869,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
  
          // A queued message can itself be a built-in command (e.g. the user typed
          // `/compact` while a turn was generating). Detect that so we run it as a
-@@ -2289,6 +2537,7 @@
+@@ -2289,6 +2611,7 @@
  
          let should_be_following = self.should_be_following;
          let contents_task = cx.spawn_in(window, async move |_this, cx| {
@@ -10774,7 +10877,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
              cancelled.await;
              if should_be_following {
                  workspace
-@@ -2301,7 +2550,7 @@
+@@ -2301,7 +2624,7 @@
              Ok(Some((content, tracked_buffers)))
          });
  
@@ -10783,7 +10886,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
      }
  
      pub fn move_queued_message_to_main_editor(
-@@ -4350,7 +4599,7 @@
+@@ -4350,7 +4673,7 @@
          )
      }
  
@@ -10792,7 +10895,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
          &mut self,
          window: &mut Window,
          cx: &mut Context<Self>,
-@@ -4370,8 +4619,20 @@
+@@ -4370,8 +4693,20 @@
          };
  
          let max_content_width = AgentSettings::get_global(cx).max_content_width;
@@ -10814,7 +10917,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
  
          h_flex()
              .py_2()
-@@ -4381,8 +4642,9 @@
+@@ -4381,8 +4716,9 @@
              .map(|this| {
                  if has_messages {
                      this.on_action(cx.listener(Self::expand_message_editor))
@@ -10826,7 +10929,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
                          .when(editor_expanded, |this| this.h(vh(0.8, window)))
                  } else {
                      this.flex_1().size_full()
-@@ -4399,6 +4661,9 @@
+@@ -4399,6 +4735,9 @@
                      .flex_grow_0()
                      .justify_between()
                      .gap_2()
@@ -10836,7 +10939,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
                      .child(
                          v_flex()
                              .relative()
-@@ -4407,6 +4672,10 @@
+@@ -4407,6 +4746,10 @@
                              .when(fills_container, |this| this.flex_1())
                              .pt_1()
                              .pr_2p5()
@@ -10847,7 +10950,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
                              .child(self.message_editor.clone())
                              .when(has_messages, |this| {
                                  this.child(
-@@ -4441,6 +4710,9 @@
+@@ -4441,6 +4784,9 @@
                                  )
                              }),
                      )
@@ -10857,7 +10960,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
                      .child(
                          h_flex()
                              .w_full()
-@@ -4464,6 +4736,9 @@
+@@ -4464,6 +4810,9 @@
                                      .flex_wrap()
                                      .gap_1()
                                      .children(self.render_token_usage(cx))
@@ -10867,7 +10970,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
                                      .children(self.profile_selector.clone())
                                      .map(|this| match self.config_options_view.clone() {
                                          Some(config_view) => this.child(config_view),
-@@ -4528,11 +4803,16 @@
+@@ -4528,11 +4877,18 @@
              .id("message_queue_list")
              .max_h_40()
              .overflow_y_scroll()
@@ -10879,22 +10982,61 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
                  let editor = &entry.editor;
                  let is_next = index == 0;
 -                let (icon_color, tooltip_text) = if is_next {
-+                let (icon_color, tooltip_text) = if entry.needs_review {
++                let (icon_color, tooltip_text) = if entry.boundary {
++                    (Color::Muted, "Waiting for pi to consume this message at its next step")
++                } else if entry.needs_review {
 +                    (Color::Warning, "Delivery interrupted. Review agent history before resending.")
 +                } else if is_next {
                      (Color::Accent, "Next in Queue")
                  } else {
                      (Color::Muted, "In Queue")
-@@ -4667,7 +4947,7 @@
+@@ -4571,7 +4927,7 @@
+                             .min_w(min_width)
+                             .justify_end()
+                             .child(
+-                                IconButton::new(("edit", index), IconName::Pencil)
++                                IconButton::new(("edit", index), IconName::Pencil).disabled(entry.boundary)
+                                     .icon_size(IconSize::Small)
+                                     .tooltip(|_window, cx| {
+                                         Tooltip::with_meta(
+@@ -4595,6 +4951,7 @@
+                             .child(
+                                 Button::new(("send_now_focused", index), "Send Now")
+                                     .label_size(LabelSize::Small)
++                                    .disabled(entry.boundary)
+                                     .style(ButtonStyle::Outlined)
+                                     .key_binding(
+                                         KeyBinding::for_action_in(
+@@ -4615,7 +4972,7 @@
+                             .min_w(min_width)
+                             .justify_end()
+                             .child(
+-                                IconButton::new(("delete", index), IconName::Trash)
++                                IconButton::new(("delete", index), IconName::Trash).disabled(entry.boundary)
+                                     .icon_size(IconSize::Small)
+                                     .tooltip({
+                                         let focus_handle = focus_handle.clone();
+@@ -4638,7 +4995,7 @@
+                                     })),
+                             )
+                             .child(
+-                                IconButton::new(("edit", index), IconName::Pencil)
++                                IconButton::new(("edit", index), IconName::Pencil).disabled(entry.boundary)
+                                     .icon_size(IconSize::Small)
+                                     .tooltip({
+                                         let focus_handle = focus_handle.clone();
+@@ -4667,8 +5024,9 @@
                                  ))
                              })
                              .child(
 -                                Button::new(("send_now", index), "Send Now")
-+                                Button::new(("send_now", index), if entry.needs_review { "Review" } else { "Send Now" })
++                                Button::new(("send_now", index), if entry.boundary { "Sending next…" } else if entry.needs_review { "Review" } else { "Send Now" })
                                      .label_size(LabelSize::Small)
++                                    .disabled(entry.boundary)
                                      .when(is_next, |this| this.style(ButtonStyle::Outlined))
                                      .when(is_next && message_editor.is_empty(cx), |this| {
-@@ -6261,6 +6541,11 @@
+                                         let action: Box<dyn gpui::Action> = if can_fast_track {
+@@ -6261,6 +6619,11 @@
                                                  s.border_color(focus_border.opacity(0.8))
                                              })
                                      })
@@ -10906,7 +11048,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
                                      .text_xs()
                                      .child(editor.clone().into_any_element())
                              )
-@@ -7278,7 +7563,7 @@
+@@ -7278,7 +7641,7 @@
  
      pub(crate) fn sync_editor_mode(&mut self, cx: &mut Context<Self>) {
          let has_messages = self.list_state.item_count() > 0;
@@ -10915,7 +11057,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
  
          if !has_messages {
              self.editor_expanded = false;
-@@ -7299,7 +7584,11 @@
+@@ -7299,7 +7662,11 @@
          } else {
              EditorMode::AutoHeight {
                  min_lines: AgentSettings::get_global(cx).message_editor_min_lines,
@@ -10928,7 +11070,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
              }
          };
          self.message_editor.update(cx, |editor, cx| {
-@@ -7326,6 +7615,7 @@
+@@ -7326,6 +7693,7 @@
      }
  
      fn render_generating(&self, confirmation: bool, cx: &App) -> impl IntoElement {
@@ -10936,7 +11078,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
          let show_stats = AgentSettings::get_global(cx).show_turn_stats;
          let elapsed_label = show_stats
              .then(|| {
-@@ -7378,15 +7668,23 @@
+@@ -7378,15 +7746,23 @@
                      )
                  } else if is_blocked_on_terminal_command {
                      this
@@ -10966,7 +11108,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
              .when_some(elapsed_label, |this, elapsed| {
                  this.child(
                      Label::new(elapsed)
-@@ -7505,7 +7803,7 @@
+@@ -7505,7 +7881,7 @@
              }
          }
  
@@ -10975,7 +11117,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
  
          v_flex()
              .id(("thinking-block", chunk_ix))
-@@ -7532,7 +7830,7 @@
+@@ -7532,7 +7908,7 @@
                                  div()
                                      .text_size(self.tool_name_font_size())
                                      .text_color(cx.theme().colors().text_muted)
@@ -10984,7 +11126,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
                              ),
                      )
                      .child(
-@@ -10082,6 +10380,11 @@
+@@ -10082,6 +10458,11 @@
              .into_any_element()
          };
  
@@ -10996,7 +11138,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
          let gradient_overlay = {
              div()
                  .absolute()
-@@ -10089,24 +10392,11 @@
+@@ -10089,24 +10470,11 @@
                  .right_0()
                  .w_12()
                  .h_full()
@@ -11026,7 +11168,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
          };
  
          h_flex()
-@@ -10693,6 +10983,8 @@
+@@ -10693,6 +11061,8 @@
                  let model = thread.model()?;
                  Some(model.name().0)
              });
@@ -11035,7 +11177,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
          let thread_title = thread
              .as_ref()
              .and_then(|t| t.read(cx).title())
-@@ -10811,7 +11103,7 @@
+@@ -10811,7 +11181,7 @@
                                                      .flex_1()
                                                      .truncate(),
                                              )
@@ -11044,7 +11186,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
                                                  this.child(
                                                      Label::new(format!("· {model_name}"))
                                                          .size(LabelSize::Custom(
-@@ -12293,6 +12585,31 @@
+@@ -12293,6 +12663,31 @@
                          .size_full()
                          .child(self.render_entries(cx))
                          .vertical_scrollbar_for(&list_state, window, cx)
@@ -11076,7 +11218,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
                          .into_any()
                  } else {
                      this.into_any()
-@@ -12607,6 +12924,10 @@
+@@ -12607,6 +13002,10 @@
                      .flatten(),
                  |this, bar| this.child(bar),
              )
@@ -11087,7 +11229,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
              .child(conversation)
              .children(self.render_multi_root_callout(cx))
              .children(self.render_activity_bar(window, cx))
-@@ -12631,7 +12952,9 @@
+@@ -12631,7 +13030,9 @@
              )
              .children(self.render_token_limit_callout(cx))
              .children(self.render_request_elicitations(cx))
@@ -11178,7 +11320,7 @@ diff --git a/crates/agent_ui/src/conversation_view.rs b/crates/agent_ui/src/conv
              ServerState::Loading { .. } => self
                  .loading_status
                  .clone()
-@@ -1615,6 +1639,85 @@
+@@ -1615,6 +1639,92 @@
  
      pub fn is_loading(&self) -> bool {
          matches!(self.server_state, ServerState::Loading { .. })
@@ -11218,6 +11360,13 @@ diff --git a/crates/agent_ui/src/conversation_view.rs b/crates/agent_ui/src/conv
 +                        else { panel.eido_new_thread(window, cx); }
 +                    });
 +                });
++            }
++            "delivery_state" => {
++                let id = request.data["id"].as_str().ok_or("Missing delivery ID")?;
++                let state = request.data["state"].as_str().ok_or("Missing delivery state")?;
++                if state != "completed" && state != "interrupted" { return Err("Invalid delivery state".into()); }
++                let view = self.thread_view(session_id).ok_or("Target agent is unavailable")?;
++                view.update(cx, |view, cx| view.eido_delivery_settled(id, state == "completed", cx));
 +            }
 +            "extension_state" | "set_editor" | "paste_editor" | "expand_tools" => {
 +                let view = self.thread_view(session_id).ok_or("Task editor is unavailable")?;
@@ -11264,7 +11413,7 @@ diff --git a/crates/agent_ui/src/conversation_view.rs b/crates/agent_ui/src/conv
      }
  
      fn handle_thread_event(
-@@ -1636,6 +1739,11 @@
+@@ -1636,6 +1746,11 @@
              cx.emit(RootThreadUpdated);
          }
          match event {
@@ -11276,7 +11425,7 @@ diff --git a/crates/agent_ui/src/conversation_view.rs b/crates/agent_ui/src/conv
              AcpThreadEvent::StatusChanged => {
                  if let Some(active) = self.thread_view(&session_id) {
                      active.update(cx, |active, cx| {
-@@ -1645,21 +1753,26 @@
+@@ -1645,21 +1760,26 @@
              }
              AcpThreadEvent::NewEntry => {
                  let len = thread.read(cx).entries().len();
@@ -11312,7 +11461,15 @@ diff --git a/crates/agent_ui/src/conversation_view.rs b/crates/agent_ui/src/conv
                          active.sync_editor_mode(cx);
                          active.sync_generating_indicator(cx);
                      });
-@@ -1730,11 +1843,28 @@
+@@ -1715,6 +1835,7 @@
+                         matches!(thread.read(cx).status(), ThreadStatus::Generating);
+                     active.update(cx, |active, cx| {
+                         if !is_generating {
++                            active.eido_reconcile_boundary(cx);
+                             active.thread_retry_status.take();
+                             active.clear_auto_expand_tracking(cx);
+                             if active.list_state.is_following_tail() {
+@@ -1730,11 +1851,28 @@
                              thread.mark_as_subagent_output(cx);
                          });
                      }
@@ -11341,7 +11498,15 @@ diff --git a/crates/agent_ui/src/conversation_view.rs b/crates/agent_ui/src/conv
                          // Don't auto-send while the user is editing the next message.
                          let is_first_editor_focused = active
                              .message_queue
-@@ -3431,10 +3561,43 @@
+@@ -1792,6 +1930,7 @@
+                         matches!(thread.read(cx).status(), ThreadStatus::Generating);
+                     active.update(cx, |active, cx| {
+                         if !is_generating {
++                            active.eido_reconcile_boundary(cx);
+                             active.thread_retry_status.take();
+                             if active.list_state.is_following_tail() {
+                                 active.list_state.scroll_to_end();
+@@ -3431,10 +3570,43 @@
  impl Render for ConversationView {
      fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
          self.sync_request_elicitation_states(window, cx);
@@ -11385,7 +11550,7 @@ diff --git a/crates/agent_ui/src/conversation_view.rs b/crates/agent_ui/src/conv
              ServerState::Loading { .. } => {
                  let label_text = self
                      .loading_status
-@@ -3496,7 +3659,7 @@
+@@ -3496,7 +3668,7 @@
          v_flex()
              .track_focus(&self.focus_handle)
              .size_full()
@@ -11394,7 +11559,7 @@ diff --git a/crates/agent_ui/src/conversation_view.rs b/crates/agent_ui/src/conv
              .child(v_flex().flex_1().min_h_0().child(content))
              .when(!active_thread_renders_request_elicitations, |this| {
                  this.children(request_elicitation_connection.as_ref().map_or_else(
-@@ -3752,6 +3915,86 @@
+@@ -3752,6 +3924,86 @@
  
      use super::*;
  
@@ -11481,7 +11646,7 @@ diff --git a/crates/agent_ui/src/conversation_view.rs b/crates/agent_ui/src/conv
      #[test]
      fn test_data_retention_error_maps_from_provider_error() {
          // The agent wraps the provider error in a fresh `anyhow::Error`, so
-@@ -4250,6 +4493,130 @@
+@@ -4250,6 +4502,213 @@
              0,
              "No notification should fire when a queued message will be auto-sent on Stopped"
          );
@@ -11529,6 +11694,89 @@ diff --git a/crates/agent_ui/src/conversation_view.rs b/crates/agent_ui/src/conv
 +            assert_eq!(crate::eido_queue::read(&key, cx).unwrap().len(), 1);
 +            assert!(crate::eido_queue::read(&format!("{key}-other-agent"), cx).unwrap().is_empty());
 +        });
++    }
++
++    #[gpui::test]
++    async fn test_eido_boundary_receipts_preserve_drafts_and_late_acknowledgment(cx: &mut TestAppContext) {
++        init_test(cx);
++        let (conversation, cx) = setup_conversation_view(StubAgentServer::default_response(), cx).await;
++        add_to_workspace(conversation.clone(), cx);
++        let view = active_thread(&conversation, cx);
++        let delivery_id = view.update_in(cx, |view, window, cx| {
++            view.message_editor.update(cx, |editor, cx| editor.set_text("Retain this draft", window, cx));
++            view.add_to_queue(vec!["Boundary message".into()], vec![], window, cx);
++            let id = view.message_queue.last_id().unwrap();
++            let mut entry = view.message_queue.remove(id).unwrap();
++            entry.boundary = true;
++            let delivery_id = entry.delivery_id.clone();
++            view.message_queue.begin_delivery(entry);
++            assert_eq!(view.message_queue.len(), 1);
++            assert!(view.message_queue.iter().next().unwrap().boundary);
++            assert!(view.message_queue.snapshot()[0].needs_review);
++            delivery_id
++        });
++        for state in ["interrupted", "completed"] {
++            let receiver = cx.update(|_, cx| {
++                let (sender, receiver) = futures::channel::oneshot::channel();
++                let request = Rc::new(acp_thread::EidoUiAction {action:"delivery_state".into(), data:serde_json::json!({"id":delivery_id,"state":state}), response:std::cell::RefCell::new(Some(sender))});
++                let thread = view.read(cx).thread.clone();
++                thread.update(cx, |_, cx| cx.emit(AcpThreadEvent::EidoUiAction(request)));
++                receiver
++            });
++            cx.run_until_parked();
++            assert!(receiver.await.unwrap().is_ok());
++            view.read_with(cx, |view, cx| {
++                assert_eq!(view.message_editor.read(cx).text(cx), "Retain this draft");
++                if state == "interrupted" {
++                    assert!(view.message_queue.first().unwrap().needs_review);
++                    assert!(!view.message_queue.first().unwrap().boundary);
++                } else { assert!(view.message_queue.is_empty()); }
++            });
++        }
++    }
++
++    #[gpui::test]
++    async fn test_eido_send_next_prioritizes_slash_commands_without_steering(cx: &mut TestAppContext) {
++        init_test(cx);
++        let connection = StubAgentConnection::new();
++        let (conversation, cx) = setup_conversation_view(StubAgentServer::new(connection.clone()), cx).await;
++        add_to_workspace(conversation.clone(), cx);
++        let view = active_thread(&conversation, cx);
++        let session_id = view.read_with(cx, |view, cx| view.thread.read(cx).session_id().clone());
++        cx.update(|_, cx| connection.send_update(session_id, serde_json::from_value(serde_json::json!({
++            "sessionUpdate":"available_commands_update", "availableCommands":[{"name":"session","description":"Session status"}]
++        })).unwrap(), cx));
++        cx.run_until_parked();
++        view.update_in(cx, |view, window, cx| {
++            view.message_editor.update(cx, |editor, cx| editor.set_text("initial message", window, cx));
++            view.send(window, cx);
++        });
++        cx.run_until_parked();
++        let session_id = view.update_in(cx, |view, window, cx| {
++            view.add_to_queue(vec!["ordinary follow-up".into()], vec![], window, cx);
++            view.message_editor.update(cx, |editor, cx| editor.set_text("/session", window, cx));
++            view.eido_send_next(window, cx);
++            view.thread.read(cx).session_id().clone()
++        });
++        cx.run_until_parked();
++        view.read_with(cx, |view, cx| {
++            assert_eq!(view.message_queue.len(), 2, "status={:?}, loading={}, draft={}, thread={:?}", view.eido_delivery_status, view.is_loading_contents, view.message_editor.read(cx).text(cx), view.thread.read(cx).status());
++            assert_eq!(view.message_queue.first().unwrap().content, vec![acp::ContentBlock::from("/session")]);
++            assert!(!view.message_queue.first().unwrap().boundary);
++            assert!(view.message_editor.read(cx).is_empty(cx));
++            assert!(view.eido_delivery_status.as_ref().unwrap().contains("Command queued first"));
++        });
++        cx.update(|_, _| connection.end_turn(session_id.clone(), acp::StopReason::EndTurn));
++        cx.run_until_parked();
++        view.read_with(cx, |view, cx| {
++            assert_eq!(view.message_queue.len(), 1);
++            let history = view.thread.read(cx).to_markdown(cx);
++            assert!(history.contains("/session"));
++            assert!(!history.contains("ordinary follow-up"));
++        });
++        cx.update(|_, _| connection.end_turn(session_id, acp::StopReason::EndTurn));
++        cx.run_until_parked();
++        view.read_with(cx, |view, cx| assert!(view.thread.read(cx).to_markdown(cx).contains("ordinary follow-up")));
 +    }
 +
 +    #[gpui::test]

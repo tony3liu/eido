@@ -284,6 +284,27 @@ test("an explicit user follow-up continues the same child and records its result
   } finally {await h.dispose();}
 });
 
+test("a child local command does not report the preceding assistant reply as a new result", {timeout: 30_000}, async () => {
+  const h = await harness([
+    () => call("subagent", {title: "Inspector", task: "Inspect initial state"}),
+    () => "Previous inspection result.", () => "Inspection collected.",
+  ]);
+  try {
+    await h.prompt("Delegate inspection.");
+    h.updates.length = 0;
+    const response = await h.connection.agent.request(methods.agent.session.prompt, {
+      sessionId: h.runs[0]!.childSessionId, prompt: [{type: "text", text: "/session"}], _meta: {eidoUserMessage: true},
+    });
+    assert.equal(response.stopReason, "end_turn");
+    assert.equal(h.requests(), 3, "Local commands must not invoke the model");
+    const reports = h.updates.filter(({sessionId, update}) => sessionId === h.parent.sessionId && update.sessionUpdate === "agent_message_chunk")
+      .map(({update}) => update.sessionUpdate === "agent_message_chunk" && update.content.type === "text" ? update.content.text : "").join("");
+    assert.match(reports, /Follow-up from Inspector \[Completed\]/);
+    assert.match(reports, /Command completed/);
+    assert.doesNotMatch(reports, /Previous inspection result/);
+  } finally {await h.dispose();}
+});
+
 test("child roles execute installed plugin and MCP tools without exposing them to read-only scouts", {timeout: 30_000}, async () => {
   const h = await harness([
     () => call("subagent", {agent: "integrator", title: "Check integrations", task: "Use the fixture plugin and MCP server."}),
@@ -317,4 +338,32 @@ process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:r.id,result})+'\\n');});`)
     assert.ok(h.permissions.includes(h.runs[0]!.childSessionId), "MCP permission belongs to the child task");
     assert.equal(h.writes(), 0);
   } finally {await h.dispose();}
+});
+
+
+test('consumed directed guidance reaches the child transcript and parent report once', {timeout:30_000},async()=>{
+  let ready!:()=>void,release!:()=>void;
+  const began=new Promise<void>(resolve=>{ready=resolve;}),gate=new Promise<void>(resolve=>{release=resolve;});
+  const h=await harness([
+    ()=>call('subagent',{agent:'worker',title:'Directed child',task:'Respond after the gate.'}),
+    async()=>{ready();await gate;return 'First reply';},
+    context=>{assert.match(JSON.stringify(context),/Added user instruction/);return 'Directed result';},
+    context=>{
+      const result=lastToolText(context,'subagent');
+      assert.match(result,/User instructions received during this run:/);
+      assert.match(result,/Added user instruction/);assert.match(result,/Directed result/);
+      return 'Guidance understood';
+    },
+  ]);
+  try{
+    const turn=h.prompt('Delegate');await began;
+    const child=h.runs[0]!.childSessionId;
+    const params={sessionId:child,prompt:[{type:'text',text:'Added user instruction'}],_meta:{eidoDeliveryId:'directed-guidance'}};
+    await h.connection.agent.request('_session/steering',params);
+    await h.connection.agent.request('_session/steering',params);
+    release();await turn;
+    const input=h.updates.filter(({sessionId,update})=>sessionId===child&&update.sessionUpdate==='user_message_chunk'&&update.content.type==='text'&&update.content.text==='Added user instruction');
+    assert.equal(input.length,1);assert.ok((input[0]!.update as any).messageId);
+    assert.equal(h.requests(),4);
+  }finally{release();await h.dispose();}
 });

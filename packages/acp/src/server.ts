@@ -1,4 +1,5 @@
 import {createDeliveryLedger, DELIVERY} from './delivery.ts';
+import {nativeUiAction} from './native-ui.ts';
 import { runAcp } from "@automatalabs/pi-acp";
 import { createAgentSession, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { join } from "node:path";
@@ -58,11 +59,14 @@ export async function startEidoAgent(agentDir: string, sessionDir: string, strea
           customTools: [...editorTools(options.cwd, options.sessionManager.getSessionId(), client), preview.tool,
             ...(subagents.enabled ? [subagents.tool(options.sessionManager.getSessionId(), client)] : [])],
         });
-        const ledger = createDeliveryLedger(created.session);
+        const ledger = createDeliveryLedger(created.session, (id,state) => {
+          if(supportsNativeUi)void nativeUiAction(client,created.session.sessionId,'delivery_state',{id,state})
+            .catch(error=>console.error('Delivery UI update failed',error));
+        }, (message,entryId)=>subagents.consumedInput(created.session.sessionId,message,entryId));
         deliveries.set(created.session.sessionId, ledger);
         Object.defineProperty(created.session, DELIVERY, {value:ledger});
         const dispose = created.session.dispose.bind(created.session);
-        created.session.dispose = () => { if(deliveries.get(created.session.sessionId)===ledger)deliveries.delete(created.session.sessionId); dispose(); };
+        created.session.dispose = () => { ledger.dispose(); if(deliveries.get(created.session.sessionId)===ledger)deliveries.delete(created.session.sessionId); dispose(); };
         const browser = browserLifecycle(created.session);
         const prompt = created.session.prompt.bind(created.session);
         created.session.prompt = async (...args) => {
@@ -125,6 +129,11 @@ export async function startEidoAgent(agentDir: string, sessionDir: string, strea
   server.agent.prompt = context => {
     const ledger = deliveries.get(context.params.sessionId);
     return ledger ? ledger.deliver(context.params, () => deliver(context)) : deliver(context);
+  };
+  const steer = server.agent.steer.bind(server.agent);
+  server.agent.steer = context => {
+    const ledger = deliveries.get(context.params.sessionId);
+    return ledger ? ledger.steer(context.params, () => steer(context)) : steer(context);
   };
   // The configured servers enter the same ACP MCP bridge as built-in tools.
   const withMcp = async <T extends {params: {mcpServers?: McpServer[]}}>(context: T): Promise<T> => {

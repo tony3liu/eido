@@ -1035,3 +1035,102 @@ test('in-flight and cancelled deliveries cannot be blindly retried after reload'
     assert.equal(h.requests(),1);
   }finally{await h.dispose();}
 });
+
+test('boundary deliveries acknowledge the transformed pi message after persistence without replaying', {timeout:30_000},async()=>{
+  let ready!:()=>void,release!:()=>void;
+  const began=new Promise<void>(resolve=>{ready=resolve;}),gate=new Promise<void>(resolve=>{release=resolve;});
+  const actions:{action:string;data:Record<string,unknown>}[]=[];
+  const h=await harness([async()=>{ready();await gate;return 'Initial response';},context=>{
+    assert.match(JSON.stringify(context),/transformed boundary input/);
+    assert.doesNotMatch(JSON.stringify(context),/boundary-id|eido.delivery/);
+    return 'Boundary response';
+  }],{setup:async cwd=>{
+    await mkdir(join(cwd,'extensions'));
+    await writeFile(join(cwd,'extensions/input.js'),`export default function(pi){pi.on('input',async event=>event.text==='boundary input'?{action:'transform',text:'transformed boundary input'}:{action:'continue'});}`);
+  },native:async params=>{actions.push(params);return{handled:true};}});
+  try{
+    const a=await h.newTask();const turn=h.prompt(a.sessionId,'Initial input');await began;
+    const params={sessionId:a.sessionId,prompt:[{type:'text',text:'boundary input'}],_meta:{eidoDeliveryId:'boundary-id'}};
+    assert.deepEqual(await h.connection.agent.request('_session/steering',params),{outcome:'injected'});
+    assert.deepEqual(await h.connection.agent.request('_session/steering',params),{outcome:'injected'});
+    assert.deepEqual(await h.connection.agent.request('_eido/delivery/status',{sessionId:a.sessionId,ids:['boundary-id']}),{deliveries:[{id:'boundary-id',state:'running'}]});
+    release();await turn;
+    assert.equal(h.requests(),2);
+    assert.deepEqual(await h.connection.agent.request('_eido/delivery/status',{sessionId:a.sessionId,ids:['boundary-id']}),{deliveries:[{id:'boundary-id',state:'completed'}]});
+    const entries=await h.entries();
+    const messageIndex=entries.findIndex(e=>e.type==='message'&&e.message.role==='user'&&JSON.stringify(e.message.content).includes('transformed boundary input'));
+    const receiptIndex=entries.findIndex(e=>e.customType==='eido.delivery.v1'&&e.data.id==='boundary-id'&&e.data.state==='completed');
+    assert.ok(messageIndex>=0&&receiptIndex>messageIndex,'Receipt must follow the persisted message');
+    assert.ok(actions.some(a=>a.action==='delivery_state'&&a.data.id==='boundary-id'&&a.data.state==='completed'));
+    const liveInputs=h.updates.filter(({sessionId,update})=>sessionId===a.sessionId&&update.sessionUpdate==='user_message_chunk');
+    assert.equal(liveInputs.length,1);
+    assert.equal((liveInputs[0]!.update as any).content.text,'transformed boundary input');
+    assert.equal((liveInputs[0]!.update as any).messageId,entries[messageIndex].id);
+    h.updates.length=0;
+    await h.connection.agent.request(methods.agent.session.close,{sessionId:a.sessionId});
+    await h.connection.agent.request(methods.agent.session.load,{sessionId:a.sessionId,cwd:h.cwd,mcpServers:[]});
+    assert.deepEqual(await h.connection.agent.request('_session/steering',params),{outcome:'injected'});
+    assert.equal(h.requests(),2);
+    const replayInputs=h.updates.filter(({update})=>update.sessionUpdate==='user_message_chunk');
+    assert.equal(replayInputs.length,2);
+    assert.notEqual((replayInputs[0]!.update as any).messageId,(replayInputs[1]!.update as any).messageId);
+  }finally{release();await h.dispose();}
+});
+
+test('cancelled boundary inputs stay reviewable while an idle request can fall back exactly once', {timeout:30_000},async()=>{
+  let ready!:()=>void;
+  const began=new Promise<void>(resolve=>{ready=resolve;});
+  const h=await harness([async(_context,signal)=>{ready();await new Promise((_,reject)=>signal!.addEventListener('abort',()=>reject(signal!.reason),{once:true}));return '';}]);
+  try{
+    const a=await h.newTask();const turn=h.prompt(a.sessionId,'Wait');await began;
+    const params={sessionId:a.sessionId,prompt:[{type:'text' as const,text:'Not consumed'}],_meta:{eidoDeliveryId:'cancel-boundary'}};
+    await h.connection.agent.request('_session/steering',params);
+    await h.connection.agent.notify(methods.agent.session.cancel,{sessionId:a.sessionId});await turn;
+    assert.deepEqual(await h.connection.agent.request('_eido/delivery/status',{sessionId:a.sessionId,ids:['cancel-boundary']}),{deliveries:[{id:'cancel-boundary',state:'interrupted'}]});
+    await assert.rejects(h.connection.agent.request('_session/steering',params),/may already have run/);
+    const idle={...params,prompt:[{type:'text' as const,text:'Idle fallback'}],_meta:{eidoDeliveryId:'idle-boundary'}};
+    assert.deepEqual(await h.connection.agent.request('_session/steering',idle),{outcome:'promptRequired',reason:'noRunningTurn'});
+    await h.connection.agent.request(methods.agent.session.prompt,idle);
+    await h.connection.agent.request(methods.agent.session.prompt,idle);
+    assert.equal(h.requests(),2);
+  }finally{await h.dispose();}
+});
+
+test('local command settlement releases unconsumed steering and input handlers acknowledge once', {timeout:30_000},async()=>{
+  let ready!:()=>void,release!:()=>void;
+  const began=new Promise<void>(resolve=>{ready=resolve;}),gate=new Promise<void>(resolve=>{release=resolve;});
+  const h=await harness([],{setup:async cwd=>{
+    await mkdir(join(cwd,'extensions'));
+    await writeFile(join(cwd,'extensions/local.js'),`export default function(pi){
+      pi.registerCommand('local-hold',{description:'Wait without model',handler:async(_,ctx)=>{await ctx.ui.input('Gate');}});
+      pi.on('input',async(event,ctx)=>{if(event.text==='handled'){ctx.ui.notify('Input handled once');return {action:'handled'};}return {action:'continue'};});
+    }`);
+  },form:async()=>{ready();await gate;return{action:'cancel'};},native:async()=>({handled:true})});
+  try{
+    const a=await h.newTask();const turn=h.prompt(a.sessionId,'/local-hold');await began;
+    const params={sessionId:a.sessionId,prompt:[{type:'text',text:'handled'}],_meta:{eidoDeliveryId:'handled-input'}};
+    await h.connection.agent.request('_session/steering',params);await h.connection.agent.request('_session/steering',params);
+    const pending={...params,prompt:[{type:'text',text:'unconsumed input'}],_meta:{eidoDeliveryId:'unconsumed-input'}};
+    await h.connection.agent.request('_session/steering',pending);
+    release();await turn;
+    assert.deepEqual(await h.connection.agent.request('_eido/delivery/status',{sessionId:a.sessionId,ids:['handled-input','unconsumed-input']}),
+      {deliveries:[{id:'handled-input',state:'completed'},{id:'unconsumed-input',state:'interrupted'}]});
+    assert.equal(h.text(a.sessionId).split('Input handled once').length-1,1);
+    assert.equal(h.requests(),0);
+  }finally{release();await h.dispose();}
+});
+
+
+test('slash commands cannot enter steering as model text or claim a delivery ID', {timeout:30_000},async()=>{
+  const h=await harness([]);
+  try {
+    const a=await h.newTask();
+    const params={sessionId:a.sessionId,prompt:[{type:'text' as const,text:'/session'}],_meta:{eidoDeliveryId:'command-delivery'}};
+    await assert.rejects(h.connection.agent.request('_session/steering',params),/command queue/);
+    assert.deepEqual(await h.connection.agent.request('_eido/delivery/status',{sessionId:a.sessionId,ids:['command-delivery']}),{deliveries:[{id:'command-delivery',state:'unknown'}]});
+    await h.connection.agent.request(methods.agent.session.prompt,params);
+    await h.connection.agent.request(methods.agent.session.prompt,params);
+    assert.match(h.text(a.sessionId),/Messages:/);
+    assert.equal(h.requests(),0);
+  }finally{await h.dispose();}
+});

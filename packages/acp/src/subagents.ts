@@ -3,7 +3,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { Type } from "typebox";
-import { RequestError, type AgentContext, type McpServer, type SessionUpdate, type SessionConfigOption } from "@agentclientprotocol/sdk";
+import { RequestError, type AgentContext, type McpServer, type SessionUpdate, type SessionConfigOption, type ContentBlock } from "@agentclientprotocol/sdk";
 import { defineTool, type AgentSession, type SessionEntry } from "@earendil-works/pi-coding-agent";
 import type { runAcp } from "@automatalabs/pi-acp";
 import { discoverAgentRoles, type AgentRole } from "./agent-roles.ts";
@@ -27,8 +27,13 @@ interface Relation {
 interface Session { pi: AgentSession; host?: Host }
 type State = "Queued" | "Running" | "Stopping" | "Completed" | "Failed" | "Cancelled" | "Blocked";
 interface Job {title?: string; task: string; agent?: string}
-interface Row {job: Job; role: AgentRole; id: string; state: State; output?: string; relation?: Relation; started?: number; duration?: number; model?: string; tokens?: number; cost?: number}
-const jobSchema = Type.Object({agent: Type.Optional(Type.String()), title: Type.Optional(Type.String({minLength: 1, maxLength: 120})), task: Type.String({minLength: 1})});
+interface Row {job: Job; role: AgentRole; id: string; state: State; output?: string; relation?: Relation; started?: number; duration?: number; model?: string; tokens?: number; cost?: number; inputs?: string[]}
+const roleName = () => Type.Optional(Type.String({description: "Existing global role name: scout, worker, reviewer, verifier, or a configured /agents role. Use title for the instance name."}));
+const instanceTitle = () => Type.Optional(Type.String({minLength: 1, maxLength: 120, description: "Display name of this instance, such as Alpha. This does not create a role."}));
+const describeInput = (content: ContentBlock[]) => content.map(block => block.type === "text" ? block.text
+  : block.type === "image" ? "[Image attachment]" : block.type === "resource_link" ? `[Resource: ${block.uri}]` : "[Attached resource]").join("\n");
+const report = (row: Row) => `${row.inputs?.length ? `User instructions received during this run:\n${row.inputs.map(text=>JSON.stringify(text)).join("\n")}\n\nAgent result:\n` : ""}${row.output ?? "No result."}`;
+const jobSchema = Type.Object({agent: roleName(), title: instanceTitle(), task: Type.String({minLength: 1})});
 const textContent = (text: string) => [{type: "content" as const, content: {type: "text" as const, text}}];
 
 /** Reuse pi sessions and the ACP turn boundary for every child, including retries. */
@@ -79,6 +84,14 @@ export function createSubagents(agentDir: string, sessionDir: string) {
   return {
     setEnabled(value: boolean) { enabled = value; },
     get enabled() { return enabled; },
+    consumedInput(id: string, message: Parameters<AgentSession['sessionManager']['appendMessage']>[0], entryId: string) {
+      if (message.role !== "user") return;
+      const session = sessions.get(id);
+      const content = typeof message.content === "string" ? [{type: "text" as const, text: message.content}] : message.content;
+      for (const block of content) session?.host?.enqueue({sessionUpdate: "user_message_chunk", messageId: entryId, content: block});
+      const row = running.get(id);
+      if (row) (row.inputs ??= []).push(content.map(block=>block.type === "text" ? block.text : "[Image attachment]").join("\n"));
+    },
     register(pi: AgentSession) {
       const saved = pi.sessionManager.getEntries().findLast(entry => entry.type === "custom" && entry.customType === SUBAGENT_RECORD && (entry.data as {kind?: string})?.kind === "child");
       const relation = opening.getStore() ?? (saved?.type === "custom" ? saved.data as Relation : undefined);
@@ -96,7 +109,7 @@ export function createSubagents(agentDir: string, sessionDir: string) {
       return defineTool({
         name: "subagent", label: "Delegate to agents",
         description: "Delegate to independent pi agents. Use title/task/agent for one agent, tasks for parallel agents (up to 4 simultaneously), or chain for sequential agents. In chain tasks, {previous} is replaced with the preceding result. Default role is scout (read only); worker can edit native buffers and delegate; reviewer reads; verifier uses preview/browser. Use /agents to manage global roles. Children inherit model/thinking unless their role specifies them. Every child appears in the workbench with its own permissions, edits, results and stop control. Failures block dependent steps; independent parallel tasks continue. Context is independent; include all required instructions. Nesting is bounded to 3 levels and 16 active children per main task.",
-        parameters: Type.Object({title: Type.Optional(Type.String({minLength: 1, maxLength: 120})), task: Type.Optional(Type.String({minLength: 1})), agent: Type.Optional(Type.String()),
+        parameters: Type.Object({title: instanceTitle(), task: Type.Optional(Type.String({minLength: 1})), agent: roleName(),
           tasks: Type.Optional(Type.Array(jobSchema, {minItems: 1, maxItems: 8})), chain: Type.Optional(Type.Array(jobSchema, {minItems: 1, maxItems: 8}))}),
         async execute(toolCallId, args, signal) {
           if (!enabled) throw new Error("This client does not support native subagents.");
@@ -191,7 +204,7 @@ export function createSubagents(agentDir: string, sessionDir: string) {
             for (let i = 0; i < rows.length; i++) {
               const row = rows[i]!;
               if (i > 0 && rows[i - 1]!.state !== "Completed") {row.state = "Blocked"; row.output = `Blocked by step ${i}: ${rows[i - 1]!.state}.`; updateRow(parent, row); continue;}
-              await run(row, previous); previous = row.output;
+              await run(row, previous); previous = report(row);
             }
             summary();
           } else {
@@ -199,7 +212,7 @@ export function createSubagents(agentDir: string, sessionDir: string) {
             await Promise.all(Array.from({length: Math.min(4, rows.length)}, async () => {while (next < rows.length) await run(rows[next++]!);}));
           }
           await parent.host.drain();
-          return {content: [{type: "text", text: rows.map((r,i) => `${single ? "" : `Step ${i+1} · `}${r.job.title || r.role.name} [${r.state}]\n${r.output ?? "No result."}`).join("\n\n")}],
+          return {content: [{type: "text", text: rows.map((r,i) => `${single ? "" : `Step ${i+1} · `}${r.job.title || r.role.name} [${r.state}]\n${report(r)}`).join("\n\n")}],
             isError: rows.some(r => r.state !== "Completed"), details: {groupId, mode: single ? "single" : mode.toLowerCase(), agents: rows.map(r => ({...r.relation, state: r.state, tokens: r.tokens, cost: r.cost}))}};
         },
       });
@@ -255,14 +268,19 @@ export function createSubagents(agentDir: string, sessionDir: string) {
           session.pi.sessionManager.appendCustomEntry(SUBAGENT_RECORD, {...relation, kind: "child"});
           parent?.pi.sessionManager.appendCustomEntry(SUBAGENT_RECORD, {...relation, kind: "parent"});
           if (parent) updateRow(parent, row);
+          const previousEntries = new Set(session.pi.sessionManager.getEntries().map(entry => entry.id));
+          const command = describeInput(ctx.params.prompt).trimStart().startsWith("/");
           try {
             const result = await prompt(ctx);
-            const last = session.pi.messages.findLast(m => m.role === "assistant");
+            const entry = session.pi.sessionManager.getBranch().findLast(entry =>
+              !previousEntries.has(entry.id) && entry.type === "message" && entry.message.role === "assistant");
+            const last = entry?.type === "message" && entry.message.role === "assistant" ? entry.message : undefined;
             row.state = result.stopReason === "cancelled" || last?.stopReason === "aborted" ? "Cancelled"
-              : result.stopReason === "end_turn" && last && last.stopReason !== "error" ? "Completed" : "Failed";
-            row.output = last?.errorMessage || (last ? last.content.filter(p => p.type === "text").map(p => p.text).join("\n") : "No text result.");
+              : result.stopReason === "end_turn" && (last ? last.stopReason !== "error" : command) ? "Completed" : "Failed";
+            row.output = last?.errorMessage || (last ? last.content.filter(p => p.type === "text").map(p => p.text).join("\n")
+              : row.state === "Completed" && command ? "Command completed." : "No text result.");
             const stats = session.pi.getSessionStats(); row.tokens = stats.tokens.total; row.cost = stats.cost;
-            if (parent) await parent.pi.sendCustomMessage({customType: "eido.agent.followup", content: `Follow-up from ${relation.title} [${row.state}]:\n${row.output}`, display: true}, {triggerTurn: false});
+            if (parent) await parent.pi.sendCustomMessage({customType: "eido.agent.followup", content: `\n\nFollow-up from ${relation.title} [${row.state}]\nUser request: ${JSON.stringify(describeInput(ctx.params.prompt))}\n${report(row)}\n\n`, display: true}, {triggerTurn: false});
             return result;
           } catch (error) {row.state = "Failed"; row.output = String(error); throw error;}
           finally {release(); running.delete(ctx.params.sessionId); row.duration = Date.now() - row.started!; if (parent) {updateRow(parent, row); await parent.host?.drain();}}

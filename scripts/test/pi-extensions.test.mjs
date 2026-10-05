@@ -63,13 +63,23 @@ test("only pi packages are searchable; MCP secrets stay out of list data and inv
 });
 
 
-test("extension lock prevents overlapping operations and recovers an abandoned lock", async () => {
+test("extension lock serializes startup, prevents overlapping mutations and recovers an abandoned lock", async () => {
   const dir = await mkdtemp(join(tmpdir(), "eido-extension-lock-"));
   const center = createExtensionCenter(dir);
   const lock = join(dir, ".extensions.lock.lock");
   try {
     await mkdir(lock);
-    await assert.rejects(center.acquireRuntime(), /Another extension operation/);
+    await assert.rejects(center.execute({operation:"retry"}), /Another extension operation/);
+    const pending = center.acquireRuntime();
+    let acquired = false;
+    pending.then(() => {acquired = true;});
+    await new Promise(resolve => setTimeout(resolve, 150));
+    assert.equal(acquired, false, "startup waits while another operation holds the lock");
+    await rm(lock, {recursive:true});
+    const firstRelease = await pending;
+    assert.equal((await center.execute()).activeRuntimes, 1);
+    await firstRelease();
+    await mkdir(lock);
     const old = new Date(Date.now() - 30_000);
     await utimes(lock, old, old);
     const release = await center.acquireRuntime();

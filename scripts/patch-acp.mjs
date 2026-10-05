@@ -159,3 +159,14 @@ if (!(await readFile(new URL("dist/server.js", directory), "utf8")).includes('.o
 await patchSource(new URL("dist/server.js", directory),
   '        .onRequest(LOADED_TURN_QUERY_METHOD, loadedTurnQueryParser, (context) => impl.loadedTurnQuery(context))',
   '        .onRequest("_eido/delivery/status", {parse(value) { if (!value || typeof value.sessionId !== "string" || !Array.isArray(value.ids) || value.ids.length > 256 || value.ids.some(id => typeof id !== "string")) throw new Error("Invalid delivery query"); return value; }}, ({params}) => { const ledger = impl.live.get(params.sessionId)?.pi[Symbol.for("eido.pi.delivery")]; if (!ledger) throw new Error("Load this session before reconciling deliveries"); return ledger.status(params.ids); })\n        .onRequest(LOADED_TURN_QUERY_METHOD, loadedTurnQueryParser, (context) => impl.loadedTurnQuery(context))');
+
+// The adapter's authoritative settlement also covers local commands that never
+// enter pi's model loop and therefore do not emit agent_end.
+await patchSource(sessionPath,
+  '        if (this.activeTurn === turn)\n            this.activeTurn = undefined;',
+  '        if (this.activeTurn === turn) {\n            this.activeTurn = undefined;\n            this.pi[Symbol.for("eido.pi.delivery")]?.turnEnded();\n        }');
+
+// Stable pi entry IDs keep consecutive boundary messages separate on replay.
+await patchSource(path,
+  '            return replayMessage(entry.message);',
+  '            return replayMessage(entry.message).map(update => ["user_message_chunk", "agent_message_chunk", "agent_thought_chunk"].includes(update.sessionUpdate) ? {...update, messageId: entry.id} : update);');
