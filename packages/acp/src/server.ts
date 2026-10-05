@@ -5,6 +5,7 @@ import { createAgentSession, ModelRuntime } from "@earendil-works/pi-coding-agen
 import { join } from "node:path";
 import type { AgentContext, McpServer, Stream } from "@agentclientprotocol/sdk";
 import { editorTools } from "./editor-tools.ts";
+import { editorQueryTools } from "./editor-query.ts";
 import { createPreview } from "./preview.ts";
 import { browserLifecycle } from "./browser-lifecycle.ts";
 import { accessPolicy } from "./access-policy.ts";
@@ -56,7 +57,8 @@ export async function startEidoAgent(agentDir: string, sessionDir: string, strea
           // The active loadout below selects Eido's native tools and extensions.
           tools: undefined,
           noTools: "builtin",
-          customTools: [...editorTools(options.cwd, options.sessionManager.getSessionId(), client), preview.tool,
+          customTools: [...editorTools(options.cwd, options.sessionManager.getSessionId(), client),
+            ...editorQueryTools(options.cwd, options.sessionManager.getSessionId(), client), preview.tool,
             ...(subagents.enabled ? [subagents.tool(options.sessionManager.getSessionId(), client)] : [])],
         });
         const ledger = createDeliveryLedger(created.session, (id,state) => {

@@ -620,7 +620,15 @@ diff --git a/assets/keymaps/vim.json b/assets/keymaps/vim.json
 diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thread.rs
 --- a/crates/acp_thread/src/acp_thread.rs
 +++ b/crates/acp_thread/src/acp_thread.rs
-@@ -2333,7 +2333,15 @@
+@@ -1,5 +1,7 @@
+ mod connection;
+ mod diff;
++mod eido_fs;
++pub use eido_fs::*;
+ mod mention;
+ mod terminal;
+ pub use ::terminal::HeadlessTerminal;
+@@ -2333,7 +2335,15 @@
  }
  
  #[derive(Debug)]
@@ -636,7 +644,7 @@ diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thr
      StatusChanged,
      PromptUpdated,
      NewEntry,
-@@ -2493,7 +2501,8 @@
+@@ -2493,7 +2503,8 @@
                  | AcpThreadEvent::AvailableCommandsUpdated(_)
                  | AcpThreadEvent::ModeUpdated(_)
                  | AcpThreadEvent::ConfigOptionsUpdated(_)
@@ -646,7 +654,7 @@ diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thr
              });
  
          let git_store = project.read(cx).git_store().clone();
-@@ -2776,6 +2785,20 @@
+@@ -2776,6 +2787,20 @@
          }
  
          false
@@ -667,7 +675,7 @@ diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thr
      }
  
      pub fn handle_session_update(
-@@ -3936,7 +3959,7 @@
+@@ -3936,7 +3961,7 @@
          message: Vec<acp::ContentBlock>,
          cx: &mut Context<Self>,
      ) -> BoxFuture<'static, Result<Option<acp::PromptResponse>>> {
@@ -676,7 +684,7 @@ diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thr
      }
  
      /// Sends a prompt without displaying a user-message bubble for it.
-@@ -3948,13 +3971,30 @@
+@@ -3948,13 +3973,30 @@
          message: Vec<acp::ContentBlock>,
          cx: &mut Context<Self>,
      ) -> BoxFuture<'static, Result<Option<acp::PromptResponse>>> {
@@ -708,7 +716,7 @@ diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thr
          cx: &mut Context<Self>,
      ) -> BoxFuture<'static, Result<Option<acp::PromptResponse>>> {
          let language_registry = self.project.read(cx).languages().clone();
-@@ -3963,7 +4003,13 @@
+@@ -3963,7 +4005,13 @@
          for chunk in &message {
              block.append_prompt(chunk.clone(), &language_registry, path_style, cx);
          }
@@ -723,7 +731,7 @@ diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thr
          let git_store = self.project.read(cx).git_store().clone();
  
          let client_user_message_ids = self.connection.client_user_message_ids(cx);
-@@ -4566,12 +4612,33 @@
+@@ -4566,12 +4614,33 @@
          reuse_shared_snapshot: bool,
          cx: &mut Context<Self>,
      ) -> Task<Result<String, acp::Error>> {
@@ -758,7 +766,7 @@ diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thr
          cx.spawn(async move |this, cx| {
              let load = project.update(cx, |project, cx| {
                  let path = project
-@@ -4597,14 +4664,15 @@
+@@ -4597,14 +4666,15 @@
              let snapshot = if let Some(snapshot) = snapshot {
                  snapshot
              } else {
@@ -781,7 +789,7 @@ diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thr
                  snapshot
              };
  
-@@ -4644,8 +4712,32 @@
+@@ -4644,8 +4714,32 @@
          content: String,
          cx: &mut Context<Self>,
      ) -> Task<Result<()>> {
@@ -814,7 +822,7 @@ diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thr
          let should_update_agent_location = self.parent_session_id.is_none();
          cx.spawn(async move |this, cx| {
              let load = project.update(cx, |project, cx| {
-@@ -4656,11 +4748,13 @@
+@@ -4656,11 +4750,13 @@
              });
              let buffer = load?.await?;
              let snapshot = this.update(cx, |this, cx| {
@@ -833,7 +841,7 @@ diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thr
              let edits = cx
                  .background_executor()
                  .spawn(async move {
-@@ -4691,10 +4785,16 @@
+@@ -4691,10 +4787,16 @@
  
              let format_on_save = cx.update(|cx| {
                  action_log.update(cx, |action_log, cx| {
@@ -850,7 +858,7 @@ diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thr
                      buffer.start_transaction();
                      buffer.edit(edits, None, cx);
                      buffer.end_transaction_with_source(BufferEditSource::Agent, cx);
-@@ -4702,13 +4802,24 @@
+@@ -4702,13 +4804,24 @@
                      let settings =
                          language::language_settings::LanguageSettings::for_buffer(buffer, cx);
  
@@ -881,7 +889,7 @@ diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thr
  
              if format_on_save {
                  let format_task = project.update(cx, |project, cx| {
-@@ -6930,6 +7041,153 @@
+@@ -6930,6 +7043,160 @@
              "zero\none\ntwo\nthree\nfour\nfive\n"
          );
          request.await.unwrap();
@@ -942,7 +950,14 @@ diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thr
 +            .await
 +            .unwrap();
 +        assert_eq!(observed, "manual\ndisk\n");
-+        // Observing current preview inputs must leave the earlier edit baseline stale.
++        let query_project = thread.read_with(cx, |thread, _| thread.project.clone());
++        let query = EidoFileQuery {
++            operation: "grep".into(), path: path!("/tmp/foo").into(), pattern: Some("manual".into()),
++            glob: None, limit: None, context: None, ignore_case: None, literal: None,
++        };
++        let result = cx.update(|cx| eido_file_query(query_project, path!("/tmp").into(), query, cx)).await.unwrap();
++        assert!(result.output.contains("manual"));
++        // Preview and search observations must leave the earlier edit baseline stale.
 +        let error = thread
 +            .update(cx, |thread, cx| {
 +                thread.write_text_file_with_policy(
@@ -1302,7 +1317,7 @@ diff --git a/crates/agent_servers/src/acp.rs b/crates/agent_servers/src/acp.rs
  use settings::{AgentConfigOptionValue, SettingsStore};
  use std::path::PathBuf;
  use std::process::ExitStatus;
-@@ -587,6 +587,14 @@
+@@ -587,6 +587,18 @@
              on_request!(handle_create_elicitation),
              agent_client_protocol::on_receive_request!(),
          )
@@ -1314,10 +1329,14 @@ diff --git a/crates/agent_servers/src/acp.rs b/crates/agent_servers/src/acp.rs
 +            on_request!(handle_eido_ui_action),
 +            agent_client_protocol::on_receive_request!(),
 +        )
++        .on_receive_request(
++            on_request!(handle_eido_file_query),
++            agent_client_protocol::on_receive_request!(),
++        )
          // --- Notification handlers (agent→client) ---
          .on_receive_notification(
              on_notification!(handle_session_notification),
-@@ -604,6 +612,8 @@
+@@ -604,6 +616,8 @@
  ) -> acp::ClientCapabilities {
      let mut meta = acp::Meta::from_iter([
          ("terminal_output".into(), true.into()),
@@ -1326,7 +1345,7 @@ diff --git a/crates/agent_servers/src/acp.rs b/crates/agent_servers/src/acp.rs
          ("terminal-auth".into(), true.into()),
      ]);
  
-@@ -1049,10 +1059,19 @@
+@@ -1049,10 +1063,19 @@
                  let session_id = session_id.clone();
                  let this = self.clone();
                  async move |cx| {
@@ -1348,7 +1367,7 @@ diff --git a/crates/agent_servers/src/acp.rs b/crates/agent_servers/src/acp.rs
                              title,
                              Some(work_dirs),
                              this.clone(),
-@@ -1438,6 +1457,9 @@
+@@ -1438,6 +1461,9 @@
  
              let (modes, config_options) = config_state(response.modes, response.config_options);
  
@@ -1358,7 +1377,7 @@ diff --git a/crates/agent_servers/src/acp.rs b/crates/agent_servers/src/acp.rs
              let default_mode = self.defaults.mode();
              if let Some(default_mode) = default_mode {
                  if let Some(modes) = modes.as_ref() {
-@@ -1519,6 +1541,12 @@
+@@ -1519,6 +1545,12 @@
                      cx,
                  )
              });
@@ -1371,7 +1390,7 @@ diff --git a/crates/agent_servers/src/acp.rs b/crates/agent_servers/src/acp.rs
  
              Ok(thread)
          })
-@@ -1752,6 +1780,34 @@
+@@ -1752,6 +1784,34 @@
                      }
                  }
              }
@@ -1406,7 +1425,7 @@ diff --git a/crates/agent_servers/src/acp.rs b/crates/agent_servers/src/acp.rs
          })
      }
  
-@@ -2459,6 +2515,52 @@
+@@ -2459,6 +2519,52 @@
      }
  
      #[gpui::test]
@@ -1459,7 +1478,7 @@ diff --git a/crates/agent_servers/src/acp.rs b/crates/agent_servers/src/acp.rs
      async fn client_capabilities_include_elicitation_without_acp_beta(
          cx: &mut gpui::TestAppContext,
      ) {
-@@ -3759,7 +3861,7 @@
+@@ -3759,7 +3865,7 @@
          });
  
          let fs = fs::FakeFs::new(cx.executor());
@@ -1468,7 +1487,7 @@ diff --git a/crates/agent_servers/src/acp.rs b/crates/agent_servers/src/acp.rs
          let project = project::Project::test(fs, [std::path::Path::new("/a")], cx).await;
  
          let load_count = Arc::new(AtomicUsize::new(0));
-@@ -3804,7 +3906,9 @@
+@@ -3804,7 +3910,9 @@
              )
              .on_receive_request(
                  async move |_req: acp::NewSessionRequest, responder, _cx| {
@@ -1479,7 +1498,7 @@ diff --git a/crates/agent_servers/src/acp.rs b/crates/agent_servers/src/acp.rs
                  },
                  agent_client_protocol::on_receive_request!(),
              )
-@@ -3956,6 +4060,66 @@
+@@ -3956,6 +4064,66 @@
      }
  
      #[gpui::test]
@@ -1546,7 +1565,7 @@ diff --git a/crates/agent_servers/src/acp.rs b/crates/agent_servers/src/acp.rs
      async fn test_loaded_sessions_keep_state_until_last_handle_drops(
          cx: &mut gpui::TestAppContext,
      ) {
-@@ -4382,6 +4546,22 @@
+@@ -4382,6 +4550,22 @@
  }
  
  fn mcp_servers_for_project(project: &Entity<Project>, cx: &App) -> Vec<acp::McpServer> {
@@ -1569,7 +1588,7 @@ diff --git a/crates/agent_servers/src/acp.rs b/crates/agent_servers/src/acp.rs
      let context_server_store = project.read(cx).context_server_store().read(cx);
      let is_local = project.read(cx).is_local();
      context_server_store
-@@ -4566,6 +4746,66 @@
+@@ -4566,6 +4750,66 @@
      }
  }
  
@@ -1636,7 +1655,7 @@ diff --git a/crates/agent_servers/src/acp.rs b/crates/agent_servers/src/acp.rs
  fn handle_request_permission(
      args: acp::RequestPermissionRequest,
      responder: Responder<acp::RequestPermissionResponse>,
-@@ -4581,15 +4821,15 @@
+@@ -4581,15 +4825,15 @@
      let tool_call_id = args.tool_call.tool_call_id.clone();
      cx.spawn(async move |cx| {
          let result: Result<_, acp::Error> = async {
@@ -1661,7 +1680,52 @@ diff --git a/crates/agent_servers/src/acp.rs b/crates/agent_servers/src/acp.rs
                  .flatten_acp()?;
              cancellation
                  .run_until_cancelled(async { Ok(task.await) })
-@@ -4777,6 +5017,9 @@
+@@ -4736,6 +4980,44 @@
+     .detach();
+ }
+ 
++#[derive(Debug, Clone, Serialize, Deserialize, agent_client_protocol::JsonRpcRequest)]
++#[request(method = "_eido/fs/query", response = EidoFileQueryResponse)]
++#[serde(rename_all = "camelCase")]
++struct EidoFileQueryRequest {
++    session_id: acp::SessionId,
++    #[serde(flatten)]
++    query: acp_thread::EidoFileQuery,
++}
++
++#[derive(Debug, Clone, Serialize, Deserialize, agent_client_protocol::JsonRpcResponse)]
++struct EidoFileQueryResponse {
++    #[serde(flatten)]
++    result: acp_thread::EidoFileQueryResult,
++}
++
++fn handle_eido_file_query(
++    args: EidoFileQueryRequest,
++    responder: Responder<EidoFileQueryResponse>,
++    cx: &mut AsyncApp,
++    ctx: &ClientContext,
++) {
++    let thread = match session_thread(ctx, &args.session_id) {
++        Ok(thread) => thread,
++        Err(error) => return respond_err(responder, error),
++    };
++    cx.spawn(async move |cx| {
++        let result = responder.cancellation().run_until_cancelled(async {
++            let task = thread.update(cx, |thread, cx| {
++                let root = thread.work_dirs().and_then(|dirs| dirs.ordered_paths().next()).cloned()
++                    .ok_or_else(|| acp::Error::invalid_params().data("Session has no workspace"))?;
++                Ok::<_, acp::Error>(acp_thread::eido_file_query(thread.project().clone(), root, args.query, cx))
++            }).map_err(acp::Error::from)??;
++            task.await.map(|result| EidoFileQueryResponse {result}).map_err(acp::Error::from)
++        }).await;
++        respond_result(responder, result);
++    }).detach();
++}
++
+ fn handle_write_text_file(
+     args: acp::WriteTextFileRequest,
+     responder: Responder<acp::WriteTextFileResponse>,
+@@ -4777,6 +5059,9 @@
      cx: &mut AsyncApp,
      ctx: &ClientContext,
  ) {
@@ -1671,7 +1735,7 @@ diff --git a/crates/agent_servers/src/acp.rs b/crates/agent_servers/src/acp.rs
      let thread = match session_thread(ctx, &args.session_id) {
          Ok(t) => t,
          Err(e) => return respond_err(responder, e),
-@@ -4788,16 +5031,167 @@
+@@ -4788,16 +5073,167 @@
              .run_until_cancelled(async {
                  thread
                      .update(cx, |thread, cx| {
@@ -1841,7 +1905,7 @@ diff --git a/crates/agent_servers/src/acp.rs b/crates/agent_servers/src/acp.rs
  }
  
  fn handle_session_notification(
-@@ -4983,6 +5377,7 @@
+@@ -4983,6 +5419,7 @@
                      .into_iter()
                      .map(|env| (env.name, env.value))
                      .collect(),
