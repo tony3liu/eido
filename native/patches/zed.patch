@@ -781,12 +781,10 @@ diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thr
                  snapshot
              };
  
-@@ -4642,6 +4710,26 @@
-         &self,
-         path: PathBuf,
+@@ -4644,8 +4712,32 @@
          content: String,
-+        cx: &mut Context<Self>,
-+    ) -> Task<Result<()>> {
+         cx: &mut Context<Self>,
+     ) -> Task<Result<()>> {
 +        self.write_text_file_with_policy(path, content, std::env::var_os("EIDO_ROOT").is_some(), cx)
 +    }
 +
@@ -805,10 +803,18 @@ diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thr
 +        path: PathBuf,
 +        content: String,
 +        eido: bool,
-         cx: &mut Context<Self>,
-     ) -> Task<Result<()>> {
++        cx: &mut Context<Self>,
++    ) -> Task<Result<()>> {
          let project = self.project.clone();
-@@ -4656,11 +4744,13 @@
+         let action_log = self.action_log.clone();
++        let edit_source = action_log::EditSource {
++            session_id: self.session_id.to_string().into(),
++            title: self.title().unwrap_or_else(|| "Main agent".into()),
++        };
+         let should_update_agent_location = self.parent_session_id.is_none();
+         cx.spawn(async move |this, cx| {
+             let load = project.update(cx, |project, cx| {
+@@ -4656,11 +4748,13 @@
              });
              let buffer = load?.await?;
              let snapshot = this.update(cx, |this, cx| {
@@ -827,7 +833,7 @@ diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thr
              let edits = cx
                  .background_executor()
                  .spawn(async move {
-@@ -4691,10 +4781,16 @@
+@@ -4691,10 +4785,16 @@
  
              let format_on_save = cx.update(|cx| {
                  action_log.update(cx, |action_log, cx| {
@@ -844,17 +850,23 @@ diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thr
                      buffer.start_transaction();
                      buffer.edit(edits, None, cx);
                      buffer.end_transaction_with_source(BufferEditSource::Agent, cx);
-@@ -4702,13 +4798,20 @@
+@@ -4702,13 +4802,24 @@
                      let settings =
                          language::language_settings::LanguageSettings::for_buffer(buffer, cx);
  
 -                    settings.format_on_save != FormatOnSave::Off
--                });
 +                    anyhow::Ok(settings.format_on_save != FormatOnSave::Off)
 +                })?;
-                 action_log.update(cx, |action_log, cx| {
-                     action_log.buffer_edited(buffer.clone(), cx);
++                action_log.update(cx, |action_log, cx| {
++                    if eido && buffer.read(cx).version() != expected_version {
++                        action_log.buffer_edited_by(buffer.clone(), edit_source.clone(), cx);
++                    } else {
++                        action_log.buffer_edited(buffer.clone(), cx);
++                    }
                  });
+-                action_log.update(cx, |action_log, cx| {
+-                    action_log.buffer_edited(buffer.clone(), cx);
+-                });
 -                format_on_save
 -            });
 +                anyhow::Ok(format_on_save)
@@ -869,7 +881,7 @@ diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thr
  
              if format_on_save {
                  let format_task = project.update(cx, |project, cx| {
-@@ -6930,6 +7033,144 @@
+@@ -6930,6 +7041,153 @@
              "zero\none\ntwo\nthree\nfour\nfive\n"
          );
          request.await.unwrap();
@@ -916,6 +928,8 @@ diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thr
 +            .await
 +            .unwrap_err();
 +        assert!(error.to_string().contains("Read this file"));
++        let action_log = thread.read_with(cx, |thread, _| thread.action_log.clone());
++        assert!(action_log.read_with(cx, |log, cx| log.edit_sources(buffer.read(cx).remote_id(), cx)).is_empty());
 +        thread
 +            .update(cx, |thread, cx| {
 +                thread.read_text_file(path!("/tmp/foo").into(), None, None, false, cx)
@@ -953,6 +967,10 @@ diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thr
 +            .await
 +            .unwrap();
 +        assert_eq!(current, "manual\ndisk\n");
++        thread.update(cx, |thread, cx| thread.write_text_file_with_policy(
++            path!("/tmp/foo").into(), current, true, cx,
++        )).await.unwrap();
++        assert!(action_log.read_with(cx, |log, cx| log.edit_sources(buffer.read(cx).remote_id(), cx)).is_empty(), "No-op writes must not claim authorship");
 +        for content in ["manual\ndisk\nagent\n", "manual\ndisk\nagent again\n"] {
 +            thread
 +                .update(cx, |thread, cx| {
@@ -974,6 +992,9 @@ diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thr
 +        }
 +        cx.run_until_parked();
 +        let action_log = thread.read_with(cx, |thread, _| thread.action_log.clone());
++        let sources = action_log.read_with(cx, |log, cx| log.edit_sources(buffer.read(cx).remote_id(), cx));
++        assert_eq!(sources.len(), 1);
++        assert_eq!(sources[0].session_id.as_ref(), thread.read_with(cx, |thread, _| thread.session_id.to_string()));
 +        action_log
 +            .update(cx, |log, cx| log.reject_all_edits(None, cx))
 +            .await;
@@ -1080,7 +1101,21 @@ diff --git a/crates/acp_thread/src/terminal.rs b/crates/acp_thread/src/terminal.
 diff --git a/crates/action_log/src/action_log.rs b/crates/action_log/src/action_log.rs
 --- a/crates/action_log/src/action_log.rs
 +++ b/crates/action_log/src/action_log.rs
-@@ -62,6 +62,8 @@
+@@ -48,6 +48,13 @@
+     pub buffers: Vec<PerBufferUndo>,
+ }
+ 
++/// A session that contributed edits to a tracked file.
++#[derive(Clone, Debug, PartialEq, Eq)]
++pub struct EditSource {
++    pub session_id: SharedString,
++    pub title: SharedString,
++}
++
+ /// Tracks actions performed by tools in a thread
+ pub struct ActionLog {
+     /// Buffers that we want to notify the model about when they change.
+@@ -62,6 +69,8 @@
      last_reject_undo: Option<LastRejectUndo>,
      /// Tracks the last time files were read by the agent, to detect external modifications
      file_read_times: HashMap<PathBuf, MTime>,
@@ -1089,7 +1124,7 @@ diff --git a/crates/action_log/src/action_log.rs b/crates/action_log/src/action_
  }
  
  impl ActionLog {
-@@ -73,12 +75,17 @@
+@@ -73,12 +82,17 @@
              linked_action_log: None,
              last_reject_undo: None,
              file_read_times: HashMap::default(),
@@ -1107,7 +1142,51 @@ diff --git a/crates/action_log/src/action_log.rs b/crates/action_log/src/action_
      }
  
      pub fn project(&self) -> &Entity<Project> {
-@@ -751,8 +758,12 @@
+@@ -190,6 +204,7 @@
+                 }
+                 TrackedBuffer {
+                     buffer: buffer.clone(),
++                    edit_sources: BTreeMap::default(),
+                     diff_base,
+                     unreviewed_edits,
+                     snapshot: text_snapshot,
+@@ -579,6 +594,35 @@
+     /// Mark a buffer as edited by agent, so we can refresh it in the context
+     pub fn buffer_edited(&mut self, buffer: Entity<Buffer>, cx: &mut Context<Self>) {
+         self.buffer_edited_impl(buffer, true, cx);
++    }
++
++    /// Record the originating session, preserving it through every parent log.
++    /// These are file contributors, not exact ownership of individual lines.
++    pub fn buffer_edited_by(
++        &mut self,
++        buffer: Entity<Buffer>,
++        source: EditSource,
++        cx: &mut Context<Self>,
++    ) {
++        self.buffer_edited(buffer.clone(), cx);
++        self.record_edit_source(buffer, source, cx);
++    }
++
++    fn record_edit_source(&mut self, buffer: Entity<Buffer>, source: EditSource, cx: &mut Context<Self>) {
++        if let Some(parent) = &self.linked_action_log {
++            parent.update(cx, |log, cx| log.record_edit_source(buffer.clone(), source.clone(), cx));
++        }
++        if let Some(tracked) = self.tracked_buffers.get_mut(&buffer) {
++            tracked.edit_sources.insert(source.session_id.clone(), source);
++        }
++        cx.notify();
++    }
++
++    pub fn edit_sources(&self, buffer_id: text::BufferId, cx: &App) -> Vec<EditSource> {
++        self.tracked_buffers.iter()
++            .find(|(buffer, _)| buffer.read(cx).remote_id() == buffer_id)
++            .map(|(_, tracked)| tracked.edit_sources.values().cloned().collect())
++            .unwrap_or_default()
+     }
+ 
+     fn buffer_edited_impl(
+@@ -751,8 +795,12 @@
                          },
                      });
  
@@ -1122,7 +1201,7 @@ diff --git a/crates/action_log/src/action_log.rs b/crates/action_log/src/action_
                  } else {
                      // For a file created by AI with no pre-existing content,
                      // only delete the file if we're certain it contains only AI content
-@@ -801,9 +812,12 @@
+@@ -801,9 +849,12 @@
                  buffer.update(cx, |buffer, cx| {
                      buffer.set_text(tracked_buffer.diff_base.to_string(), cx)
                  });
@@ -1138,7 +1217,7 @@ diff --git a/crates/action_log/src/action_log.rs b/crates/action_log/src/action_
  
                  // Clear all tracked edits for this buffer and start over as if we just read it.
                  metrics.add_edits(tracked_buffer.unreviewed_edits.edits());
-@@ -883,8 +897,12 @@
+@@ -883,8 +934,12 @@
                      });
                  }
  
@@ -1153,7 +1232,7 @@ diff --git a/crates/action_log/src/action_log.rs b/crates/action_log/src/action_
              }
          };
          if let Some(telemetry) = telemetry {
-@@ -1009,10 +1027,12 @@
+@@ -1009,10 +1064,12 @@
                  self.buffer_edited(buffer.clone(), cx);
              }
  
@@ -1170,6 +1249,14 @@ diff --git a/crates/action_log/src/action_log.rs b/crates/action_log/src/action_
          }
  
          cx.notify();
+@@ -1268,6 +1325,7 @@
+ 
+ pub struct TrackedBuffer {
+     buffer: Entity<Buffer>,
++    edit_sources: BTreeMap<SharedString, EditSource>,
+     diff_base: Rope,
+     unreviewed_edits: Patch<u32>,
+     status: TrackedBufferStatus,
 diff --git a/crates/agent/Cargo.toml b/crates/agent/Cargo.toml
 --- a/crates/agent/Cargo.toml
 +++ b/crates/agent/Cargo.toml
@@ -4750,7 +4837,100 @@ diff --git a/crates/agent_ui/src/agent_connection_store.rs b/crates/agent_ui/src
 diff --git a/crates/agent_ui/src/agent_diff.rs b/crates/agent_ui/src/agent_diff.rs
 --- a/crates/agent_ui/src/agent_diff.rs
 +++ b/crates/agent_ui/src/agent_diff.rs
-@@ -1483,7 +1483,8 @@
+@@ -1,6 +1,7 @@
+ use crate::{Keep, KeepAll, OpenAgentDiff, Reject, RejectAll};
+ use acp_thread::{AcpThread, AcpThreadEvent};
+ use action_log::{ActionLogTelemetry, LastRejectUndo};
++use agent_client_protocol::schema::v1 as acp;
+ use agent_settings::AgentSettings;
+ use anyhow::Result;
+ use buffer_diff::DiffHunkStatus;
+@@ -28,7 +29,7 @@
+     ops::Range,
+     sync::Arc,
+ };
+-use ui::{CommonAnimationExt, Divider, IconButtonShape, KeyBinding, Tooltip, prelude::*};
++use ui::{CommonAnimationExt, ContextMenu, ContextMenuEntry, Divider, IconButtonShape, KeyBinding, PopoverMenu, Tooltip, prelude::*};
+ use util::{ResultExt, truncate_and_trailoff};
+ use workspace::{
+     Item, ItemHandle, ItemNavHistory, ToolbarItemEvent, ToolbarItemLocation, ToolbarItemView,
+@@ -103,7 +104,7 @@
+             diff_display_editor
+                 .set_diff_hunk_renderer(Some(agent_diff_renderer(&thread, workspace.clone())), cx);
+             diff_display_editor.update_editors(cx, |editor, _cx| {
+-                editor.register_addon(AgentDiffAddon);
++                editor.register_addon(AgentDiffAddon { thread: thread.clone(), workspace: workspace.clone() });
+             });
+             diff_display_editor
+         });
+@@ -937,7 +938,10 @@
+         .into_any_element()
+ }
+ 
+-struct AgentDiffAddon;
++struct AgentDiffAddon {
++    thread: Entity<AcpThread>,
++    workspace: WeakEntity<Workspace>,
++}
+ 
+ impl editor::Addon for AgentDiffAddon {
+     fn to_any(&self) -> &dyn std::any::Any {
+@@ -946,6 +950,54 @@
+ 
+     fn extend_key_context(&self, key_context: &mut gpui::KeyContext, _: &App) {
+         key_context.add("agent_diff");
++    }
++
++    fn render_buffer_header_controls(
++        &self,
++        _: &multi_buffer::ExcerptBoundaryInfo,
++        buffer: &language::BufferSnapshot,
++        _: &Window,
++        cx: &App,
++    ) -> Option<AnyElement> {
++        let sources = self.thread.read(cx).action_log().read(cx).edit_sources(buffer.remote_id(), cx);
++        if sources.is_empty() { return None; }
++        let label = if sources.len() == 1 {
++            format!("Edited by {}", truncate_and_trailoff(&sources[0].title, 24))
++        } else {
++            format!("Edited by {} agents", sources.len())
++        };
++        let workspace = self.workspace.clone();
++        Some(PopoverMenu::new("edit-sources")
++            .trigger_with_tooltip(Button::new("edit-sources-label", label).label_size(LabelSize::Small),
++                Tooltip::text("Agents that edited this file in this task. Select one to read its conversation. This does not assign individual lines."))
++            .menu(move |window, cx| {
++                Some(ContextMenu::build(window, cx, |mut menu, _, cx| {
++                    menu = menu.header("File Contributors");
++                    for source in &sources {
++                        let id = acp::SessionId::new(source.session_id.to_string());
++                        let view = workspace.upgrade()
++                            .and_then(|workspace| workspace.read(cx).panel::<crate::AgentPanel>(cx))
++                            .and_then(|panel| panel.read(cx).conversation_views().into_iter()
++                                .find(|view| view.read(cx).thread_view(&id).is_some()));
++                        let title = view.as_ref().and_then(|view| view.read(cx).thread_view(&id))
++                            .and_then(|view| view.read(cx).thread.read(cx).title())
++                            .unwrap_or_else(|| source.title.clone());
++                        menu.push_item(ContextMenuEntry::new(title).disabled(view.is_none()).handler({
++                            let workspace = workspace.clone();
++                            move |window, cx| {
++                                let Some(view) = view.as_ref() else { return; };
++                                if let Some(panel) = workspace.upgrade()
++                                    .and_then(|workspace| workspace.read(cx).panel::<crate::AgentPanel>(cx)) {
++                                    let thread_id = view.read(cx).thread_id;
++                                    panel.update(cx, |panel, cx| panel.activate_retained_thread(thread_id, false, window, cx));
++                                    view.update(cx, |view, cx| view.navigate_to_thread(id.clone(), window, cx));
++                                }
++                            }
++                        }));
++                    }
++                    menu
++                }))
++            }).into_any_element())
+     }
+ }
+ 
+@@ -1483,7 +1535,8 @@
              | AcpThreadEvent::ModeUpdated(_)
              | AcpThreadEvent::ConfigOptionsUpdated(_)
              | AcpThreadEvent::WorkingDirectoriesUpdated
@@ -4760,6 +4940,57 @@ diff --git a/crates/agent_ui/src/agent_diff.rs b/crates/agent_ui/src/agent_diff.
          }
      }
  
+@@ -1867,6 +1920,50 @@
+     use std::{path::Path, rc::Rc};
+     use util::path;
+     use workspace::{MultiWorkspace, PathList};
++
++    #[gpui::test]
++    async fn test_eido_file_contributors_preserve_nested_origin(cx: &mut TestAppContext) {
++        cx.update(|cx| {
++            let settings = SettingsStore::test(cx);
++            cx.set_global(settings);
++            theme_settings::init(theme::LoadThemes::JustBase, cx);
++        });
++        let fs = FakeFs::new(cx.executor());
++        fs.insert_tree(path!("/test"), json!({"file1": "user baseline", "file2": "other file"})).await;
++        let project = Project::test(fs, [path!("/test").as_ref()], cx).await;
++        let mut buffers = Vec::new();
++        for name in ["test/file1", "test/file2"] {
++            let path = project.read_with(cx, |project, cx| project.find_project_path(name, cx)).unwrap();
++            buffers.push(project.update(cx, |project, cx| project.open_buffer(path, cx)).await.unwrap());
++        }
++        let root = cx.new(|_| action_log::ActionLog::new(project.clone()));
++        let child = cx.new(|_| action_log::ActionLog::new(project.clone()).with_linked_action_log(root.clone()));
++        let grandchild = cx.new(|_| action_log::ActionLog::new(project.clone()).with_linked_action_log(child.clone()));
++        let sibling = cx.new(|_| action_log::ActionLog::new(project.clone()).with_linked_action_log(root.clone()));
++        grandchild.update(cx, |log, cx| log.buffer_read(buffers[0].clone(), cx));
++        assert!(root.read_with(cx, |log, cx| log.edit_sources(buffers[0].read(cx).remote_id(), cx)).is_empty());
++        buffers[0].update(cx, |buffer, cx| buffer.set_text("user baseline plus agent edit", cx));
++        for _ in 0..2 {
++            grandchild.update(cx, |log, cx| log.buffer_edited_by(buffers[0].clone(), action_log::EditSource {
++                session_id: "grandchild".into(), title: "Implementation".into(),
++            }, cx));
++        }
++        sibling.update(cx, |log, cx| log.buffer_read(buffers[0].clone(), cx));
++        assert!(sibling.read_with(cx, |log, cx| log.edit_sources(buffers[0].read(cx).remote_id(), cx)).is_empty(), "Reading another agent's edits does not claim them");
++        sibling.update(cx, |log, cx| log.buffer_read(buffers[1].clone(), cx));
++        buffers[1].update(cx, |buffer, cx| buffer.set_text("sibling edit", cx));
++        sibling.update(cx, |log, cx| log.buffer_edited_by(buffers[1].clone(), action_log::EditSource {
++            session_id: "sibling".into(), title: "Verification".into(),
++        }, cx));
++        cx.run_until_parked();
++        for log in [&grandchild, &child, &root] {
++            let sources = log.read_with(cx, |log, cx| log.edit_sources(buffers[0].read(cx).remote_id(), cx));
++            assert_eq!(sources.len(), 1);
++            assert_eq!(sources[0].session_id.as_ref(), "grandchild");
++        }
++        assert_eq!(root.read_with(cx, |log, cx| log.edit_sources(buffers[1].read(cx).remote_id(), cx))[0].session_id.as_ref(), "sibling");
++        assert!(child.read_with(cx, |log, cx| log.edit_sources(buffers[1].read(cx).remote_id(), cx)).is_empty());
++    }
+ 
+     #[gpui::test]
+     async fn test_multibuffer_agent_diff(cx: &mut TestAppContext) {
 diff --git a/crates/agent_ui/src/agent_model_selector.rs b/crates/agent_ui/src/agent_model_selector.rs
 --- a/crates/agent_ui/src/agent_model_selector.rs
 +++ /dev/null
@@ -11126,7 +11357,22 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
                              ),
                      )
                      .child(
-@@ -10082,6 +10458,11 @@
+@@ -7961,6 +8337,14 @@
+             working_dir,
+             is_expanded,
+         )
++        .when(std::env::var_os("EIDO_ROOT").is_some(), |header| {
++            let thread = self.thread.read(cx);
++            let title = thread.title().unwrap_or_else(|| "Main agent".into());
++            header.owner(
++                util::truncate_and_trailoff(&title, 24).to_string(),
++                format!("Agent: {title}\nSession: {}\nTerminal: {}\nTool call: {}", thread.session_id(), terminal_data.id(), tool_call.id),
++            )
++        })
+         .elapsed(time_elapsed)
+         .running(!command_finished && !needs_confirmation)
+         .on_toggle_expand(cx.listener({
+@@ -10082,6 +10466,11 @@
              .into_any_element()
          };
  
@@ -11138,7 +11384,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
          let gradient_overlay = {
              div()
                  .absolute()
-@@ -10089,24 +10470,11 @@
+@@ -10089,24 +10478,11 @@
                  .right_0()
                  .w_12()
                  .h_full()
@@ -11168,25 +11414,65 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
          };
  
          h_flex()
-@@ -10693,6 +11061,8 @@
+@@ -10693,6 +11069,9 @@
                  let model = thread.model()?;
                  Some(model.name().0)
              });
 +        let agent_detail = tool_call.raw_input.as_ref().and_then(|input| input.get("eidoAgent"))
 +            .and_then(|agent| agent.get("detail")).and_then(|detail| detail.as_str()).map(SharedString::from);
++        let detail = agent_detail.or(model_name);
          let thread_title = thread
              .as_ref()
              .and_then(|t| t.read(cx).title())
-@@ -10811,7 +11181,7 @@
-                                                     .flex_1()
-                                                     .truncate(),
+@@ -10775,6 +11154,7 @@
+                 h_flex()
+                     .group(&card_header_id)
+                     .h_8()
++                    .when(detail.is_some(), |this| this.h_12())
+                     .p_1()
+                     .w_full()
+                     .justify_between()
+@@ -10798,25 +11178,24 @@
+                                     .gap_1p5()
+                                     .justify_between()
+                                     .child(
+-                                        h_flex()
++                                        v_flex()
+                                             .min_w_0()
+-                                            .flex_initial()
+-                                            .gap_1p5()
+-                                            .child(icon)
++                                            .flex_1()
+                                             .child(
+-                                                Label::new(title.to_string())
+-                                                    .size(LabelSize::Custom(
+-                                                        self.tool_name_font_size(),
+-                                                    ))
+-                                                    .flex_1()
+-                                                    .truncate(),
++                                                h_flex()
++                                                    .min_w_0()
++                                                    .gap_1p5()
++                                                    .child(icon)
++                                                    .child(
++                                                        Label::new(title.to_string())
++                                                            .size(LabelSize::Custom(self.tool_name_font_size()))
++                                                            .truncate(),
++                                                    ),
                                              )
 -                                            .when_some(model_name, |this, model_name| {
-+                                            .when_some(agent_detail.or(model_name), |this, model_name| {
++                                            .when_some(detail, |this, detail| {
                                                  this.child(
-                                                     Label::new(format!("· {model_name}"))
-                                                         .size(LabelSize::Custom(
-@@ -12293,6 +12663,31 @@
+-                                                    Label::new(format!("· {model_name}"))
+-                                                        .size(LabelSize::Custom(
+-                                                            self.tool_name_font_size(),
+-                                                        ))
++                                                    Label::new(detail)
++                                                        .size(LabelSize::Small)
+                                                         .color(Color::Muted)
+                                                         .truncate(),
+                                                 )
+@@ -12293,6 +12672,31 @@
                          .size_full()
                          .child(self.render_entries(cx))
                          .vertical_scrollbar_for(&list_state, window, cx)
@@ -11218,7 +11504,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
                          .into_any()
                  } else {
                      this.into_any()
-@@ -12607,6 +13002,10 @@
+@@ -12607,6 +13011,10 @@
                      .flatten(),
                  |this, bar| this.child(bar),
              )
@@ -11229,7 +11515,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
              .child(conversation)
              .children(self.render_multi_root_callout(cx))
              .children(self.render_activity_bar(window, cx))
-@@ -12631,7 +13030,9 @@
+@@ -12631,7 +13039,9 @@
              )
              .children(self.render_token_limit_callout(cx))
              .children(self.render_request_elicitations(cx))
@@ -17706,6 +17992,59 @@ diff --git a/crates/agent_ui/src/terminal_inline_assistant.rs b/crates/agent_ui/
 -        }
 -    }
 -}
+diff --git a/crates/agent_ui/src/ui/terminal_tool_header.rs b/crates/agent_ui/src/ui/terminal_tool_header.rs
+--- a/crates/agent_ui/src/ui/terminal_tool_header.rs
++++ b/crates/agent_ui/src/ui/terminal_tool_header.rs
+@@ -19,6 +19,7 @@
+     id: SharedString,
+     hover_group: SharedString,
+     working_dir: SharedString,
++    owner: Option<(SharedString, SharedString)>,
+     is_expanded: bool,
+     elapsed: Option<Duration>,
+     running: bool,
+@@ -42,6 +43,7 @@
+             id: id.into(),
+             hover_group: hover_group.into(),
+             working_dir: working_dir.into(),
++            owner: None,
+             is_expanded,
+             elapsed: None,
+             running: false,
+@@ -60,6 +62,11 @@
+         self
+     }
+ 
++    pub fn owner(mut self, label: impl Into<SharedString>, details: impl Into<SharedString>) -> Self {
++        self.owner = Some((label.into(), details.into()));
++        self
++    }
++
+     pub fn running(mut self, running: bool) -> Self {
+         self.running = running;
+         self
+@@ -113,6 +120,7 @@
+             id,
+             hover_group,
+             working_dir,
++            owner,
+             is_expanded,
+             elapsed,
+             running,
+@@ -142,6 +150,13 @@
+             .gap_1()
+             .justify_between()
+             .rounded_t_md()
++            .when_some(owner, |row, (label, details)| {
++                row.child(
++                    div().id(child_id("owner")).flex_none()
++                        .tooltip(Tooltip::text(details))
++                        .child(Label::new(label).size(LabelSize::XSmall).color(Color::Muted)),
++                )
++            })
+             .child(
+                 div().w_full().min_w_0().overflow_hidden().child(
+                     Label::new(working_dir)
 diff --git a/crates/agent_ui/src/ui.rs b/crates/agent_ui/src/ui.rs
 --- a/crates/agent_ui/src/ui.rs
 +++ b/crates/agent_ui/src/ui.rs
