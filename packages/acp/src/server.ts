@@ -18,6 +18,7 @@ export async function startEidoAgent(agentDir: string, sessionDir: string, strea
   });
   let connectClient!: (client: AgentContext) => void;
   let supportsForms = false;
+  let supportsNativeUi = false;
   const subagents = createSubagents(agentDir, sessionDir);
   const clientReady = new Promise<AgentContext>(resolve => { connectClient = resolve; });
   const server = await runAcp({
@@ -100,7 +101,7 @@ export async function startEidoAgent(agentDir: string, sessionDir: string, strea
           browser.track(context.toolCall.name);
           return beforeToolCall?.(context, signal);
         };
-        installPiCommands(created.session, client, supportsForms, agentDir);
+        installPiCommands(created.session, client, supportsForms, agentDir, supportsNativeUi);
         return created;
       },
     },
@@ -108,6 +109,7 @@ export async function startEidoAgent(agentDir: string, sessionDir: string, strea
   const initialize = server.agent.initialize.bind(server.agent);
   server.agent.initialize = context => {
     supportsForms = context.params.clientCapabilities?.elicitation?.form != null;
+    supportsNativeUi = context.params.clientCapabilities?._meta?.eidoNativeUi === 1;
     subagents.setEnabled(context.params.clientCapabilities?._meta?.eidoSubagents === 1);
     return initialize(context);
   };

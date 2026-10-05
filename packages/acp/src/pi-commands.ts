@@ -4,6 +4,9 @@ import type { Api, Model } from "@earendil-works/pi-ai";
 import { createPiUI } from "./pi-ui.ts";
 import { exportPiSession, piChangelog } from "./pi-command-files.ts";
 import { manageAgentRoles } from "./agent-roles.ts";
+import { nativeUiAction } from "./native-ui.ts";
+import { createPiSettings } from "../../../scripts/pi-settings.mjs";
+import { loginPiProvider } from "./pi-auth.ts";
 
 // The audited adapter hook runs inside its existing turn boundary. Commands
 // share admission, cancellation and notification ordering with ordinary prompts.
@@ -20,6 +23,14 @@ export const piCommands: AvailableCommand[] = [
   { name: "export", description: "Export this pi session to HTML or JSONL", input: {hint: "[path.html | path.jsonl]"} },
   { name: "changelog", description: "Show release notes from the bundled pi version" },
   { name: "agents", description: "List, create or edit global agent roles", input: {hint: "[list | new | agent-name]"} },
+  { name: "logout", description: "Remove a provider's global pi credentials", input: {hint: "[provider]"} },
+  { name: "login", description: "Sign in using pi provider authentication", input: {hint: "[provider] [api_key | oauth]"} },
+  { name: "trust", description: "Choose global Agent Access for all tasks", input: {hint: "[ask | full]"} },
+];
+const nativeCommands: AvailableCommand[] = [
+  {name: "settings", description: "Open global pi settings"},
+  {name: "hotkeys", description: "Open Eido keyboard shortcuts"},
+  {name: "copy", description: "Copy the last pi assistant response to the clipboard"},
 ];
 
 interface CommandContext {
@@ -52,21 +63,23 @@ function sessionInfo(pi: AgentSession): string {
   ].join("\n\n");
 }
 
-function commandCatalogue(pi: AgentSession): AvailableCommand[] {
+function commandCatalogue(pi: AgentSession, nativeUi = false): AvailableCommand[] {
   const dynamic = [
     ...pi.extensionRunner.getRegisteredCommands().map(command => ({name: command.invocationName, description: command.description ?? "pi extension command", input: {hint: "[arguments]"}})),
     ...pi.promptTemplates.map(template => ({name: template.name, description: template.description || "pi prompt template", input: {hint: "[arguments]"}})),
     ...(pi.settingsManager.getEnableSkillCommands() ? pi.resourceLoader.getSkills().skills.map(skill => ({name: `skill:${skill.name}`, description: skill.description || "pi skill", input: {hint: "[instructions]"}})) : []),
   ];
   const seen = new Set<string>();
-  return [...piCommands, ...dynamic].filter(command => {
+  return [...piCommands, ...(nativeUi ? nativeCommands : []), ...dynamic].filter(command => {
     if (seen.has(command.name)) return false;
     seen.add(command.name);
     return true;
   });
 }
 
-export function installPiCommands(pi: AgentSession, client: AgentContext, supportsForms: boolean, agentDir: string) {
+export function installPiCommands(pi: AgentSession, client: AgentContext, supportsForms: boolean, agentDir: string, nativeUi = false) {
+  const catalogue = () => commandCatalogue(pi, nativeUi);
+  const supported = [...piCommands, ...(nativeUi ? nativeCommands : [])];
   let activeContext: CommandContext | undefined;
   const ui = supportsForms ? createPiUI(pi, client, () => activeContext?.activeTurnSignal(), update => {
     if (activeContext) activeContext.enqueue(update);
@@ -75,7 +88,7 @@ export function installPiCommands(pi: AgentSession, client: AgentContext, suppor
   const bind = pi.bindExtensions.bind(pi);
   pi.bindExtensions = options => bind({...options, ...(ui ? {uiContext: ui, mode: "rpc" as const} : {})});
   const bridge = {
-    get commands() { return commandCatalogue(pi); },
+    get commands() { return catalogue(); },
     async run(text: string, images: unknown[] | undefined, context: CommandContext): Promise<boolean> {
       activeContext = context;
       if (!text.trimStart().startsWith("/")) return false;
@@ -92,15 +105,59 @@ export function installPiCommands(pi: AgentSession, client: AgentContext, suppor
       try {
         signal?.throwIfAborted();
         if (images?.length) throw new Error("Slash commands do not accept image attachments. Remove the attachment and retry.");
-        if (!piCommands.some(command => command.name === name) && commandCatalogue(pi).some(command => command.name === name)) {
+        if (!supported.some(command => command.name === name) && catalogue().some(command => command.name === name)) {
           // Preserve pi's own extension dispatch and skill/template expansion.
           return false;
         }
-        if (!piCommands.some(command => command.name === name)) {
-          throw new Error(`/${name || "…"} is not available in Eido yet. Supported commands: ${piCommands.map(command => `/${command.name}`).join(", ")}.`);
+        if (!supported.some(command => command.name === name)) {
+          throw new Error(`/${name || "…"} is not available in Eido yet. Supported commands: ${supported.map(command => `/${command.name}`).join(", ")}.`);
         }
         let output: string;
         switch (name) {
+          case "settings":
+          case "hotkeys":
+          case "copy": {
+            if (argument) throw new Error(`Usage: /${name} (no arguments).`);
+            const text = name === "copy" ? pi.getLastAssistantText() : undefined;
+            if (name === "copy" && !text) throw new Error("No pi assistant response to copy yet.");
+            await nativeUiAction(client, pi.sessionId, name, text ? {text} : {}, signal);
+            output = name === "copy" ? "Copied the last pi assistant response." : name === "settings" ? "Opened global pi settings." : "Opened Eido keyboard shortcuts.";
+            break;
+          }
+          case "trust": {
+            const selected = argument || await ui?.select("Agent Access · Global", ["Ask Before Actions", "Full Access"]);
+            if (!selected) {output = "Agent Access unchanged. Use /trust ask or /trust full."; break;}
+            if (!["ask", "full", "Ask Before Actions", "Full Access"].includes(selected)) throw new Error("Usage: /trust ask or /trust full. Eido supports global access only.");
+            const fullAccess = selected === "full" || selected === "Full Access";
+            if (fullAccess && !await ui?.confirm("Enable Full Access for all tasks?", "pi will decide tool permissions without asking. This changes the global Agent Access control beside the composer.")) {
+              output = "Agent Access unchanged."; break;
+            }
+            signal?.throwIfAborted();
+            await createPiSettings(agentDir).execute({operation: "access", fullAccess});
+            if (nativeUi) await nativeUiAction(client, pi.sessionId, "access_changed", {}, signal);
+            output = `Global Agent Access: ${fullAccess ? "Full Access" : "Ask Before Actions"}.`;
+            break;
+          }
+          case "logout": {
+            const credentials = await pi.modelRuntime.listCredentials({signal});
+            const providers = credentials.map(credential => credential.providerId);
+            if (!providers.length) {output = "No stored pi provider credentials."; break;}
+            const selected = argument || await ui?.select("Remove global provider credentials", providers);
+            if (!selected) {output = "Sign-out cancelled."; break;}
+            if (!providers.includes(selected)) throw new Error(`No stored credentials for ${selected}.`);
+            if (!await ui?.confirm(`Sign out of ${selected}?`, "Remove this provider's global credentials. Other providers and environment credentials are preserved.")) {output = "Sign-out cancelled."; break;}
+            signal?.throwIfAborted();
+            await pi.modelRuntime.logout(selected, {signal});
+            await context.publishAvailableModels(await pi.modelRuntime.getAvailable());
+            context.enqueue({sessionUpdate: "config_option_update", configOptions: context.configOptions()});
+            output = `Removed global credentials for ${selected}.`;
+            break;
+          }
+          case "login":
+            output = await loginPiProvider(pi, client, ui, argument, signal);
+            await context.publishAvailableModels(await pi.modelRuntime.getAvailable());
+            context.enqueue({sessionUpdate: "config_option_update", configOptions: context.configOptions()});
+            break;
           case "agents":
             output = await manageAgentRoles(agentDir, argument, ui, signal);
             break;
@@ -165,7 +222,7 @@ export function installPiCommands(pi: AgentSession, client: AgentContext, suppor
             await pi.reload({beforeSessionStart: async () => { await pi.modelRuntime.refresh({allowNetwork: false, signal}); }});
             const errors = pi.resourceLoader.getExtensions().errors;
             await context.publishAvailableModels(await pi.modelRuntime.getAvailable());
-            context.enqueue({sessionUpdate: "available_commands_update", availableCommands: commandCatalogue(pi)});
+            context.enqueue({sessionUpdate: "available_commands_update", availableCommands: catalogue()});
             context.enqueue({sessionUpdate: "config_option_update", configOptions: context.configOptions()});
             if (errors.length) throw new Error(`Reload completed with extension errors:\n${errors.map(error => error.error).join("\n")}`);
             output = "Reloaded global pi extensions, skills, templates and settings.";

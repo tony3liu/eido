@@ -49,6 +49,8 @@ fn request(full_access: Option<bool>, cx: &mut App) {
     }).detach();
 }
 
+pub(crate) fn refresh(cx: &mut App) { request(None, cx); }
+
 pub(crate) fn render<T: 'static>(_window: &mut Window, cx: &mut Context<T>) -> impl IntoElement {
     let state = cx.global::<EidoAccess>();
     let full_access = state.full_access;
