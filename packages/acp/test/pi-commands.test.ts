@@ -96,6 +96,91 @@ test("ACP discovers pi commands; local commands persist and replay without model
   } finally { await h.dispose(); }
 });
 
+test('pi argument callbacks and stacked autocomplete providers use the native completion RPC without sending a prompt', {timeout: 20_000}, async () => {
+  const h = await harness([], {
+    native: async () => ({handled: true}), form: async () => ({action: 'cancel'}),
+    setup: async cwd => {
+      await mkdir(join(cwd, 'extensions'));
+      await writeFile(join(cwd, 'extensions/completions.js'), `export default function(pi) {
+        pi.registerCommand('review', {
+          description:'Review modes',
+          async getArgumentCompletions(prefix) {
+            return ['quick','thorough'].filter(value=>value.startsWith(prefix)).map(value=>({value,label:value,description:'Review '+value}));
+          },
+          handler:()=>{throw new Error('Selecting completion must not execute a command');}
+        });
+        pi.on('session_start',(_,ctx)=>{
+          ctx.ui.addAutocompleteProvider(current=>({
+            ...current,
+            async getSuggestions(lines,row,col,options) {
+              const before=lines[row].slice(0,col);
+              if (before.endsWith('~pair')) return {items:[{value:'pair',label:'Pair template'}],prefix:'~pair'};
+              if (before==='slow') {await new Promise(resolve=>setTimeout(resolve,200)); return {items:[{value:'old',label:'Old'}],prefix:'slow'};}
+              if (before==='badedit') return {items:[{value:'badedit',label:'Bad edit'}],prefix:'badedit'};
+              if (before==='bad') return {items:[{value:42,label:'Invalid'}],prefix:'bad'};
+              return current.getSuggestions(lines,row,col,options);
+            },
+            applyCompletion(lines,row,col,item,prefix) {
+              ctx.ui.notify('Applied '+item.value);
+              if(item.value==='badedit')return {lines:['中文'],cursorLine:0,cursorCol:99};
+              if(item.value!=='pair')return current.applyCompletion(lines,row,col,item,prefix);
+              const next=[...lines];next[row]=lines[row].slice(0,col-prefix.length)+'pair()'+lines[row].slice(col);
+              return {lines:next,cursorLine:row,cursorCol:col-prefix.length+5};
+            }
+          }));
+          ctx.ui.addAutocompleteProvider(current=>({...current,async getSuggestions(...args){
+            const result=await current.getSuggestions(...args);
+            return result?{...result,items:result.items.map(item=>({...item,label:'Native '+item.label}))}:null;
+          }}));
+        });
+      }`);
+    },
+  });
+  type Candidate = {id: string; label: string};
+  const complete = (sessionId: string, text: string, cursor = Buffer.byteLength(text)) => h.connection.agent.request('_eido/ui/complete', {sessionId, text, cursor}) as Promise<{handled: boolean; items: Candidate[]}>;
+  const select = (sessionId: string, text: string, item: Candidate, cursor = Buffer.byteLength(text)) => h.connection.agent.request('_eido/ui/complete', {sessionId, text, cursor, selection:item.id}) as Promise<{handled:boolean; text?:string; cursor?:number}>;
+  const first = async (sessionId:string, text:string, cursor = Buffer.byteLength(text)) => select(sessionId,text,(await complete(sessionId,text,cursor)).items[0]!,cursor);
+  try {
+    const a = await h.newTask(), b = await h.newTask();
+    for (const task of [a,b]) await h.connection.agent.request('_eido/ui/state', {sessionId:task.sessionId, instance:task.sessionId, revision:1, text:''});
+    const args = await complete(a.sessionId, '/review qu');
+    assert.equal(args.handled, true); assert.equal(args.items[0]?.label, 'Native quick');
+    assert.doesNotMatch(h.text(a.sessionId), /Applied/);
+    assert.equal('text' in args.items[0]!, false);
+    const applied = await select(a.sessionId, '/review qu', args.items[0]!);
+    assert.equal(applied.text, '/review quick');
+    assert.equal(applied.cursor, Buffer.byteLength('/review quick'));
+    assert.equal((await select(a.sessionId, '/review qu', args.items[0]!)).handled, false);
+    assert.equal((h.text(a.sessionId).match(/Applied quick/g)??[]).length, 1);
+    const unicode = await first(a.sessionId, '中文\n~pair suffix', Buffer.byteLength('中文\n~pair'));
+    assert.equal(unicode.text, '中文\npair() suffix');
+    assert.equal(unicode.cursor, Buffer.byteLength('中文\npair('));
+    assert.equal((await first(a.sessionId, '/think')).text, '/thinking ');
+    assert.equal((await first(a.sessionId, '/thinking of')).text, '/thinking off');
+    const stale = await complete(a.sessionId,'/review qu');
+    assert.equal((await select(b.sessionId,'/review qu',stale.items[0]!)).handled,false);
+    assert.equal((await select(a.sessionId,'changed',stale.items[0]!)).handled,false);
+    assert.equal((await select(a.sessionId,'/review qu',stale.items[0]!)).handled,false);
+    assert.equal((await first(a.sessionId,'badedit')).handled,false);
+    assert.match(h.text(a.sessionId),/Invalid autocomplete edit/);
+    const slow = complete(a.sessionId, 'slow');
+    await new Promise(resolve => setTimeout(resolve, 25));
+    assert.ok((await first(a.sessionId, '/review th')).text?.includes('thorough'));
+    assert.deepEqual(await slow, {handled:false,items:[]});
+    assert.deepEqual(await complete(a.sessionId, 'bad'), {handled:false,items:[]});
+    assert.match(h.text(a.sessionId), /Invalid autocomplete item/);
+    await assert.rejects(complete(a.sessionId, '中文', 1));
+    await assert.rejects(complete(a.sessionId, 'x'.repeat(70_000)));
+    const beforeReload = await complete(a.sessionId,'~pair');
+    await writeFile(join(h.cwd,'extensions/completions.js'), 'export default function() {}');
+    await h.prompt(a.sessionId, '/reload');
+    assert.deepEqual(await complete(a.sessionId, '~pair'), {handled:false,items:[]});
+    assert.equal((await select(a.sessionId,'~pair',beforeReload.items[0]!)).handled,false);
+    assert.equal((await first(b.sessionId, '~pair')).text, 'pair()');
+    assert.equal(h.requests(), 0);
+  } finally {await h.dispose();}
+});
+
 test("pi extension commands, prompt templates and skills use the dynamic ACP catalogue", {timeout: 30_000}, async () => {
   const received: CreateElicitationRequest[] = [];
   const h = await harness([

@@ -140,6 +140,10 @@ await patchSource(agentPath,
 
 
 // Live native editor state backs pi's synchronous UI getters in RPC mode.
+if (!(await readFile(new URL("dist/server.js", directory), "utf8")).includes('.onRequest("_eido/ui/complete"'))
+await patchSource(new URL("dist/server.js", directory),
+  '        .onRequest(LOADED_TURN_QUERY_METHOD, loadedTurnQueryParser, (context) => impl.loadedTurnQuery(context))',
+  '        .onRequest("_eido/ui/complete", {parse(value) { if (!value || typeof value.sessionId !== "string" || typeof value.text !== "string" || !Number.isSafeInteger(value.cursor)) throw new Error("Invalid completion input"); return value; }}, ({params, signal}) => impl.live.get(params.sessionId)?.pi[Symbol.for("eido.pi.autocomplete")]?.complete(params, signal) ?? {handled: false, items: []})\n        .onRequest(LOADED_TURN_QUERY_METHOD, loadedTurnQueryParser, (context) => impl.loadedTurnQuery(context))');
 if (!(await readFile(new URL("dist/server.js", directory), "utf8")).includes('.onRequest("_eido/ui/state"'))
 await patchSource(new URL("dist/server.js", directory),
   '        .onRequest(LOADED_TURN_QUERY_METHOD, loadedTurnQueryParser, (context) => impl.loadedTurnQuery(context))',

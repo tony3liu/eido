@@ -1155,7 +1155,7 @@ diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thr
 diff --git a/crates/acp_thread/src/connection.rs b/crates/acp_thread/src/connection.rs
 --- a/crates/acp_thread/src/connection.rs
 +++ b/crates/acp_thread/src/connection.rs
-@@ -194,6 +194,19 @@
+@@ -194,6 +194,23 @@
  
      fn prompt(&self, params: acp::PromptRequest, cx: &mut App)
      -> Task<Result<acp::PromptResponse>>;
@@ -1168,6 +1168,10 @@ diff --git a/crates/acp_thread/src/connection.rs b/crates/acp_thread/src/connect
 +        Task::ready(Ok(()))
 +    }
 +
++    fn eido_complete(&self, _session_id: acp::SessionId, _text: String, _cursor: usize, _selection: Option<String>, _force: bool, _cx: &mut App) -> Task<Result<serde_json::Value>> {
++        Task::ready(Ok(serde_json::json!({"handled": false, "items": []})))
++    }
++
 +    /// Inject an explicit user message at pi's next safe boundary.
 +    fn eido_send_next(&self, _params: acp::PromptRequest, _cx: &mut App) -> Task<Result<bool>> {
 +        Task::ready(Err(anyhow::anyhow!("This agent does not support boundary messages")))
@@ -1175,7 +1179,7 @@ diff --git a/crates/acp_thread/src/connection.rs b/crates/acp_thread/src/connect
  
      fn retry(&self, _session_id: &acp::SessionId, _cx: &App) -> Option<Rc<dyn AgentSessionRetry>> {
          None
-@@ -830,10 +843,14 @@
+@@ -830,10 +847,14 @@
              title: Option<SharedString>,
              cx: &mut gpui::App,
          ) -> Entity<AcpThread> {
@@ -1495,7 +1499,7 @@ diff --git a/crates/agent_servers/src/acp.rs b/crates/agent_servers/src/acp.rs
  
              Ok(thread)
          })
-@@ -1752,6 +1784,34 @@
+@@ -1752,6 +1784,42 @@
                      }
                  }
              }
@@ -1518,6 +1522,14 @@ diff --git a/crates/agent_servers/src/acp.rs b/crates/agent_servers/src/acp.rs
 +        })
 +    }
 +
++    fn eido_complete(&self, session_id: acp::SessionId, text: String, cursor: usize, selection: Option<String>, force: bool, cx: &mut App) -> Task<Result<serde_json::Value>> {
++        let conn = self.connection.clone();
++        cx.foreground_executor().spawn(async move {
++            let response = conn.send_request(EidoCompletion {session_id, text, cursor, selection, force}).block_task().await?;
++            Ok(serde_json::to_value(response)?)
++        })
++    }
++
 +    fn eido_send_next(&self, params: acp::PromptRequest, cx: &mut App) -> Task<Result<bool>> {
 +        let conn = self.connection.clone();
 +        cx.foreground_executor().spawn(async move {
@@ -1530,7 +1542,7 @@ diff --git a/crates/agent_servers/src/acp.rs b/crates/agent_servers/src/acp.rs
          })
      }
  
-@@ -2459,6 +2519,52 @@
+@@ -2459,6 +2527,52 @@
      }
  
      #[gpui::test]
@@ -1583,7 +1595,7 @@ diff --git a/crates/agent_servers/src/acp.rs b/crates/agent_servers/src/acp.rs
      async fn client_capabilities_include_elicitation_without_acp_beta(
          cx: &mut gpui::TestAppContext,
      ) {
-@@ -3759,7 +3865,7 @@
+@@ -3759,7 +3873,7 @@
          });
  
          let fs = fs::FakeFs::new(cx.executor());
@@ -1592,7 +1604,7 @@ diff --git a/crates/agent_servers/src/acp.rs b/crates/agent_servers/src/acp.rs
          let project = project::Project::test(fs, [std::path::Path::new("/a")], cx).await;
  
          let load_count = Arc::new(AtomicUsize::new(0));
-@@ -3804,7 +3910,9 @@
+@@ -3804,7 +3918,9 @@
              )
              .on_receive_request(
                  async move |_req: acp::NewSessionRequest, responder, _cx| {
@@ -1603,7 +1615,7 @@ diff --git a/crates/agent_servers/src/acp.rs b/crates/agent_servers/src/acp.rs
                  },
                  agent_client_protocol::on_receive_request!(),
              )
-@@ -3956,6 +4064,66 @@
+@@ -3956,6 +4072,66 @@
      }
  
      #[gpui::test]
@@ -1670,7 +1682,7 @@ diff --git a/crates/agent_servers/src/acp.rs b/crates/agent_servers/src/acp.rs
      async fn test_loaded_sessions_keep_state_until_last_handle_drops(
          cx: &mut gpui::TestAppContext,
      ) {
-@@ -4382,6 +4550,22 @@
+@@ -4382,6 +4558,22 @@
  }
  
  fn mcp_servers_for_project(project: &Entity<Project>, cx: &App) -> Vec<acp::McpServer> {
@@ -1693,7 +1705,7 @@ diff --git a/crates/agent_servers/src/acp.rs b/crates/agent_servers/src/acp.rs
      let context_server_store = project.read(cx).context_server_store().read(cx);
      let is_local = project.read(cx).is_local();
      context_server_store
-@@ -4566,6 +4750,66 @@
+@@ -4566,6 +4758,66 @@
      }
  }
  
@@ -1760,7 +1772,7 @@ diff --git a/crates/agent_servers/src/acp.rs b/crates/agent_servers/src/acp.rs
  fn handle_request_permission(
      args: acp::RequestPermissionRequest,
      responder: Responder<acp::RequestPermissionResponse>,
-@@ -4581,15 +4825,15 @@
+@@ -4581,15 +4833,15 @@
      let tool_call_id = args.tool_call.tool_call_id.clone();
      cx.spawn(async move |cx| {
          let result: Result<_, acp::Error> = async {
@@ -1785,7 +1797,7 @@ diff --git a/crates/agent_servers/src/acp.rs b/crates/agent_servers/src/acp.rs
                  .flatten_acp()?;
              cancellation
                  .run_until_cancelled(async { Ok(task.await) })
-@@ -4736,12 +4980,51 @@
+@@ -4736,12 +4988,51 @@
      .detach();
  }
  
@@ -1837,7 +1849,7 @@ diff --git a/crates/agent_servers/src/acp.rs b/crates/agent_servers/src/acp.rs
      let thread = match session_thread(ctx, &args.session_id) {
          Ok(t) => t,
          Err(e) => return respond_err(responder, e),
-@@ -4751,7 +5034,8 @@
+@@ -4751,7 +5042,8 @@
          let result: Result<_, acp::Error> = async {
              thread
                  .update(cx, |thread, cx| {
@@ -1847,7 +1859,7 @@ diff --git a/crates/agent_servers/src/acp.rs b/crates/agent_servers/src/acp.rs
                  })
                  .map_err(acp::Error::from)?
                  .await?;
-@@ -4777,6 +5061,9 @@
+@@ -4777,6 +5069,9 @@
      cx: &mut AsyncApp,
      ctx: &ClientContext,
  ) {
@@ -1857,7 +1869,7 @@ diff --git a/crates/agent_servers/src/acp.rs b/crates/agent_servers/src/acp.rs
      let thread = match session_thread(ctx, &args.session_id) {
          Ok(t) => t,
          Err(e) => return respond_err(responder, e),
-@@ -4788,16 +5075,167 @@
+@@ -4788,16 +5083,174 @@
              .run_until_cancelled(async {
                  thread
                      .update(cx, |thread, cx| {
@@ -1903,6 +1915,13 @@ diff --git a/crates/agent_servers/src/acp.rs b/crates/agent_servers/src/acp.rs
 +}
 +#[derive(Debug, Clone, Serialize, Deserialize, agent_client_protocol::JsonRpcResponse)]
 +struct EidoUiStateResponse { handled: bool }
++
++#[derive(Debug, Clone, Serialize, Deserialize, agent_client_protocol::JsonRpcRequest)]
++#[request(method = "_eido/ui/complete", response = EidoCompletionResponse)]
++#[serde(rename_all = "camelCase")]
++struct EidoCompletion { session_id: acp::SessionId, text: String, cursor: usize, #[serde(skip_serializing_if = "Option::is_none")] selection: Option<String>, force: bool }
++#[derive(Debug, Clone, Serialize, Deserialize, agent_client_protocol::JsonRpcResponse)]
++struct EidoCompletionResponse { handled: bool, items: Vec<serde_json::Value>, #[serde(default)] text: Option<String>, #[serde(default)] cursor: Option<usize> }
 +
 +#[derive(Debug, Clone, Serialize, Deserialize, agent_client_protocol::JsonRpcRequest)]
 +#[request(method = "_session/steering", response = EidoSteeringResponse)]
@@ -2027,7 +2046,7 @@ diff --git a/crates/agent_servers/src/acp.rs b/crates/agent_servers/src/acp.rs
  }
  
  fn handle_session_notification(
-@@ -4983,6 +5421,7 @@
+@@ -4983,6 +5436,7 @@
                      .into_iter()
                      .map(|env| (env.name, env.value))
                      .collect(),
@@ -10257,6 +10276,154 @@ diff --git a/crates/agent_ui/src/buffer_codegen.rs b/crates/agent_ui/src/buffer_
 -        })
 -    }
 -}
+diff --git a/crates/agent_ui/src/completion_provider.rs b/crates/agent_ui/src/completion_provider.rs
+--- a/crates/agent_ui/src/completion_provider.rs
++++ b/crates/agent_ui/src/completion_provider.rs
+@@ -449,6 +449,9 @@
+ }
+ 
+ pub trait PromptCompletionProviderDelegate: Send + Sync + 'static {
++    fn eido_completions_enabled(&self, _cx: &App) -> bool { false }
++    fn eido_completions(&self, _text: String, _cursor: usize, _selection: Option<String>, _force: bool, _cx: &mut App) -> Option<Task<Result<serde_json::Value>>> { None }
++
+     fn supports_context(&self, mode: PromptContextType, cx: &App) -> bool {
+         self.supported_modes(cx).contains(&mode)
+     }
+@@ -1409,8 +1412,8 @@
+     }
+ }
+ 
+-impl<T: PromptCompletionProviderDelegate> CompletionProvider for PromptCompletionProvider<T> {
+-    fn completions(
++impl<T: PromptCompletionProviderDelegate> PromptCompletionProvider<T> {
++    fn native_completions(
+         &self,
+         buffer: &Entity<Buffer>,
+         buffer_position: Anchor,
+@@ -1893,6 +1896,86 @@
+         }
+     }
+ 
++}
++
++impl<T: PromptCompletionProviderDelegate> CompletionProvider for PromptCompletionProvider<T> {
++    fn completions(
++        &self, buffer: &Entity<Buffer>, position: Anchor, trigger: CompletionContext,
++        window: &mut Window, cx: &mut Context<Editor>,
++    ) -> Task<Result<Vec<CompletionResponse>>> {
++        let force = trigger.trigger_kind == lsp::CompletionTriggerKind::INVOKED;
++        let fallback = self.native_completions(buffer, position, trigger, window, cx);
++        let snapshot = buffer.read(cx).snapshot();
++        let original = snapshot.text();
++        if original.len() > 65_536 { return fallback; }
++        let cursor = position.to_offset(&snapshot);
++        let Some(request) = self.source.eido_completions(original.clone(), cursor, None, force, cx) else { return fallback; };
++        let buffer = buffer.clone();
++        let editor = self.editor.clone();
++        let source = self.source.clone();
++        cx.spawn(async move |_, cx| {
++            let response = match request.await {
++                Ok(value) if value["handled"].as_bool() == Some(true) => value,
++                _ => return fallback.await,
++            };
++            cx.update(|cx| {
++                // A slow plugin must never replace a newer draft with old suggestions.
++                if buffer.read(cx).snapshot().text() != original { return Ok(Vec::new()); }
++                let mut completions = Vec::new();
++                for item in response["items"].as_array().into_iter().flatten().take(32) {
++                    let (Some(label), Some(id)) = (item["label"].as_str(), item["id"].as_str()) else { continue; };
++                    let id = id.to_owned();
++                    let target_editor = editor.clone();
++                    let source = source.clone();
++                    let original = original.clone();
++                    let buffer = buffer.clone();
++                    let version = snapshot.version().clone();
++                    completions.push(Completion {
++                        replace_range: position..position,
++                        new_text: String::new(),
++                        label: CodeLabel::plain(label.to_owned(), None),
++                        documentation: item["description"].as_str().map(|value| CompletionDocumentation::MultiLinePlainText(value.to_owned().into())),
++                        source: project::CompletionSource::Custom,
++                        icon_path: None, icon_color: None, match_start: None,
++                        snippet_deduplication_key: None, insert_text_mode: None,
++                        // Native completion inserts nothing; pi applies only the selected item.
++                        confirm: Some(Arc::new(move |_, window, cx| {
++                            let (target_editor, source, original, buffer, version, id) = (target_editor.clone(), source.clone(), original.clone(), buffer.clone(), version.clone(), id.clone());
++                            window.defer(cx, move |window, cx| {
++                                let _ = target_editor.update(cx, |editor, cx| {
++                                    let current = editor.buffer().read(cx).snapshot(cx);
++                                    let selection = editor.selections.newest::<multi_buffer::MultiBufferOffset>(&editor.display_snapshot(cx));
++                                    if current.text() != original || buffer.read(cx).version() != version || selection.start.0 != cursor || selection.end.0 != cursor || editor.selections.count() != 1 { return; }
++                                    let Some(request) = source.eido_completions(original.clone(), cursor, Some(id), false, cx) else { return; };
++                                    cx.spawn_in(window, async move |editor, cx| {
++                                        let response = request.await?;
++                                        editor.update_in(cx, |editor, window, cx| {
++                                            let current = editor.buffer().read(cx).snapshot(cx);
++                                            let selection = editor.selections.newest::<multi_buffer::MultiBufferOffset>(&editor.display_snapshot(cx));
++                                            if current.text() != original || buffer.read(cx).version() != version || selection.start.0 != cursor || selection.end.0 != cursor || editor.selections.count() != 1 { return; }
++                                            let (Some(after), Some(caret)) = (response["text"].as_str(), response["cursor"].as_u64()) else { return; };
++                                            if response["handled"].as_bool() != Some(true) { return; }
++                                            let Some((range, text)) = eido_completion_edit(&original, after, caret as usize) else { return; };
++                                            editor.transact(window, cx, |editor, window, cx| {
++                                                editor.buffer().update(cx, |buffer, cx| buffer.edit([(multi_buffer::MultiBufferOffset(range.start)..multi_buffer::MultiBufferOffset(range.end), text)], None, cx));
++                                                let caret = multi_buffer::MultiBufferOffset(caret as usize);
++                                                editor.change_selections(Default::default(), window, cx, |selections| selections.select_ranges([caret..caret]));
++                                            });
++                                        })?;
++                                        anyhow::Ok(())
++                                    }).detach_and_log_err(cx);
++                                });
++                            });
++                            false
++                        })),
++                        group: Some(CompletionGroup {key: "pi-completions".into(), label: Some("pi".into())}),
++                    });
++                }
++                Ok(vec![CompletionResponse {completions, display_options: CompletionDisplayOptions {dynamic_width: true}, is_incomplete: true}])
++            })
++        })
++    }
++
+     fn is_completion_trigger(
+         &self,
+         buffer: &Entity<language::Buffer>,
+@@ -1901,6 +1984,7 @@
+         _trigger_in_words: bool,
+         cx: &mut Context<Editor>,
+     ) -> bool {
++        if self.source.eido_completions_enabled(cx) { return true; }
+         let buffer = buffer.read(cx);
+         let position = position.to_point(buffer);
+         let line_start = Point::new(position.row, 0);
+@@ -3432,3 +3516,28 @@
+         });
+     }
+ }
++
++/// Translate a pi replacement into one native edit without splitting UTF-8.
++fn eido_completion_edit(before: &str, after: &str, cursor: usize) -> Option<(Range<usize>, String)> {
++    if after.len() > 65_536 || cursor > after.len() || !after.is_char_boundary(cursor) { return None; }
++    let prefix = before.chars().zip(after.chars()).take_while(|(a, b)| a == b).map(|(a, _)| a.len_utf8()).sum::<usize>();
++    let suffix = before[prefix..].chars().rev().zip(after[prefix..].chars().rev()).take_while(|(a, b)| a == b).map(|(a, _)| a.len_utf8()).sum::<usize>();
++    Some((prefix..before.len() - suffix, after[prefix..after.len() - suffix].to_owned()))
++}
++
++#[cfg(test)]
++mod eido_completion_tests {
++    use super::eido_completion_edit;
++    #[test]
++    fn test_eido_completion_preserves_unicode_and_suffix() {
++        let before = "备注\n/review qu suffix";
++        let after = "备注\n/review quick suffix";
++        let (range, replacement) = eido_completion_edit(before, after, "备注\n/review quick".len()).unwrap();
++        let mut actual = before.to_string(); actual.replace_range(range, &replacement);
++        assert_eq!(actual, after);
++        assert!(eido_completion_edit("", "中文", 1).is_none());
++        assert!(eido_completion_edit("", "text", 100).is_none());
++        let (range, text) = eido_completion_edit("same", "same", 2).unwrap();
++        assert!(range.is_empty()); assert!(text.is_empty());
++    }
++}
 diff --git a/crates/agent_ui/src/context.rs b/crates/agent_ui/src/context.rs
 --- a/crates/agent_ui/src/context.rs
 +++ /dev/null
@@ -10784,7 +10951,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
      pub add_context_menu_handle: PopoverMenuHandle<ContextMenu>,
      pub thinking_effort_menu_handle: PopoverMenuHandle<ContextMenu>,
      pub fast_mode_menu_handle: PopoverMenuHandle<ContextMenu>,
-@@ -799,11 +809,17 @@
+@@ -799,11 +809,22 @@
          window: &mut Window,
          cx: &mut Context<Self>,
      ) -> Self {
@@ -10793,6 +10960,11 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
          let session_id = thread.read(cx).session_id().clone();
          let parent_session_id = thread.read(cx).parent_session_id().cloned();
  
++
++        if thread.read(cx).connection().agent_id().as_ref() == "eido-pi" {
++            session_capabilities.write().eido_thread = Some(thread.downgrade());
++        }
++
          let has_slash_completions = session_capabilities.read().has_slash_completions();
 -        let placeholder = placeholder_text(agent_display_name.as_ref(), has_slash_completions);
 +        let placeholder = if std::env::var_os("EIDO_ROOT").is_some() {
@@ -10803,7 +10975,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
  
          let mut should_auto_submit = false;
          let mut show_external_source_prompt_warning = false;
-@@ -818,7 +834,11 @@
+@@ -818,7 +839,11 @@
                  &placeholder,
                  editor::EditorMode::AutoHeight {
                      min_lines: AgentSettings::get_global(cx).message_editor_min_lines,
@@ -10816,7 +10988,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
                  },
                  window,
                  cx,
-@@ -956,6 +976,7 @@
+@@ -956,6 +981,7 @@
          }
  
          subscriptions.push(cx.observe(&message_editor, |this, editor, cx| {
@@ -10824,7 +10996,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
              let is_empty = editor.read(cx).text(cx).is_empty();
              let draft_contents_task = if is_empty {
                  None
-@@ -981,6 +1002,8 @@
+@@ -981,6 +1007,8 @@
  
          let mut this = Self {
              root_thread_id,
@@ -10833,7 +11005,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
              session_id,
              parent_session_id,
              focus_handle: cx.focus_handle(),
-@@ -1021,6 +1044,8 @@
+@@ -1021,6 +1049,8 @@
              should_be_following: false,
              editing_message: None,
              message_queue: MessageQueue::default(),
@@ -10842,7 +11014,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
              turn_fields: TurnFields::default(),
              discarded_partial_edits: HashSet::default(),
              is_loading_contents: false,
-@@ -1034,6 +1059,12 @@
+@@ -1034,6 +1064,12 @@
              hovered_edited_file_buttons: None,
              in_flight_prompt: None,
              message_editor,
@@ -10855,7 +11027,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
              add_context_menu_handle: PopoverMenuHandle::default(),
              thinking_effort_menu_handle: PopoverMenuHandle::default(),
              fast_mode_menu_handle: PopoverMenuHandle::default(),
-@@ -1052,6 +1083,8 @@
+@@ -1052,6 +1088,8 @@
              thread_search_visible: false,
          };
  
@@ -10864,7 +11036,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
          this.sync_generating_indicator(cx);
          this.sync_editor_mode(cx);
          this.sync_existing_elicitation_states(window, cx);
-@@ -1248,6 +1281,25 @@
+@@ -1248,6 +1286,25 @@
              editor
          } else {
              self.message_editor.clone()
@@ -10890,7 +11062,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
          }
      }
  
-@@ -1477,7 +1529,166 @@
+@@ -1477,7 +1534,166 @@
          }
      }
  
@@ -11057,7 +11229,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
          let thread = &self.thread;
  
          if self.is_loading_contents {
-@@ -1504,7 +1715,7 @@
+@@ -1504,7 +1720,7 @@
  
          let text = message_editor.read(cx).text(cx);
          let text = text.trim();
@@ -11066,7 +11238,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
              let connection = thread.read(cx).connection().clone();
              let can_login = !connection.auth_methods().is_empty();
              // Does the agent have a specific logout command? Prefer that in case they need to reset internal state.
-@@ -1662,6 +1873,17 @@
+@@ -1662,6 +1878,17 @@
          window: &mut Window,
          cx: &mut Context<Self>,
      ) {
@@ -11084,7 +11256,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
          let session_id = self.thread.read(cx).session_id().clone();
          let parent_session_id = self.thread.read(cx).parent_session_id().cloned();
          let agent_telemetry_id = self.thread.read(cx).connection().telemetry_id();
-@@ -1681,9 +1903,10 @@
+@@ -1681,9 +1908,10 @@
  
          let side = crate::agent_sidebar_side(cx);
  
@@ -11096,7 +11268,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
              };
  
              let generation = this.update(cx, |this, cx| {
-@@ -1753,7 +1976,9 @@
+@@ -1753,7 +1981,9 @@
                      side = side
                  );
  
@@ -11107,7 +11279,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
                      thread.send_command(contents, cx)
                  } else {
                      thread.send(contents, cx)
-@@ -1785,11 +2010,19 @@
+@@ -1785,11 +2015,19 @@
                  turn_time_ms,
                  side = side
              );
@@ -11129,7 +11301,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
                  this.update(cx, |this, cx| {
                      this.handle_thread_error(err, cx);
                  })
-@@ -1811,6 +2044,10 @@
+@@ -1811,6 +2049,10 @@
      }
  
      pub fn interrupt_and_send(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -11140,7 +11312,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
          let thread = &self.thread;
  
          if self.is_loading_contents {
-@@ -2104,6 +2341,76 @@
+@@ -2104,6 +2346,76 @@
          .detach_and_log_err(cx);
      }
  
@@ -11217,7 +11389,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
      pub fn add_to_queue(
          &mut self,
          content: Vec<acp::ContentBlock>,
-@@ -2143,6 +2450,9 @@
+@@ -2143,6 +2455,9 @@
          self.message_queue.enqueue(QueueEntry {
              id,
              content,
@@ -11227,7 +11399,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
              tracked_buffers,
              steer: false,
              editor,
-@@ -2201,6 +2511,7 @@
+@@ -2201,6 +2516,7 @@
                      entry.content = content;
                      entry.tracked_buffers = tracked_buffers;
                  }
@@ -11235,7 +11407,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
                  cx.notify();
              })?;
  
-@@ -2215,6 +2526,7 @@
+@@ -2215,6 +2531,7 @@
          cx: &mut Context<Self>,
      ) -> Option<QueueEntry> {
          let removed = self.message_queue.remove(id);
@@ -11243,7 +11415,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
          if removed.is_some() {
              self.sync_queue_flag_to_native_thread(cx);
          }
-@@ -2227,7 +2539,8 @@
+@@ -2227,7 +2544,8 @@
          cx.notify();
      }
  
@@ -11253,7 +11425,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
          if let Some(native_thread) = self.as_native_thread(cx) {
              // By default queued messages wait for the turn to fully complete.
              // Only a "steering" front message ends the turn at the next boundary.
-@@ -2244,6 +2557,11 @@
+@@ -2244,6 +2562,11 @@
          window: &mut Window,
          cx: &mut Context<Self>,
      ) {
@@ -11265,7 +11437,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
          let is_generating = self.thread.read(cx).status() == acp_thread::ThreadStatus::Generating;
          if let Some(entry) = self.message_queue.send_now(id, is_generating) {
              self.dispatch_queued_entry(entry, window, cx);
-@@ -2259,14 +2577,18 @@
+@@ -2259,14 +2582,18 @@
          window: &mut Window,
          cx: &mut Context<Self>,
      ) {
@@ -11286,7 +11458,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
  
          // A queued message can itself be a built-in command (e.g. the user typed
          // `/compact` while a turn was generating). Detect that so we run it as a
-@@ -2289,6 +2611,7 @@
+@@ -2289,6 +2616,7 @@
  
          let should_be_following = self.should_be_following;
          let contents_task = cx.spawn_in(window, async move |_this, cx| {
@@ -11294,7 +11466,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
              cancelled.await;
              if should_be_following {
                  workspace
-@@ -2301,7 +2624,7 @@
+@@ -2301,7 +2629,7 @@
              Ok(Some((content, tracked_buffers)))
          });
  
@@ -11303,7 +11475,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
      }
  
      pub fn move_queued_message_to_main_editor(
-@@ -4350,7 +4673,7 @@
+@@ -4350,7 +4678,7 @@
          )
      }
  
@@ -11312,7 +11484,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
          &mut self,
          window: &mut Window,
          cx: &mut Context<Self>,
-@@ -4370,8 +4693,20 @@
+@@ -4370,8 +4698,20 @@
          };
  
          let max_content_width = AgentSettings::get_global(cx).max_content_width;
@@ -11334,7 +11506,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
  
          h_flex()
              .py_2()
-@@ -4381,8 +4716,9 @@
+@@ -4381,8 +4721,9 @@
              .map(|this| {
                  if has_messages {
                      this.on_action(cx.listener(Self::expand_message_editor))
@@ -11346,7 +11518,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
                          .when(editor_expanded, |this| this.h(vh(0.8, window)))
                  } else {
                      this.flex_1().size_full()
-@@ -4399,6 +4735,9 @@
+@@ -4399,6 +4740,9 @@
                      .flex_grow_0()
                      .justify_between()
                      .gap_2()
@@ -11356,7 +11528,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
                      .child(
                          v_flex()
                              .relative()
-@@ -4407,6 +4746,10 @@
+@@ -4407,6 +4751,10 @@
                              .when(fills_container, |this| this.flex_1())
                              .pt_1()
                              .pr_2p5()
@@ -11367,7 +11539,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
                              .child(self.message_editor.clone())
                              .when(has_messages, |this| {
                                  this.child(
-@@ -4441,6 +4784,9 @@
+@@ -4441,6 +4789,9 @@
                                  )
                              }),
                      )
@@ -11377,7 +11549,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
                      .child(
                          h_flex()
                              .w_full()
-@@ -4464,6 +4810,9 @@
+@@ -4464,6 +4815,9 @@
                                      .flex_wrap()
                                      .gap_1()
                                      .children(self.render_token_usage(cx))
@@ -11387,7 +11559,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
                                      .children(self.profile_selector.clone())
                                      .map(|this| match self.config_options_view.clone() {
                                          Some(config_view) => this.child(config_view),
-@@ -4528,11 +4877,18 @@
+@@ -4528,11 +4882,18 @@
              .id("message_queue_list")
              .max_h_40()
              .overflow_y_scroll()
@@ -11407,7 +11579,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
                      (Color::Accent, "Next in Queue")
                  } else {
                      (Color::Muted, "In Queue")
-@@ -4571,7 +4927,7 @@
+@@ -4571,7 +4932,7 @@
                              .min_w(min_width)
                              .justify_end()
                              .child(
@@ -11416,7 +11588,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
                                      .icon_size(IconSize::Small)
                                      .tooltip(|_window, cx| {
                                          Tooltip::with_meta(
-@@ -4595,6 +4951,7 @@
+@@ -4595,6 +4956,7 @@
                              .child(
                                  Button::new(("send_now_focused", index), "Send Now")
                                      .label_size(LabelSize::Small)
@@ -11424,7 +11596,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
                                      .style(ButtonStyle::Outlined)
                                      .key_binding(
                                          KeyBinding::for_action_in(
-@@ -4615,7 +4972,7 @@
+@@ -4615,7 +4977,7 @@
                              .min_w(min_width)
                              .justify_end()
                              .child(
@@ -11433,7 +11605,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
                                      .icon_size(IconSize::Small)
                                      .tooltip({
                                          let focus_handle = focus_handle.clone();
-@@ -4638,7 +4995,7 @@
+@@ -4638,7 +5000,7 @@
                                      })),
                              )
                              .child(
@@ -11442,7 +11614,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
                                      .icon_size(IconSize::Small)
                                      .tooltip({
                                          let focus_handle = focus_handle.clone();
-@@ -4667,8 +5024,9 @@
+@@ -4667,8 +5029,9 @@
                                  ))
                              })
                              .child(
@@ -11453,7 +11625,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
                                      .when(is_next, |this| this.style(ButtonStyle::Outlined))
                                      .when(is_next && message_editor.is_empty(cx), |this| {
                                          let action: Box<dyn gpui::Action> = if can_fast_track {
-@@ -6261,6 +6619,11 @@
+@@ -6261,6 +6624,11 @@
                                                  s.border_color(focus_border.opacity(0.8))
                                              })
                                      })
@@ -11465,7 +11637,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
                                      .text_xs()
                                      .child(editor.clone().into_any_element())
                              )
-@@ -7278,7 +7641,7 @@
+@@ -7278,7 +7646,7 @@
  
      pub(crate) fn sync_editor_mode(&mut self, cx: &mut Context<Self>) {
          let has_messages = self.list_state.item_count() > 0;
@@ -11474,7 +11646,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
  
          if !has_messages {
              self.editor_expanded = false;
-@@ -7299,7 +7662,11 @@
+@@ -7299,7 +7667,11 @@
          } else {
              EditorMode::AutoHeight {
                  min_lines: AgentSettings::get_global(cx).message_editor_min_lines,
@@ -11487,7 +11659,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
              }
          };
          self.message_editor.update(cx, |editor, cx| {
-@@ -7326,6 +7693,7 @@
+@@ -7326,6 +7698,7 @@
      }
  
      fn render_generating(&self, confirmation: bool, cx: &App) -> impl IntoElement {
@@ -11495,7 +11667,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
          let show_stats = AgentSettings::get_global(cx).show_turn_stats;
          let elapsed_label = show_stats
              .then(|| {
-@@ -7378,15 +7746,23 @@
+@@ -7378,15 +7751,23 @@
                      )
                  } else if is_blocked_on_terminal_command {
                      this
@@ -11525,7 +11697,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
              .when_some(elapsed_label, |this, elapsed| {
                  this.child(
                      Label::new(elapsed)
-@@ -7505,7 +7881,7 @@
+@@ -7505,7 +7886,7 @@
              }
          }
  
@@ -11534,7 +11706,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
  
          v_flex()
              .id(("thinking-block", chunk_ix))
-@@ -7532,7 +7908,7 @@
+@@ -7532,7 +7913,7 @@
                                  div()
                                      .text_size(self.tool_name_font_size())
                                      .text_color(cx.theme().colors().text_muted)
@@ -11543,7 +11715,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
                              ),
                      )
                      .child(
-@@ -7961,6 +8337,14 @@
+@@ -7961,6 +8342,14 @@
              working_dir,
              is_expanded,
          )
@@ -11558,7 +11730,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
          .elapsed(time_elapsed)
          .running(!command_finished && !needs_confirmation)
          .on_toggle_expand(cx.listener({
-@@ -10082,6 +10466,11 @@
+@@ -10082,6 +10471,11 @@
              .into_any_element()
          };
  
@@ -11570,7 +11742,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
          let gradient_overlay = {
              div()
                  .absolute()
-@@ -10089,24 +10478,11 @@
+@@ -10089,24 +10483,11 @@
                  .right_0()
                  .w_12()
                  .h_full()
@@ -11600,7 +11772,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
          };
  
          h_flex()
-@@ -10693,6 +11069,9 @@
+@@ -10693,6 +11074,9 @@
                  let model = thread.model()?;
                  Some(model.name().0)
              });
@@ -11610,7 +11782,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
          let thread_title = thread
              .as_ref()
              .and_then(|t| t.read(cx).title())
-@@ -10775,6 +11154,7 @@
+@@ -10775,6 +11159,7 @@
                  h_flex()
                      .group(&card_header_id)
                      .h_8()
@@ -11618,7 +11790,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
                      .p_1()
                      .w_full()
                      .justify_between()
-@@ -10798,25 +11178,24 @@
+@@ -10798,25 +11183,24 @@
                                      .gap_1p5()
                                      .justify_between()
                                      .child(
@@ -11658,7 +11830,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
                                                          .color(Color::Muted)
                                                          .truncate(),
                                                  )
-@@ -12293,6 +12672,31 @@
+@@ -12293,6 +12677,31 @@
                          .size_full()
                          .child(self.render_entries(cx))
                          .vertical_scrollbar_for(&list_state, window, cx)
@@ -11690,7 +11862,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
                          .into_any()
                  } else {
                      this.into_any()
-@@ -12607,6 +13011,10 @@
+@@ -12607,6 +13016,10 @@
                      .flatten(),
                  |this, bar| this.child(bar),
              )
@@ -11701,7 +11873,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
              .child(conversation)
              .children(self.render_multi_root_callout(cx))
              .children(self.render_activity_bar(window, cx))
-@@ -12631,7 +13039,9 @@
+@@ -12631,7 +13044,9 @@
              )
              .children(self.render_token_limit_callout(cx))
              .children(self.render_request_elicitations(cx))
@@ -17443,7 +17615,42 @@ diff --git a/crates/agent_ui/src/mention_set.rs b/crates/agent_ui/src/mention_se
 diff --git a/crates/agent_ui/src/message_editor.rs b/crates/agent_ui/src/message_editor.rs
 --- a/crates/agent_ui/src/message_editor.rs
 +++ b/crates/agent_ui/src/message_editor.rs
-@@ -2019,19 +2019,35 @@
+@@ -50,6 +50,7 @@
+     prompt_capabilities: acp::PromptCapabilities,
+     available_commands: Vec<acp::AvailableCommand>,
+     available_skills: Vec<AvailableSkill>,
++    pub(crate) eido_thread: Option<WeakEntity<acp_thread::AcpThread>>,
+ }
+ 
+ impl SessionCapabilities {
+@@ -62,6 +63,7 @@
+             prompt_capabilities,
+             available_commands,
+             available_skills,
++            eido_thread: None,
+         }
+     }
+ 
+@@ -150,6 +152,18 @@
+ }
+ 
+ impl PromptCompletionProviderDelegate for MessageEditorCompletionDelegate {
++    fn eido_completions_enabled(&self, _cx: &App) -> bool {
++        self.session_capabilities.read().eido_thread.is_some()
++    }
++
++    fn eido_completions(&self, text: String, cursor: usize, selection: Option<String>, force: bool, cx: &mut App) -> Option<Task<Result<serde_json::Value>>> {
++        let thread = self.session_capabilities.read().eido_thread.as_ref()?.upgrade()?;
++        let thread = thread.read(cx);
++        let connection = thread.connection().clone();
++        let session_id = thread.session_id().clone();
++        Some(connection.eido_complete(session_id, text, cursor, selection, force, cx))
++    }
++
+     fn supports_images(&self, _cx: &App) -> bool {
+         self.session_capabilities.read().supports_images()
+     }
+@@ -2019,19 +2033,35 @@
  
                  let text_style = TextStyle {
                      color: cx.theme().colors().text,
@@ -17483,6 +17690,80 @@ diff --git a/crates/agent_ui/src/message_editor.rs b/crates/agent_ui/src/message
                          local_player: cx.theme().players().local(),
                          text: text_style,
                          syntax: cx.theme().syntax().clone(),
+@@ -2772,6 +2802,73 @@
+     impl Render for MessageEditorItem {
+         fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+             self.0.clone().into_any_element()
++        }
++    }
++
++    #[gpui::test]
++    async fn test_eido_completion_selects_once_and_preserves_newer_drafts(cx: &mut TestAppContext) {
++        use crate::completion_provider::{PromptCompletionProvider, PromptCompletionProviderDelegate, PromptContextType, AvailableCommand};
++        use std::sync::atomic::{AtomicUsize, Ordering};
++        struct Delegate(Arc<AtomicUsize>);
++        impl PromptCompletionProviderDelegate for Delegate {
++            fn supported_modes(&self, _: &App) -> Vec<PromptContextType> { vec![] }
++            fn supports_images(&self, _: &App) -> bool { false }
++            fn available_commands(&self, _: &App) -> Vec<AvailableCommand> { vec![] }
++            fn confirm_command(&self, _: &mut App) { panic!("Completion must not send a prompt"); }
++            fn eido_completions_enabled(&self, _: &App) -> bool { true }
++            fn eido_completions(&self, text: String, _: usize, selection: Option<String>, force: bool, _: &mut App) -> Option<Task<anyhow::Result<serde_json::Value>>> {
++                Some(Task::ready(Ok(if selection.is_some() {
++                    self.0.fetch_add(1, Ordering::SeqCst);
++                    serde_json::json!({"handled":true,"items":[],"text":text.replace("~pair", "pair()"),"cursor":"中文\npair(".len()})
++                } else {assert!(force); serde_json::json!({"handled":true,"items":[{"id":"pair", "label":"Pair template"}]})})))
++            }
++        }
++        init_test(cx);
++        let app_state = cx.update(AppState::test);
++        cx.update(|cx| { editor::init(cx); workspace::init(app_state.clone(), cx); });
++        let project = Project::test(app_state.fs.clone(), [path!("/dir").as_ref()], cx).await;
++        let window = cx.add_window(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
++        let workspace = window.read_with(cx, |mw, _| mw.workspace().clone()).unwrap();
++        let mut cx = VisualTestContext::from_window(window.into(), cx);
++        let count = Arc::new(AtomicUsize::new(0));
++        let editor = workspace.update_in(&mut cx, |workspace, window, cx| {
++            let workspace_handle = cx.weak_entity();
++            let message_editor = cx.new(|cx| MessageEditor::new(workspace_handle.clone(), project.downgrade(), None, Default::default(), "pi".into(), "Test", EditorMode::AutoHeight {min_lines:1,max_lines:None}, window, cx));
++            let editor = message_editor.read(cx).editor().clone();
++            let provider = PromptCompletionProvider::new(Delegate(count.clone()), editor.downgrade(), message_editor.read(cx).mention_set().clone(), workspace_handle);
++            editor.update(cx, |editor, _| editor.set_completion_provider(Some(std::rc::Rc::new(provider))));
++            workspace.active_pane().update(cx, |pane, cx| pane.add_item(Box::new(cx.new(|_| MessageEditorItem(message_editor.clone()))),true,true,None,window,cx));
++            message_editor.read(cx).focus_handle(cx).focus(window,cx);
++            editor
++        });
++        let original = "中文\n~pair suffix";
++        for stale in [false, true] {
++            editor.update_in(&mut cx, |editor, window, cx| {
++                editor.set_text(original, window, cx);
++                let cursor = multi_buffer::MultiBufferOffset("中文\n~pair".len());
++                editor.change_selections(Default::default(),window,cx,|selections| selections.select_ranges([cursor..cursor]));
++                editor.show_completions(&editor::actions::ShowCompletions, window, cx);
++            });
++            cx.run_until_parked();
++            let before = count.load(Ordering::SeqCst);
++            editor.update_in(&mut cx, |editor, window, cx| {
++                assert!(editor.has_visible_completions_menu());
++                editor.confirm_completion(&editor::actions::ConfirmCompletion::default(), window, cx);
++                if stale { editor.set_text("Newer draft", window, cx); }
++            });
++            cx.run_until_parked();
++            editor.update_in(&mut cx, |editor, window, cx| {
++                if stale {
++                    assert_eq!(editor.text(cx), "Newer draft");
++                    assert_eq!(count.load(Ordering::SeqCst),before);
++                } else {
++                    assert_eq!(count.load(Ordering::SeqCst),before + 1);
++                    assert_eq!(editor.text(cx),"中文\npair() suffix");
++                    assert_eq!(editor.selections.newest::<multi_buffer::MultiBufferOffset>(&editor.display_snapshot(cx)).start.0,"中文\npair(".len());
++                    editor.undo(&editor::actions::Undo, window, cx);
++                    assert_eq!(editor.text(cx), original);
++                }
++            });
+         }
+     }
+ 
 diff --git a/crates/agent_ui/src/terminal_codegen.rs b/crates/agent_ui/src/terminal_codegen.rs
 --- a/crates/agent_ui/src/terminal_codegen.rs
 +++ /dev/null

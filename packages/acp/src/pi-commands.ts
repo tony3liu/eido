@@ -98,7 +98,7 @@ export function installPiCommands(pi: AgentSession, client: AgentContext, suppor
   const ui = supportsForms ? createPiUI(pi, client, () => activeContext?.activeTurnSignal(), update => {
     if (activeContext) activeContext.enqueue(update);
     else void client.notify(methods.client.session.update, {sessionId: pi.sessionId, update}).catch(error => console.error("pi startup UI notification failed", error));
-  }, nativeUi, agentDir) : undefined;
+  }, nativeUi, agentDir, catalogue) : undefined;
   const bind = pi.bindExtensions.bind(pi);
   pi.bindExtensions = options => bind({...options, ...(ui ? {uiContext: ui, mode: "rpc" as const} : {}),
     onError(error) {
