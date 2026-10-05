@@ -105,6 +105,7 @@ await patchSource(path,
 await patchSource(path,
   '        case "custom":\n            if (entry.customType === "eido.subagent.v1"',
   '        case "custom":\n            if (entry.customType === "eido.agents.event.v1" && entry.data?.update) {\n                const update = structuredClone(entry.data.update);\n                if (update.status === "in_progress" || update.status === "pending") {\n                    update.status = "failed";\n                    if (update.rawInput?.eidoAgent) {\n                        update.rawInput.eidoAgent.state = "Interrupted";\n                        update.rawInput.eidoAgent.detail = update.rawInput.eidoAgent.detail.replace(/Running|Queued|Stopping/g, "Interrupted");\n                    }\n                    update.content = [{type:"content",content:{type:"text",text:"Run interrupted. Continue or retry explicitly; no actions were replayed."}}];\n                }\n                return [update];\n            }\n            if (entry.customType === "eido.subagent.v1"');
+if (!(await readFile(new URL("../../@earendil-works/pi-coding-agent/dist/core/session-manager.js", directory), "utf8")).includes('e.customType === "eido.subagent.v1"'))
 await patchSource(new URL("../../@earendil-works/pi-coding-agent/dist/core/session-manager.js", directory),
   '(e.type === "custom" && e.customType === "eido.command.v1")',
   '(e.type === "custom" && (e.customType === "eido.command.v1" || e.customType === "eido.subagent.v1"))');
@@ -139,6 +140,7 @@ await patchSource(agentPath,
 
 
 // Live native editor state backs pi's synchronous UI getters in RPC mode.
+if (!(await readFile(new URL("dist/server.js", directory), "utf8")).includes('.onRequest("_eido/ui/state"'))
 await patchSource(new URL("dist/server.js", directory),
   '        .onRequest(LOADED_TURN_QUERY_METHOD, loadedTurnQueryParser, (context) => impl.loadedTurnQuery(context))',
   '        .onRequest("_eido/ui/state", {parse(value) { if (!value || typeof value.sessionId !== "string" || typeof value.instance !== "string" || !Number.isSafeInteger(value.revision) || typeof value.text !== "string") throw new Error("Invalid native editor state"); return value; }}, ({params}) => { const ui = impl.live.get(params.sessionId)?.pi[Symbol.for("eido.pi.ui.state")]; if (!ui) return {handled: false}; ui.receive(params); return {handled: true}; })\n        .onRequest(LOADED_TURN_QUERY_METHOD, loadedTurnQueryParser, (context) => impl.loadedTurnQuery(context))');
@@ -148,3 +150,12 @@ await patchSource(sessionPath,
 await patchSource(sessionPath,
   '                    if (commands && await commands.run(text, converted.images, this)) return;',
   '                    if (commands && await commands.run(text, converted.images, this)) { await this.pi[Symbol.for("eido.pi.ui.state")]?.flush(); return; }');
+
+// Durable queued-message receipts must flush even before the first model turn.
+await patchSource(new URL("../../@earendil-works/pi-coding-agent/dist/core/session-manager.js", directory),
+  'e.customType === "eido.command.v1" || e.customType === "eido.subagent.v1"',
+  'e.customType === "eido.command.v1" || e.customType === "eido.subagent.v1" || e.customType === "eido.delivery.v1"');
+if (!(await readFile(new URL("dist/server.js", directory), "utf8")).includes('.onRequest("_eido/delivery/status"'))
+await patchSource(new URL("dist/server.js", directory),
+  '        .onRequest(LOADED_TURN_QUERY_METHOD, loadedTurnQueryParser, (context) => impl.loadedTurnQuery(context))',
+  '        .onRequest("_eido/delivery/status", {parse(value) { if (!value || typeof value.sessionId !== "string" || !Array.isArray(value.ids) || value.ids.length > 256 || value.ids.some(id => typeof id !== "string")) throw new Error("Invalid delivery query"); return value; }}, ({params}) => { const ledger = impl.live.get(params.sessionId)?.pi[Symbol.for("eido.pi.delivery")]; if (!ledger) throw new Error("Load this session before reconciling deliveries"); return ledger.status(params.ids); })\n        .onRequest(LOADED_TURN_QUERY_METHOD, loadedTurnQueryParser, (context) => impl.loadedTurnQuery(context))');

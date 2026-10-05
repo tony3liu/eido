@@ -1,3 +1,4 @@
+import {createDeliveryLedger, DELIVERY} from './delivery.ts';
 import { runAcp } from "@automatalabs/pi-acp";
 import { createAgentSession, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { join } from "node:path";
@@ -20,6 +21,7 @@ export async function startEidoAgent(agentDir: string, sessionDir: string, strea
   let supportsForms = false;
   let supportsNativeUi = false;
   const subagents = createSubagents(agentDir, sessionDir);
+  const deliveries = new Map<string, ReturnType<typeof createDeliveryLedger>>();
   const clientReady = new Promise<AgentContext>(resolve => { connectClient = resolve; });
   const server = await runAcp({
     stream,
@@ -56,6 +58,11 @@ export async function startEidoAgent(agentDir: string, sessionDir: string, strea
           customTools: [...editorTools(options.cwd, options.sessionManager.getSessionId(), client), preview.tool,
             ...(subagents.enabled ? [subagents.tool(options.sessionManager.getSessionId(), client)] : [])],
         });
+        const ledger = createDeliveryLedger(created.session);
+        deliveries.set(created.session.sessionId, ledger);
+        Object.defineProperty(created.session, DELIVERY, {value:ledger});
+        const dispose = created.session.dispose.bind(created.session);
+        created.session.dispose = () => { if(deliveries.get(created.session.sessionId)===ledger)deliveries.delete(created.session.sessionId); dispose(); };
         const browser = browserLifecycle(created.session);
         const prompt = created.session.prompt.bind(created.session);
         created.session.prompt = async (...args) => {
@@ -114,6 +121,11 @@ export async function startEidoAgent(agentDir: string, sessionDir: string, strea
     return initialize(context);
   };
   await subagents.connect(server);
+  const deliver = server.agent.prompt.bind(server.agent);
+  server.agent.prompt = context => {
+    const ledger = deliveries.get(context.params.sessionId);
+    return ledger ? ledger.deliver(context.params, () => deliver(context)) : deliver(context);
+  };
   // The configured servers enter the same ACP MCP bridge as built-in tools.
   const withMcp = async <T extends {params: {mcpServers?: McpServer[]}}>(context: T): Promise<T> => {
     const configured = await configuredMcp(agentDir), bundled = context.params.mcpServers ?? [];

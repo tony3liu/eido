@@ -984,3 +984,54 @@ test('slow native rendering coalesces plugin frames while preserving the last st
   assert.deepEqual(frames[1]!.statuses,{frame:'999'});
   state.close();
 });
+
+test('durable deliveries deduplicate across reload, reject changed payloads, and isolate sessions', {timeout:30_000}, async()=>{
+  let h:Awaited<ReturnType<typeof harness>>;
+  h=await harness([async context=>{
+    assert.doesNotMatch(JSON.stringify(context), /eido.delivery.v1|delivery-once/);
+    assert.ok((await h.entries()).some(e=>e.customType==='eido.delivery.v1'&&e.data.id==='delivery-once'&&e.data.state==='accepted'));
+    return 'Executed once.';
+  }]);
+  const send=(sessionId:string,text:string,id='delivery-once')=>h.connection.agent.request(methods.agent.session.prompt,
+    {sessionId,prompt:[{type:'text',text}],_meta:{eidoDeliveryId:id}});
+  const status=(sessionId:string)=>h.connection.agent.request('_eido/delivery/status',{sessionId,ids:['delivery-once']});
+  try {
+    const a=await h.newTask();
+    const first=await send(a.sessionId,'Do this once.');
+    assert.deepEqual(await send(a.sessionId,'Do this once.'),first);assert.equal(h.requests(),1);
+    await assert.rejects(send(a.sessionId,'Changed message.'),/different message/);
+    assert.deepEqual(await status(a.sessionId),{deliveries:[{id:'delivery-once',state:'completed'}]});
+    await h.connection.agent.request(methods.agent.session.close,{sessionId:a.sessionId});
+    await h.connection.agent.request(methods.agent.session.load,{sessionId:a.sessionId,cwd:h.cwd,mcpServers:[]});
+    await send(a.sessionId,'Do this once.');assert.equal(h.requests(),1);
+    const b=await h.newTask();
+    assert.deepEqual(await status(b.sessionId),{deliveries:[{id:'delivery-once',state:'unknown'}]});
+    await send(b.sessionId,'Another session.');assert.equal(h.requests(),2);
+  }finally{await h.dispose();}
+});
+
+test('in-flight and cancelled deliveries cannot be blindly retried after reload', {timeout:30_000},async()=>{
+  let started!:()=>void;
+  const began=new Promise<void>(resolve=>{started=resolve;});
+  const h=await harness([async(_context,signal)=>{
+    started();
+    await new Promise((_,reject)=>{signal!.addEventListener('abort',()=>reject(signal!.reason),{once:true});});
+    return 'Unreachable';
+  }]);
+  try{
+    const a=await h.newTask();
+    const params={sessionId:a.sessionId,prompt:[{type:'text' as const,text:'Wait for cancellation.'}],_meta:{eidoDeliveryId:'cancelled-delivery'}};
+    const first=h.connection.agent.request(methods.agent.session.prompt,params);
+    await began;
+    assert.deepEqual(await h.connection.agent.request('_eido/delivery/status',{sessionId:a.sessionId,ids:['cancelled-delivery']}),
+      {deliveries:[{id:'cancelled-delivery',state:'running'}]});
+    await assert.rejects(h.connection.agent.request(methods.agent.session.prompt,params),/may already have run/);
+    await h.connection.agent.notify(methods.agent.session.cancel,{sessionId:a.sessionId});await first;
+    await h.connection.agent.request(methods.agent.session.close,{sessionId:a.sessionId});
+    await h.connection.agent.request(methods.agent.session.load,{sessionId:a.sessionId,cwd:h.cwd,mcpServers:[]});
+    assert.deepEqual(await h.connection.agent.request('_eido/delivery/status',{sessionId:a.sessionId,ids:['cancelled-delivery']}),
+      {deliveries:[{id:'cancelled-delivery',state:'interrupted'}]});
+    await assert.rejects(h.connection.agent.request(methods.agent.session.prompt,params),/may already have run/);
+    assert.equal(h.requests(),1);
+  }finally{await h.dispose();}
+});
