@@ -16,6 +16,9 @@ pub(crate) struct PiSettingsView {
     custom_url: Entity<Editor>,
     custom_model: Entity<Editor>,
     custom_api: String,
+    jev_url: Entity<Editor>,
+    jev_model: Entity<Editor>,
+    jev_key: Entity<Editor>,
     busy: bool,
     notice: String,
     failed: bool,
@@ -34,17 +37,20 @@ impl PiSettingsView {
     pub(crate) fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let mut view = Self {
             data: None, scroll_handle: gpui::ScrollHandle::new(), provider: String::new(), model: String::new(), thinking: "off".into(),
-            key: input("API key or environment variable name", true, window, cx),
+            key: input("API key or $ENV_VAR reference", true, window, cx),
             custom_provider: input("Provider ID, e.g. my-provider", false, window, cx),
             custom_url: input("Base URL, e.g. https://api.example.com/v1", false, window, cx),
             custom_model: input("Model ID", false, window, cx),
+            jev_url: input("Jev System One API endpoint", false, window, cx),
+            jev_model: input("Jev model ID", false, window, cx),
+            jev_key: input("API key or $ENV_VAR reference; leave blank to keep", true, window, cx),
             custom_api: "openai-completions".into(), busy: false, notice: String::new(), failed: false,
         };
-        view.request(json!({"operation":"status"}), cx);
+        view.request(json!({"operation":"status"}), window, cx);
         view
     }
 
-    fn request(&mut self, request: Value, cx: &mut Context<Self>) {
+    fn request(&mut self, request: Value, window: &mut Window, cx: &mut Context<Self>) {
         if self.busy { return; }
         self.busy = true;
         self.notice.clear();
@@ -70,9 +76,9 @@ impl PiSettingsView {
             if response["ok"] == true { Ok(response["data"].clone()) }
             else { Err(response["error"].as_str().unwrap_or("Unable to update pi settings.").to_owned()) }
         });
-        cx.spawn(async move |view, cx| {
+        cx.spawn_in(window, async move |view, cx| {
             let result = task.await;
-            let _ = view.update(cx, |view, cx| {
+            let _ = view.update_in(cx, |view, window, cx| {
                 view.busy = false;
                 match result {
                     Ok(data) => {
@@ -80,6 +86,10 @@ impl PiSettingsView {
                             view.provider = data["defaultProvider"].as_str().unwrap_or_default().into();
                             view.model = data["defaultModel"].as_str().unwrap_or_default().into();
                             view.thinking = data["defaultThinkingLevel"].as_str().unwrap_or("off").into();
+                        }
+                        if view.data.is_none() || matches!(operation.as_str(), "status" | "browser-decision") {
+                            view.jev_url.update(cx, |editor, cx| editor.set_text(data["browserDecision"]["apiUrl"].as_str().unwrap_or_default(), window, cx));
+                            view.jev_model.update(cx, |editor, cx| editor.set_text(data["browserDecision"]["model"].as_str().unwrap_or_default(), window, cx));
                         }
                         view.data = Some(data);
                         if view.provider.is_empty() {
@@ -90,6 +100,7 @@ impl PiSettingsView {
                             "status" | "check-update" => String::new(),
                             "import" => "Local pi configuration imported. New tasks will use these settings.".into(),
                             "defaults" => "Defaults saved for new tasks. Existing tasks keep their models.".into(),
+                            "browser-decision" => "Browser decision settings saved. New tasks use this configuration.".into(),
                             "custom-model" => "Model saved. Select it above to make it the default.".into(),
                             _ => "pi credentials updated.".into(),
                         };
@@ -188,9 +199,9 @@ impl Render for PiSettingsView {
                 .child(field("Thinking Level", self.selector("pi-thinking", self.thinking.clone(), levels, window, cx)))
                 .child(h_flex().gap_2()
                     .child(Button::new("pi-save-defaults", "Save Defaults").style(ButtonStyle::Filled).disabled(self.busy || self.model.is_empty())
-                        .on_click(cx.listener(|this, _, _, cx| this.request(json!({"operation":"defaults", "provider":this.provider,"model":this.model,"thinking":this.thinking}), cx))))
+                        .on_click(cx.listener(|this, _, window, cx| this.request(json!({"operation":"defaults", "provider":this.provider,"model":this.model,"thinking":this.thinking}), window, cx))))
                     .child(Button::new("pi-refresh", "Reload").disabled(self.busy)
-                        .on_click(cx.listener(|this, _, _, cx| this.request(json!({"operation":"status"}), cx))))))
+                        .on_click(cx.listener(|this, _, window, cx| this.request(json!({"operation":"status"}), window, cx))))))
             .child(v_flex().gap_3().pt_4().border_t_1().border_color(cx.theme().colors().border_variant)
                 .child(Label::new(format!("Credentials · {auth_label}")))
                 .child(text_field(self.key.clone(), cx))
@@ -199,13 +210,13 @@ impl Render for PiSettingsView {
                         .on_click(cx.listener(|this, _, window, cx| {
                             let key = this.key.read(cx).text(cx);
                             this.key.update(cx, |editor, cx| editor.set_text("", window, cx));
-                            this.request(json!({"operation":"key", "provider":this.provider, "key":key}), cx);
+                            this.request(json!({"operation":"key", "provider":this.provider, "key":key}), window, cx);
                         })))
                     .child(Button::new("pi-remove-key", "Remove Credentials").disabled(self.busy || credential == "none")
-                        .on_click(cx.listener(|this, _, _, cx| this.request(json!({"operation":"remove-key", "provider":this.provider}), cx)))))
+                        .on_click(cx.listener(|this, _, window, cx| this.request(json!({"operation":"remove-key", "provider":this.provider}), window, cx)))))
                 .child(Label::new("Keys stay hidden. Existing OAuth sessions and environment credentials use pi rules.").size(LabelSize::Small).color(Color::Muted))
                 .child(Button::new("pi-import", "Import Local pi Configuration").disabled(self.busy)
-                    .on_click(cx.listener(|this, _, _, cx| this.request(json!({"operation":"import"}), cx)))))
+                    .on_click(cx.listener(|this, _, window, cx| this.request(json!({"operation":"import"}), window, cx)))))
             .child(v_flex().gap_3().pt_4().border_t_1().border_color(cx.theme().colors().border_variant)
                 .child(Label::new("Custom Models"))
                 .child(text_field(self.custom_provider.clone(), cx))
@@ -217,15 +228,37 @@ impl Render for PiSettingsView {
                 ], window, cx))
                 .child(text_field(self.custom_model.clone(), cx))
                 .child(Button::new("pi-save-custom", "Save Model").style(ButtonStyle::Outlined).disabled(self.busy)
-                    .on_click(cx.listener(|this, _, _, cx| this.request(json!({"operation":"custom-model",
+                    .on_click(cx.listener(|this, _, window, cx| this.request(json!({"operation":"custom-model",
                         "provider":this.custom_provider.read(cx).text(cx), "baseUrl":this.custom_url.read(cx).text(cx),
-                        "api":this.custom_api, "model":this.custom_model.read(cx).text(cx)}), cx)))))
+                        "api":this.custom_api, "model":this.custom_model.read(cx).text(cx)}), window, cx)))))
+            .child(v_flex().gap_3().pt_4().border_t_1().border_color(cx.theme().colors().border_variant)
+                .child(Label::new("Browser Decision Model · Jev"))
+                .child(Label::new("Optional decision service for browser goals and checks. Direct browser control works without a key.").size(LabelSize::Small).color(Color::Muted))
+                .child(field("API Endpoint", text_field(self.jev_url.clone(), cx)))
+                .child(field("Model", text_field(self.jev_model.clone(), cx)))
+                .child(field("API Key", text_field(self.jev_key.clone(), cx)))
+                .child(Label::new(match self.data.as_ref().and_then(|d| d["browserDecision"]["credential"].as_str()) {
+                    Some("configured") => "API key configured",
+                    Some("environment") => "Using TYPESAFE_API_KEY from the environment",
+                    _ => "No Jev API key configured",
+                }).size(LabelSize::Small).color(Color::Muted))
+                .child(h_flex().gap_2()
+                    .child(Button::new("pi-save-jev", "Save Browser Configuration").style(ButtonStyle::Outlined).disabled(self.busy)
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            let key = this.jev_key.read(cx).text(cx);
+                            this.jev_key.update(cx, |editor, cx| editor.set_text("", window, cx));
+                            this.request(json!({"operation":"browser-decision", "apiUrl":this.jev_url.read(cx).text(cx),
+                                "model":this.jev_model.read(cx).text(cx), "key":key}), window, cx);
+                        })))
+                    .child(Button::new("pi-remove-jev-key", "Remove API Key").disabled(self.busy)
+                        .on_click(cx.listener(|this, _, window, cx| this.request(json!({"operation":"browser-decision",
+                            "apiUrl":this.jev_url.read(cx).text(cx), "model":this.jev_model.read(cx).text(cx), "removeKey":true}), window, cx))))))
             .child(v_flex().gap_2().pt_4().border_t_1().border_color(cx.theme().colors().border_variant)
                 .child(Label::new("pi Updates"))
                 .child(Label::new(update_label).size(LabelSize::Small).color(Color::Muted))
                 .when_some(checked_at, |this, text| this.child(Label::new(text).size(LabelSize::XSmall).color(Color::Muted)))
                 .child(Button::new("pi-check-update", if self.busy { "Please Wait" } else { "Check for Updates" }).style(ButtonStyle::Outlined).disabled(self.busy)
-                    .on_click(cx.listener(|this, _, _, cx| this.request(json!({"operation":"check-update"}), cx))))
+                    .on_click(cx.listener(|this, _, window, cx| this.request(json!({"operation":"check-update"}), window, cx))))
                 .child(Label::new("Checks the latest release without replacing the running agent.").size(LabelSize::Small).color(Color::Muted)))
     }
 }

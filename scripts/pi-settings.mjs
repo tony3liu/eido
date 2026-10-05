@@ -2,6 +2,7 @@ import { readFile, writeFile, mkdir, chmod, rename, mkdtemp, rm, access } from "
 import { dirname, join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { browserCredentialId, browserDecisionSettings } from "./browser-config.mjs";
 
 class PiConfigError extends Error {}
 
@@ -85,6 +86,7 @@ export function createPiSettings(directory = join(root, ".local/eido"), sourceDi
       defaultModel: manager.getDefaultModel() ?? "",
       defaultThinkingLevel: manager.getDefaultThinkingLevel() ?? "off",
       fullAccess: (await readJson(join(directory, "settings.json"))).eido?.fullAccess === true,
+      browserDecision: await browserDecisionSettings(directory),
       providers, update: await readJson(join(directory, "pi-update.json"), null) };
   }
 
@@ -92,7 +94,22 @@ export function createPiSettings(directory = join(root, ".local/eido"), sourceDi
     const operation = request?.operation ?? "status";
     await mkdir(directory, { recursive: true, mode: 0o700 });
     if (!["status", "check-update", "import", "access"].includes(operation)) await status();
-    if (operation === "access") {
+    if (operation === "browser-decision") {
+      const apiUrl = text(request.apiUrl, "Jev API URL"), model = text(request.model, "Jev model");
+      const url = new URL(apiUrl);
+      if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.hash) throw new PiConfigError("Enter an HTTP(S) Jev endpoint without credentials or a fragment.");
+      const key = request.key ? text(request.key, "Jev API Key") : undefined;
+      if (key?.startsWith("!")) throw new PiConfigError("Use an API key or a $ENV_VAR reference for Jev.");
+      if (request.removeKey === true) await AuthStorage.create(authPath).delete(browserCredentialId);
+      else if (key) await AuthStorage.create(authPath).modify(browserCredentialId, async () => ({type: "api_key", key}));
+      new FileSettingsStorage(directory, directory).withLock("global", current => {
+        const value = current ? JSON.parse(current) : {};
+        value.eido = {...value.eido, browserDecision: {apiUrl, model}};
+        return JSON.stringify(value, null, 2) + "\n";
+      });
+      await chmod(join(directory, "settings.json"), 0o600);
+      if (key || request.removeKey) await chmod(authPath, 0o600);
+    } else if (operation === "access") {
       if (typeof request.fullAccess !== "boolean") throw new PiConfigError("Full Access must be enabled or disabled.");
       new FileSettingsStorage(directory, directory).withLock("global", current => {
         const value = current ? JSON.parse(current) : {};

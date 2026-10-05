@@ -1,22 +1,24 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { mkdtemp, realpath, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, realpath, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { client, methods, type ClientConnection, type SessionNotification } from "@agentclientprotocol/sdk";
 import { startEidoAgent } from "../src/server.ts";
 import { SUBAGENT_RUN } from "../src/subagents.ts";
 import { call, fixtureModel, lastToolText, type FixtureStep } from "./fixture-model.ts";
+import { createExtensionCenter } from "../../../scripts/pi-extensions.mjs";
 
 type Run = {childSessionId: string; parentSessionId: string; task: string; toolCallId: string};
-async function harness(steps: FixtureStep[], runHooks: {beforeLoad?: () => Promise<void>; settled?: () => void} = {}) {
+async function harness(steps: FixtureStep[], runHooks: {prepare?: (cwd: string) => Promise<void>; beforeLoad?: () => Promise<void>; settled?: () => void} = {}) {
   const cwd = await realpath(await mkdtemp(join(tmpdir(), "eido-subagents-")));
   await writeFile(join(cwd, "settings.json"), JSON.stringify({defaultProvider: "eido-fixture", defaultModel: "scripted", compaction: {enabled: false}}));
   await writeFile(join(cwd, "source.ts"), "disk content");
+  await runHooks.prepare?.(cwd);
   const fixture = await fixtureModel(cwd, steps);
   const toAgent = new TransformStream(), toClient = new TransformStream();
   const server = await startEidoAgent(cwd, join(cwd, "sessions"), {readable: toAgent.readable, writable: toClient.writable}, fixture.runtime);
-  const updates: SessionNotification[] = [], runs: Run[] = [], readSessions: string[] = [];
+  const updates: SessionNotification[] = [], runs: Run[] = [], readSessions: string[] = [], permissions: string[] = [];
   const attached = new Set<string>();
   let writes = 0;
   const runErrors: unknown[] = [];
@@ -27,7 +29,7 @@ async function harness(steps: FixtureStep[], runHooks: {beforeLoad?: () => Promi
       }
       updates.push(params);
     })
-    .onRequest(methods.client.session.requestPermission, () => ({outcome: {outcome: "selected", optionId: "allow_once"}}))
+    .onRequest(methods.client.session.requestPermission, ({params}) => {permissions.push(params.sessionId); return {outcome: {outcome: "selected", optionId: "allow_once"}};})
     .onRequest(methods.client.fs.readTextFile, ({params}) => {readSessions.push(params.sessionId); return {content: "current unsaved buffer"};})
     .onRequest(methods.client.fs.writeTextFile, () => {writes++; return {};})
     .onRequest(SUBAGENT_RUN, {parse: raw => raw as Run}, async ({params, signal}) => {
@@ -54,7 +56,7 @@ async function harness(steps: FixtureStep[], runHooks: {beforeLoad?: () => Promi
     .connect({readable: toClient.readable, writable: toAgent.writable});
   await connection.agent.request(methods.agent.initialize, {protocolVersion: 1, clientCapabilities: {_meta: {eidoSubagents: 1}}});
   const parent = await connection.agent.request(methods.agent.session.new, {cwd, mcpServers: []});
-  return {cwd, server, connection, parent, updates, runs, readSessions, runErrors, requests: fixture.requests, writes: () => writes,
+  return {cwd, server, connection, parent, updates, runs, readSessions, permissions, runErrors, requests: fixture.requests, writes: () => writes,
     prompt: (text: string) => connection.agent.request(methods.agent.session.prompt, {sessionId: parent.sessionId, prompt: [{type: "text", text}]}),
     dispose: async () => {await server.agent.dispose(); connection.close(); server.connection.close(); await rm(cwd, {recursive: true, force: true});},
   };
@@ -279,5 +281,40 @@ test("an explicit user follow-up continues the same child and records its result
     assert.equal(response.stopReason, "end_turn");
     assert.ok(h.updates.some(({sessionId, update}) => sessionId === h.parent.sessionId && update.sessionUpdate === "agent_message_chunk" && update.content.type === "text" && update.content.text.includes("Updated review")));
     assert.equal(h.runs.length, 1);
+  } finally {await h.dispose();}
+});
+
+test("child roles execute installed plugin and MCP tools without exposing them to read-only scouts", {timeout: 30_000}, async () => {
+  const h = await harness([
+    () => call("subagent", {agent: "integrator", title: "Check integrations", task: "Use the fixture plugin and MCP server."}),
+    context => {assert.doesNotMatch(JSON.stringify(context.messages.filter(m => m.role === "system")), /fixture_other/); return call("fixture_plugin");},
+    context => {assert.match(lastToolText(context, "fixture_plugin"), /Plugin executed/); return call("mcp__fixture__ping");},
+    context => {assert.match(lastToolText(context, "mcp__fixture__ping"), /MCP fixture reached/); return "Child integrations verified.";},
+    context => {assert.match(lastToolText(context, "subagent"), /Child integrations verified/); return call("subagent", {agent: "scout", title: "Inspect isolation", task: "Report your available tools."});},
+    context => {assert.doesNotMatch(JSON.stringify(context.messages.filter(m => m.role === "system")), /fixture_plugin|mcp__fixture__ping/); return "Only read is available.";},
+    context => {assert.match(lastToolText(context, "subagent"), /Only read/); return "Role isolation verified.";},
+  ], {prepare: async cwd => {
+    const pkg = join(cwd, "plugin"); await mkdir(pkg);
+    await writeFile(join(pkg, "package.json"), JSON.stringify({name: "pi-child-fixture", version: "1.0.0", pi: {extensions: ["index.js"]}}));
+    await writeFile(join(pkg, "index.js"), `export default api => {for (const name of ["fixture_plugin", "fixture_other"]) api.registerTool({name, label: name, description: "Fixture plugin", parameters: {type:"object", properties:{}}, async execute(){return {content:[{type:"text",text:"Plugin executed"}]}}});};`);
+    const script = join(cwd, "mcp.mjs");
+    await writeFile(script, `import readline from 'node:readline';
+readline.createInterface({input:process.stdin}).on('line', l => {const r=JSON.parse(l);if(r.id===undefined)return;
+const result=r.method==='initialize'?{protocolVersion:r.params.protocolVersion,capabilities:{tools:{}},serverInfo:{name:'fixture',version:'1'}}:
+r.method==='tools/list'?{tools:[{name:'ping',description:'Ping local fixture',inputSchema:{type:'object',properties:{}}}]}:
+r.method==='tools/call'?{content:[{type:'text',text:'MCP fixture reached'}]}:{};
+process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:r.id,result})+'\\n');});`);
+    const center = createExtensionCenter(cwd);
+    await center.execute({operation: "install", source: pkg});
+    await center.execute({operation: "mcp-save", text: JSON.stringify({mcpServers: {fixture: {command: process.execPath, args: [script]}}})});
+    await mkdir(join(cwd, "agents"));
+    await writeFile(join(cwd, "agents", "integrator.md"), '---\nname: integrator\ndescription: Check plugin and MCP integration\ntools: [read, "tool:fixture_plugin", "mcp:fixture"]\n---\nUse only assigned integrations.\n');
+  }});
+  try {
+    assert.equal((await h.prompt("Verify role integration and isolation.")).stopReason, "end_turn");
+    assert.equal(h.runs.length, 2);
+    assert.equal(h.requests(), 7);
+    assert.ok(h.permissions.includes(h.runs[0]!.childSessionId), "MCP permission belongs to the child task");
+    assert.equal(h.writes(), 0);
   } finally {await h.dispose();}
 });

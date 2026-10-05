@@ -118,3 +118,26 @@ test("Full Access persists globally, validates booleans and survives model setti
   assert.equal((await f.bridge.execute({operation:"access", fullAccess:false})).fullAccess, false);
   assert.equal((await stat(join(f.target,"settings.json"))).mode & 0o777, 0o600);
 });
+
+test("Jev configuration uses global settings and pi credentials without exposing keys", async t => {
+  const f = await fixture(t);
+  const {browserDecisionEnvironment} = await import('../browser-config.mjs');
+  const result = await f.bridge.execute({operation: 'browser-decision', apiUrl: 'http://127.0.0.1:19001/v1/systemone', model: 'jev-fixture', key: 'fixture-jev-secret'});
+  assert.equal(result.browserDecision.credential, 'configured');
+  assert.ok(!JSON.stringify(result).includes('fixture-jev-secret'));
+  assert.equal(result.defaultModel, 'test-model');
+  assert.equal((await f.get(f.target, 'settings.json')).customSetting.retain, true);
+  const env = await browserDecisionEnvironment(f.target);
+  assert.deepEqual(env, {JEV_API_URL:'http://127.0.0.1:19001/v1/systemone', JEV_MODEL:'jev-fixture', TYPESAFE_API_KEY:'fixture-jev-secret'});
+  assert.equal((await stat(join(f.target, 'auth.json'))).mode & 0o777, 0o600);
+  await f.bridge.execute({operation:'browser-decision', apiUrl:'https://example.invalid/v1/systemone', model:'jev-new', key:''});
+  assert.equal((await browserDecisionEnvironment(f.target)).TYPESAFE_API_KEY, 'fixture-jev-secret');
+  const before = await readFile(join(f.target,'settings.json'),'utf8');
+  await assert.rejects(f.bridge.execute({operation:'browser-decision', apiUrl:'file:///private', model:'jev-new', key:'new-secret'}));
+  assert.equal(await readFile(join(f.target,'settings.json'),'utf8'), before);
+  assert.equal((await browserDecisionEnvironment(f.target)).TYPESAFE_API_KEY, 'fixture-jev-secret');
+  await f.put(f.target, 'auth.json', {'eido-jev': {type:'api_key',key:'${EIDO_JEV_TEST_KEY}',env:{EIDO_JEV_TEST_KEY:'fixture-resolved-secret'}}});
+  assert.equal((await browserDecisionEnvironment(f.target)).TYPESAFE_API_KEY, 'fixture-resolved-secret');
+  await f.bridge.execute({operation:'browser-decision', apiUrl:'https://example.invalid/v1/systemone', model:'jev-new', removeKey:true});
+  assert.equal((await f.get(f.target, 'auth.json'))['eido-jev'], undefined);
+});

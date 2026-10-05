@@ -8,7 +8,9 @@ import { browserLifecycle } from "./browser-lifecycle.ts";
 import { accessPolicy } from "./access-policy.ts";
 import { installPiCommands } from "./pi-commands.ts";
 import { createSubagents } from "./subagents.ts";
+import { resolveAgentTools } from "./agent-tools.ts";
 import { configuredMcp } from "../../../scripts/pi-extensions.mjs";
+import { browserDecisionEnvironment } from "../../../scripts/browser-config.mjs";
 
 export async function startEidoAgent(agentDir: string, sessionDir: string, stream?: Stream, modelRuntime?: ModelRuntime) {
   const runtime = modelRuntime ?? await ModelRuntime.create({
@@ -27,6 +29,7 @@ export async function startEidoAgent(agentDir: string, sessionDir: string, strea
       createAgentSession: async options => {
         if (!options.cwd || !options.sessionManager) throw new Error("Missing ACP session context.");
         const client = await clientReady;
+        const browserDecision = await browserDecisionEnvironment(agentDir);
         const preview = createPreview(options.cwd, join(agentDir, "previews"), options.sessionManager.getSessionId(), client);
         // Settings are owned by pi. New tasks see credentials/models changed in
         // Eido's settings without replacing the model of an active conversation.
@@ -73,23 +76,20 @@ export async function startEidoAgent(agentDir: string, sessionDir: string, strea
         // pi-acp validates its tracked bash registration, even when it is inactive.
         // Keep that registration without activating shell access. MCP tools
         // keep pi-acp's permission, cancellation, image and lifecycle handling.
-        const browserTools = created.session.getAllTools().filter(tool =>
-          tool.sourceInfo.path === "<inline:agentprism-pi-acp-mcp>"
-          && tool.name.startsWith("mcp__eido_browser__")
-        ).map(tool => tool.name);
         const child = subagents.register(created.session);
-        const rootTools = () => created.session.getAllTools().filter(t =>
-          t.name !== "bash" && !t.sourceInfo.path.startsWith("<builtin:")
-          && t.sourceInfo.path !== "<inline:agentprism-pi-acp-control>"
-        ).map(t => t.name);
-        let activeTools = new Set(child
-          ? (child.role?.tools ?? ["read"]).flatMap(name => name === "browser" ? browserTools : [name])
-          : rootTools());
+        const decisionTools = new Set(["do", "check", "choose"].map(name => `mcp__eido_browser__browser_${name}`));
+        const selectedTools = () => resolveAgentTools(child ? child.role?.tools ?? ["read"] : undefined,
+          created.session.getAllTools().filter(tool => browserDecision.TYPESAFE_API_KEY || !decisionTools.has(tool.name)));
+        let activeTools: Set<string>;
+        try { activeTools = new Set(selectedTools()); }
+        catch (error) {created.session.dispose(); throw error;}
         created.session.setActiveToolsByName([...activeTools]);
         const reload = created.session.reload.bind(created.session);
         created.session.reload = async (...args) => {
           await reload(...args);
-          if (!child) activeTools = new Set(rootTools());
+          activeTools.clear();
+          created.session.setActiveToolsByName([]);
+          activeTools = new Set(selectedTools());
           created.session.setActiveToolsByName([...activeTools]);
         };
         const beforeToolCall = created.session.agent.beforeToolCall;
@@ -115,7 +115,11 @@ export async function startEidoAgent(agentDir: string, sessionDir: string, strea
   // The configured servers enter the same ACP MCP bridge as built-in tools.
   const withMcp = async <T extends {params: {mcpServers?: McpServer[]}}>(context: T): Promise<T> => {
     const configured = await configuredMcp(agentDir), bundled = context.params.mcpServers ?? [];
-    return {...context, params: {...context.params, mcpServers: [...bundled, ...configured.filter(server => !bundled.some(s => s.name === server.name))]}};
+    const servers = [...bundled, ...configured.filter(server => !bundled.some(s => s.name === server.name))].map(server =>
+      server.name === "eido_browser" && "command" in server
+        ? {...server, env: [...server.env?.filter(entry => entry.name !== "EIDO_PI_CONFIG_DIR") ?? [], {name: "EIDO_PI_CONFIG_DIR", value: agentDir}]}
+        : server);
+    return {...context, params: {...context.params, mcpServers: servers}};
   };
   const create = server.agent.newSession.bind(server.agent), load = server.agent.loadSession.bind(server.agent);
   server.agent.newSession = async context => create(await withMcp(context));

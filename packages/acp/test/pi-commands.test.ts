@@ -92,6 +92,8 @@ test("pi extension commands, prompt templates and skills use the dynamic ACP cat
           if (selected) ctx.ui.notify("Selected " + selected);
           const value = await ctx.ui.input("Fixture input", "A short value");
           const confirmed = await ctx.ui.confirm("Fixture confirmation", "Use the entered value?");
+          const edited = await ctx.ui.editor("Fixture editor", "First line\\nSecond line");
+          if (edited !== "Edited first\\nEdited second") throw new Error("Editor lost line breaks");
           pi.sendMessage({customType:"fixture-survey", content: "Survey: " + selected + "/" + value + "/" + confirmed, display:true});
         }});
       }`);
@@ -104,6 +106,12 @@ test("pi extension commands, prompt templates and skills use the dynamic ACP cat
       received.push(params);
       if (params.message === "Fixture choice") return {action: "accept", content: {value: "Orchard"}};
       if (params.message === "Fixture input") return {action: "accept", content: {value: "local"}};
+      if (params.message === "Fixture editor") {
+        assert.equal(params.mode, "form");
+        const schema = params.requestedSchema as {properties: {value: {_meta?: {eidoMultiline?: boolean}}}};
+        assert.equal(schema.properties.value._meta?.eidoMultiline, true);
+        return {action: "accept", content: {value: "Edited first\nEdited second"}};
+      }
       return {action: "accept"};
     },
   });
@@ -113,7 +121,7 @@ test("pi extension commands, prompt templates and skills use the dynamic ACP cat
     assert.ok(catalogue.includes("survey") && catalogue.includes("brief") && catalogue.includes("skill:fixture"), catalogue.join(","));
     await h.prompt(a.sessionId, "/survey");
     assert.equal(h.requests(), 0);
-    assert.equal(received.length, 3);
+    assert.equal(received.length, 4);
     assert.ok(received.every(request => "sessionId" in request && request.sessionId === a.sessionId && request.mode === "form"));
     assert.match(h.text(a.sessionId), /Selected Orchard/);
     assert.match(h.text(a.sessionId), /Survey: Orchard\/local\/true/);

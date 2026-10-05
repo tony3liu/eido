@@ -2,6 +2,7 @@ import { existsSync, constants, accessSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { browserDecisionSettings } from "../../../scripts/browser-config.mjs";
 
 const require = createRequire(import.meta.url);
 export const browserCachePath = process.env.PLAYWRIGHT_BROWSERS_PATH
@@ -45,12 +46,12 @@ export function browserAdapter(cwd: string, headed = false): Adapter {
   return {
     id: "jev-browser", surface: "browser", version: pkg.version,
     command: process.execPath,
-    args: [join(pkg.root, "bin", "jev-browser-mcp.mjs")], cwd,
+    args: [fileURLToPath(new URL("../../../scripts/browser-server.mjs", import.meta.url))], cwd,
     env: {
       JEV_BROWSER_HEADED: headed ? "1" : "0",
       JEV_BROWSER_LOG: "0",
       PLAYWRIGHT_BROWSERS_PATH: browserCachePath,
-      ...(process.env.TYPESAFE_API_KEY ? { TYPESAFE_API_KEY: process.env.TYPESAFE_API_KEY } : {}),
+      EIDO_PI_CONFIG_DIR: process.env.EIDO_PI_CONFIG_DIR ?? fileURLToPath(new URL("../../../.local/eido", import.meta.url)),
     },
   };
 }
@@ -66,6 +67,7 @@ export function desktopAdapter(cwd: string): Adapter {
 
 export async function doctor() {
   const pkg = packageInfo("jev-browser");
+  const decision = await browserDecisionSettings(process.env.EIDO_PI_CONFIG_DIR ?? fileURLToPath(new URL("../../../.local/eido", import.meta.url)));
   process.env.PLAYWRIGHT_BROWSERS_PATH = browserCachePath;
   const module = await import(require.resolve("playwright", { paths: [pkg.root] }));
   const playwright = module.default ?? module;
@@ -77,7 +79,8 @@ export async function doctor() {
     browser: {
       package: `jev-browser@${pkg.version}`,
       control: existsSync(chromium) ? "available_unprobed" : "missing_chromium",
-      decisionModel: process.env.TYPESAFE_API_KEY ? "key_present_unverified" : "missing_TYPESAFE_API_KEY",
+      decisionModel: decision.credential === "none" ? "configure_in_pi_settings" : "key_present_unverified",
+      decision,
       chromium,
     },
     desktop: {

@@ -9769,6 +9769,78 @@ diff --git a/crates/agent_ui/src/context_server_configuration.rs b/crates/agent_
 -        );
 -    }
 -}
+diff --git a/crates/agent_ui/src/conversation_view/elicitation.rs b/crates/agent_ui/src/conversation_view/elicitation.rs
+--- a/crates/agent_ui/src/conversation_view/elicitation.rs
++++ b/crates/agent_ui/src/conversation_view/elicitation.rs
+@@ -45,6 +45,11 @@
+     is_submitting: bool,
+ }
+ 
++fn multiline_field(schema: &acp::StringPropertySchema) -> bool {
++    schema.meta.as_ref().and_then(|meta| meta.get("eidoMultiline")) == Some(&serde_json::Value::Bool(true))
++        || schema.default.as_ref().is_some_and(|value| value.contains('\n'))
++}
++
+ impl ElicitationFormState {
+     pub(crate) fn new(schema: &acp::ElicitationSchema, window: &mut Window, cx: &mut App) -> Self {
+         let required = schema.required.as_deref().unwrap_or_default();
+@@ -57,7 +62,9 @@
+                     let options = single_select_options(schema);
+                     if options.is_empty() {
+                         let editor = cx.new(|cx| {
+-                            let mut editor = Editor::single_line(window, cx);
++                            let mut editor = if multiline_field(schema) {
++                                Editor::auto_height(4, 12, window, cx)
++                            } else { Editor::single_line(window, cx) };
+                             if let Some(default) = &schema.default {
+                                 editor.set_text(default.clone(), window, cx);
+                             }
+@@ -236,7 +243,7 @@
+                     acp::ElicitationPropertySchema::String(schema),
+                     ElicitationFieldValue::Text(value),
+                 ) => {
+-                    if value.is_empty() {
++                    if value.is_empty() && !multiline_field(schema) {
+                         if is_required {
+                             Err(format!("{} is required", property_title(name, property)).into())
+                         } else {
+@@ -957,6 +964,23 @@
+     }
+ 
+     #[gpui::test]
++    fn test_eido_multiline_form_preserves_lines_and_empty_edits(cx: &mut TestAppContext) {
++        crate::conversation_view::tests::init_test(cx);
++        cx.add_window(|window, cx| {
++            let source = "---\nname: agent\n---\nKeep every line.\n";
++            let schema = acp::ElicitationSchema::new().property("text",
++                acp::StringPropertySchema::new().default_value(source), true);
++            let form = ElicitationFormState::new(&schema, window, cx);
++            let Some(ElicitationFieldState::Text(editor)) = form.fields.get("text") else { panic!("missing text editor") };
++            assert!(matches!(editor.read(cx).mode(), editor::EditorMode::AutoHeight { .. }));
++            assert_eq!(form.collect(&schema, cx).unwrap().get("text"), Some(&acp::ElicitationContentValue::String(source.into())));
++            editor.update(cx, |editor, cx| editor.set_text("", window, cx));
++            assert_eq!(form.collect(&schema, cx).unwrap().get("text"), Some(&acp::ElicitationContentValue::String(String::new())));
++            Editor::single_line(window, cx)
++        });
++    }
++
++    #[gpui::test]
+     fn form_state_preserves_string_whitespace(cx: &mut TestAppContext) {
+         crate::conversation_view::tests::init_test(cx);
+ 
+@@ -2011,10 +2035,12 @@
+                     let on_submit = self.handlers.on_submit.clone();
+                     let elicitation_id = self.elicitation.id.clone();
+                     let is_submitting = self.form_state.is_some_and(|state| state.is_submitting);
++                    let multiline = matches!(property, acp::ElicitationPropertySchema::String(schema) if multiline_field(schema));
+ 
+                     div()
+                         .track_focus(&editor.focus_handle(cx).tab_stop(true))
+                         .on_action(move |_: &menu::Confirm, window, cx| {
++                            if multiline { cx.propagate(); return; }
+                             if !is_submitting {
+                                 on_submit(elicitation_id.clone(), window, cx);
+                             }
 diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent_ui/src/conversation_view/thread_view.rs
 --- a/crates/agent_ui/src/conversation_view/thread_view.rs
 +++ b/crates/agent_ui/src/conversation_view/thread_view.rs

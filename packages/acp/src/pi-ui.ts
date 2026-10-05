@@ -45,7 +45,7 @@ export function createPiUI(pi: AgentSession, client: AgentContext, turnSignal: (
       return typeof value === "string" ? value : undefined;
     },
     async editor(title, prefill) {
-      const value = await request(title, {type: "string", title: "Text", default: prefill ?? ""});
+      const value = await request(title, {type: "string", title: "Text", default: prefill ?? "", _meta: {eidoMultiline: true}});
       return typeof value === "string" ? value : undefined;
     },
     notify: (message, type) => notice(type && type !== "info" ? `${type}: ${message}` : message),

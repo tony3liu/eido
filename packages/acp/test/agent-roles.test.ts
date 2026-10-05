@@ -37,3 +37,29 @@ test("global roles use pi YAML, preserve tool restrictions and isolate malformed
     assert.equal((await discoverAgentRoles(dir)).roles.some(r => r.name === "worker"), false, "an invalid override cannot silently regain built-in write access");
   } finally {await rm(dir, {recursive: true, force: true});}
 });
+
+test("role removal supports cancellation, concurrent edit protection and built-in reset", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "eido-role-delete-"));
+  const role = '---\nname: audit\ndescription: Audit code\ntools: [read, extensions, mcp, "tool:plugin_tool", "mcp:fixture"]\n---\nAudit only.\n';
+  try {
+    await mkdir(join(dir, "agents"));
+    const path = join(dir, "agents", "audit.md");
+    await writeFile(path, role);
+    assert.equal(parseAgentRole(role).tools.length, 5);
+    await manageAgentRoles(dir, "delete audit", {confirm: async () => false} as unknown as ExtensionUIContext);
+    assert.equal(await readFile(path, "utf8"), role);
+    await assert.rejects(manageAgentRoles(dir, "delete audit", {confirm: async () => {
+      await writeFile(path, role + "A concurrent correction.\n"); return true;
+    }} as unknown as ExtensionUIContext), /changed while/);
+    assert.match(await readFile(path, "utf8"), /concurrent correction/);
+    await manageAgentRoles(dir, "delete audit", {confirm: async () => true} as unknown as ExtensionUIContext);
+    assert.equal((await discoverAgentRoles(dir)).roles.some(r => r.name === "audit"), false);
+    await writeFile(join(dir, "agents", "worker.md"), role.replace("name: audit", "name: worker"));
+    await manageAgentRoles(dir, "reset worker", {confirm: async () => true} as unknown as ExtensionUIContext);
+    const worker = (await discoverAgentRoles(dir)).roles.find(r => r.name === "worker");
+    assert.ok(worker?.tools.includes("write"));
+    assert.ok(worker?.tools.includes("extensions"));
+    assert.ok(worker?.tools.includes("mcp"));
+    await assert.rejects(manageAgentRoles(dir, "delete worker", {confirm: async () => true} as unknown as ExtensionUIContext), /no custom/);
+  } finally {await rm(dir, {recursive: true, force: true});}
+});
