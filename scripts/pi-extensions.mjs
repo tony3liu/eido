@@ -1,3 +1,5 @@
+import {validateMcp, credentials, usesOAuth} from './pi-mcp.mjs';
+export {validateMcp, configuredMcp} from './pi-mcp.mjs';
 import { mkdir, readFile, writeFile, rename, rm, readdir } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { createHash } from "node:crypto";
@@ -26,33 +28,6 @@ const npmName = source => {
   if (!/^(@[a-z0-9._-]+\/)?[a-z0-9][a-z0-9._-]*(?:@[a-zA-Z0-9.*^~<>=| -]+)?$/.test(name)) throw new Error("Enter an npm package name or an absolute local package path.");
   return name;
 };
-
-export function validateMcp(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("MCP configuration must contain a mcpServers object.");
-  const servers = value.mcpServers ?? {};
-  if (!servers || typeof servers !== "object" || Array.isArray(servers)) throw new Error("mcpServers must be an object.");
-  for (const [name, server] of Object.entries(servers)) {
-    if (!/^[a-zA-Z0-9_-]{1,64}$/.test(name) || name === "eido_browser") throw new Error("Use a unique server name; eido_browser is reserved.");
-    if (!server || typeof server !== "object" || Array.isArray(server)) throw new Error(`Invalid MCP server: ${name}.`);
-    if (server.disabled !== undefined && typeof server.disabled !== "boolean") throw new Error(`Invalid disabled flag for ${name}.`);
-    if (server.command && !server.url) {
-      if (typeof server.command !== "string" || !server.command.trim() || (server.args !== undefined && (!Array.isArray(server.args) || server.args.some(v => typeof v !== "string")))) throw new Error(`Invalid command for ${name}.`);
-      if (server.env !== undefined && (typeof server.env !== "object" || Array.isArray(server.env) || !server.env || Object.values(server.env).some(v => typeof v !== "string"))) throw new Error(`Invalid environment for ${name}.`);
-    } else if (server.url && !server.command) {
-      const url = new URL(server.url);
-      if (!["http:", "https:"].includes(url.protocol) || url.username || url.password) throw new Error(`Invalid URL for ${name}.`);
-      if (server.headers !== undefined && (typeof server.headers !== "object" || Array.isArray(server.headers) || !server.headers || Object.values(server.headers).some(v => typeof v !== "string"))) throw new Error(`Invalid headers for ${name}.`);
-    } else throw new Error(`Choose a command or HTTP URL for ${name}.`);
-  }
-  return {...value, mcpServers: servers};
-}
-
-export async function configuredMcp(directory) {
-  const config = validateMcp(await readJson(join(directory, "mcp.json"), {mcpServers: {}}));
-  return Object.entries(config.mcpServers).filter(([, s]) => !s.disabled).map(([name, s]) => s.command
-    ? {name, command: s.command, args: s.args ?? [], env: Object.entries(s.env ?? {}).map(([name, value]) => ({name, value}))}
-    : {name, type: "http", url: s.url, headers: Object.entries(s.headers ?? {}).map(([name, value]) => ({name, value}))});
-}
 
 export function createExtensionCenter(directory = join(root, ".local/eido"), fetcher = fetch) {
   const queuePath = join(directory, "package-changes.json"), leases = join(directory, "runtimes");
@@ -102,7 +77,7 @@ export function createExtensionCenter(directory = join(root, ".local/eido"), fet
     const mcp = validateMcp(await readJson(join(directory, "mcp.json"), {mcpServers: {}}));
     return {packages, extensions: await resources("extensions"), skills: await resources("skills"),
       mcp: [{name: "eido_browser", enabled: true, builtin: true, detail: "Built-in browser automation"},
-        ...Object.entries(mcp.mcpServers).map(([name, s]) => ({name, enabled: !s.disabled, builtin: false, detail: s.command ? "Local process" : "HTTP server"}))],
+        ...Object.entries(mcp.mcpServers).map(([name, s]) => ({name, enabled: s.enabled !== false, builtin: false, oauth: usesOAuth(s), signedIn: usesOAuth(s) && !!credentials(directory).tokens(name, s.url), detail: s.command ? "Local process" : s.type === "sse" ? "SSE server" : "HTTP server"}))],
       pending: await readJson(queuePath, []), activeRuntimes: (await activeRuntimes()).length};
   }
   async function applyPending() {
@@ -197,11 +172,18 @@ export function createExtensionCenter(directory = join(root, ".local/eido"), fet
         const current = validateMcp(await readJson(join(directory, "mcp.json"), {mcpServers: {}}));
         if (request.revision !== undefined && request.revision !== revisionOf(current)) throw new Error("MCP configuration changed. Reopen the editor before saving again.");
         await atomic(join(directory, "mcp.json"), value);
-      } else if (["mcp-toggle", "mcp-remove"].includes(operation)) {
+      } else if (["mcp-toggle", "mcp-remove", "mcp-signout"].includes(operation)) {
         const value = validateMcp(await readJson(join(directory, "mcp.json"), {mcpServers: {}}));
         if (!value.mcpServers[request.name]) throw new Error("This MCP server is not configured.");
-        if (operation === "mcp-remove") delete value.mcpServers[request.name];
-        else {if (typeof request.enabled !== "boolean") throw new Error("Choose enabled or disabled."); value.mcpServers[request.name].disabled = !request.enabled;}
+        if (operation === "mcp-signout" || operation === "mcp-remove") {
+          const server = value.mcpServers[request.name];
+          if (server.url) {
+            const store = credentials(directory);
+            await store.forServer(request.name,server.url).withRefreshLock(async()=>store.remove(request.name,server.url));
+          }
+          if (operation === "mcp-remove") delete value.mcpServers[request.name];
+        }
+        else {if (typeof request.enabled !== "boolean") throw new Error("Choose enabled or disabled."); value.mcpServers[request.name].enabled = request.enabled;}
         await atomic(join(directory, "mcp.json"), value);
       } else throw new Error("Unsupported extension operation.");
       return status();

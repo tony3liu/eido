@@ -1,4 +1,4 @@
-use std::{io::Write, process::{Command, Stdio}};
+use std::{io::{Write, BufRead, BufReader}, process::{ChildStdin, Command, Stdio}, sync::mpsc};
 
 use serde_json::{Value, json};
 use super::*;
@@ -34,6 +34,9 @@ pub(super) struct PiExtensionsState {
     mcp_revision: String,
     notice: String,
     failed: bool,
+    auth_name: Option<String>,
+    auth_input: Option<ChildStdin>,
+    auth_task: Option<Task<()>>,
 }
 
 impl PiExtensionsState {
@@ -49,6 +52,7 @@ impl PiExtensionsState {
             }),
             installing: false, mcp_editor: cx.new(|cx| Editor::auto_height(4, 10, window, cx)),
             editing_mcp: false, mcp_revision: String::new(), notice: String::new(), failed: false,
+            auth_name: None, auth_input: None, auth_task: None,
         }
     }
 
@@ -79,6 +83,39 @@ fn run_pi_request(request: Value) -> Result<Value, String> {
     let response: Value = serde_json::from_slice(&output.stdout).map_err(|_| "Invalid extension response.".to_owned())?;
     if response["ok"] == true { Ok(response["data"].clone()) }
     else { Err(response["error"].as_str().unwrap_or("Extension operation failed.").to_owned()) }
+}
+
+enum AuthEvent { Started(ChildStdin), Url(String), Finished(Result<(), String>) }
+
+fn run_mcp_sign_in(name: String, events: mpsc::Sender<AuthEvent>) {
+    let result = (|| -> Result<(), String> {
+        let root = std::env::var_os("EIDO_ROOT").ok_or("Eido runtime directory is unavailable.")?;
+        let node = std::env::var_os("EIDO_NODE").ok_or("Eido Node.js runtime is unavailable.")?;
+        let root = std::path::PathBuf::from(root);
+        let mut child = Command::new(node).arg(root.join("scripts/pi-mcp-auth.mjs")).arg(name).current_dir(root)
+            .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn()
+            .map_err(|_| "Unable to start MCP sign-in.".to_owned())?;
+        // Dropping the pipe cancels in pi and closes its callback listener.
+        let input = child.stdin.take().ok_or("MCP sign-in input is unavailable.")?;
+        if events.send(AuthEvent::Started(input)).is_err() {
+            let _ = child.wait();
+            return Ok(());
+        }
+        let output = child.stdout.take().ok_or("MCP sign-in output is unavailable.")?;
+        let mut result = Err("MCP sign-in did not complete.".to_owned());
+        for line in BufReader::new(output).lines() {
+            let Ok(line) = line else { break; };
+            let Ok(value) = serde_json::from_str::<Value>(&line) else { continue; };
+            if let Some(url) = value["url"].as_str() {
+                if !(url.starts_with("https://") || url.starts_with("http://")) { continue; }
+                if events.send(AuthEvent::Url(url.to_owned())).is_err() { break; }
+            } else if value["ok"] == true { result = Ok(()); }
+            else if value["ok"] == false { result = Err(string(&value, "error")); }
+        }
+        let _ = child.wait();
+        result
+    })();
+    let _ = events.send(AuthEvent::Finished(result));
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -209,6 +246,51 @@ impl ExtensionsPage {
         cx.notify();
     }
 
+    fn sign_in_mcp(&mut self, name: String, window: &mut Window, cx: &mut Context<Self>) {
+        if self.pi.busy { return; }
+        self.pi.busy = true;
+        self.pi.failed = false;
+        self.pi.notice = format!("Sign in to {name} in your browser.");
+        self.pi.auth_name = Some(name.clone());
+        let (sender, receiver) = mpsc::channel();
+        cx.background_spawn(async move { run_mcp_sign_in(name, sender); }).detach();
+        self.pi.auth_task = Some(cx.spawn_in(window, async move |this, cx| {
+            loop {
+                match receiver.try_recv() {
+                    Ok(event) => {
+                        let finished = matches!(&event, AuthEvent::Finished(_));
+                        if this.update_in(cx, |this, window, cx| {
+                            match event {
+                                AuthEvent::Started(input) => {
+                                    if this.pi.auth_name.is_some() { this.pi.auth_input = Some(input); }
+                                }
+                                AuthEvent::Url(url) => {
+                                    if this.pi.auth_name.is_some() { cx.open_url(&url); }
+                                }
+                                AuthEvent::Finished(result) => {
+                                    this.pi.auth_input = None;
+                                    this.pi.auth_name = None;
+                                    this.pi.busy = false;
+                                    match result {
+                                        Ok(()) => {
+                                            this.request_pi(json!({"operation":"status"}), window, cx);
+                                            this.pi.notice = "Signed in. New pi tasks use these credentials.".into();
+                                        }
+                                        Err(error) => { this.pi.failed = error != "Sign-in cancelled."; this.pi.notice = error; }
+                                    }
+                                }
+                            }
+                            cx.notify();
+                        }).is_err() || finished { break; }
+                    }
+                    Err(mpsc::TryRecvError::Disconnected) => break,
+                    Err(mpsc::TryRecvError::Empty) => cx.background_executor().timer(Duration::from_millis(50)).await,
+                }
+            }
+        }));
+        cx.notify();
+    }
+
     fn pi_action(&self, id: String, label: &str, request: Value, cx: &mut Context<Self>) -> Button {
         Button::new(SharedString::from(id), label.to_owned()).disabled(self.pi.busy)
             .on_click(cx.listener(move |this, _, window, cx| this.request_pi(request.clone(), window, cx)))
@@ -276,7 +358,16 @@ impl ExtensionsPage {
             ResourceKind::Mcp => {
                 if data["builtin"] != true {
                     actions[0] = Some(self.pi_action(format!("toggle-{name}"), if enabled {"Disable"} else {"Enable"}, json!({"operation":"mcp-toggle","name":name,"enabled":!enabled}), cx));
-                    actions[1] = Some(self.pi_action(format!("remove-{name}"), "Remove", json!({"operation":"mcp-remove","name":name}), cx));
+                    actions[2] = Some(self.pi_action(format!("remove-{name}"), "Remove", json!({"operation":"mcp-remove","name":name}), cx));
+                    if data["oauth"] == true {
+                        actions[1] = Some(if data["signedIn"] == true {
+                            self.pi_action(format!("signout-{name}"), "Sign Out", json!({"operation":"mcp-signout","name":name}), cx)
+                        } else {
+                            let name = name.clone();
+                            Button::new(SharedString::from(format!("signin-{name}")), "Sign In").disabled(self.pi.busy)
+                                .on_click(cx.listener(move |this, _, window, cx| this.sign_in_mcp(name.clone(), window, cx)))
+                        });
+                    }
                 }
                 (name.clone(), "MCP", string(data, "detail"))
             }
@@ -285,6 +376,7 @@ impl ExtensionsPage {
             "Pending · Restart Eido to apply"
         } else if data["builtin"] == true { "Built-in · Enabled" }
         else if !row.configured { "Available from npm" }
+        else if data["signedIn"] == true && enabled { "Enabled · Signed in" }
         else if enabled { "Enabled · Global" } else { "Disabled · Global" };
         ExtensionCard::for_pi_resource(id, name, string(data, "version"), description, status.into(), feature, actions)
     }
@@ -292,7 +384,10 @@ impl ExtensionsPage {
     pub(super) fn render_pi_status(&self, cx: &mut Context<Self>) -> AnyElement {
         let catalog = self.source == ExtensionSource::Pi && self.filter != ExtensionFilter::Installed;
         v_flex().px_4().py_2p5().gap_2().border_b_1().border_color(cx.theme().colors().border_variant)
-            .when(self.pi.busy || (catalog && self.pi.searching), |body| body.child(Label::new(if self.pi.busy {"Updating resources…"} else {"Searching pi plugins…"}).size(LabelSize::Small).color(Color::Muted)))
+            .when(self.pi.auth_name.is_some(), |body| body.child(Button::new("cancel-mcp-auth", "Cancel Sign-In").on_click(cx.listener(|this, _, _, cx| {
+                this.pi.auth_name = None; this.pi.auth_input = None; this.pi.notice = "Cancelling sign-in…".into(); cx.notify();
+            }))))
+            .when((self.pi.busy && self.pi.auth_name.is_none()) || (catalog && self.pi.searching), |body| body.child(Label::new(if self.pi.busy {"Updating resources…"} else {"Searching pi plugins…"}).size(LabelSize::Small).color(Color::Muted)))
             .when(catalog && self.pi.search_error.is_some(), |body| body.child(Label::new(self.pi.search_error.clone().unwrap_or_default()).size(LabelSize::Small).color(Color::Error)))
             .when(!self.pi.notice.is_empty(), |body| body.child(Label::new(self.pi.notice.clone()).size(LabelSize::Small).color(if self.pi.failed {Color::Error} else {Color::Muted})))
             .children(array(&self.pi.data, "pending").iter().map(|item| {

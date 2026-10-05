@@ -174,3 +174,12 @@ await patchSource(sessionPath,
 await patchSource(path,
   '            return replayMessage(entry.message);',
   '            return replayMessage(entry.message).map(update => ["user_message_chunk", "agent_message_chunk", "agent_thought_chunk"].includes(update.sessionUpdate) ? {...update, messageId: entry.id} : update);');
+
+// Product supplies pi's credential-aware fetch; keep the adapter's transport and lifecycle.
+const mcpBridgePath = new URL('dist/mcp-bridge.js', directory);
+await patchSource(mcpBridgePath,
+  'function createTransport(server, serverToken, sleep, fatal, timeoutMs) {\n    let raw;',
+  'function createTransport(server, serverToken, sleep, fatal, timeoutMs) {\n    const fetch = server[Symbol.for("eido.pi.mcp.fetch")] ?? globalThis.fetch;\n    let raw;');
+await patchSource(mcpBridgePath,
+  '            command: server.command,\n            args: server.args,',
+  '            command: server.command,\n            cwd: server[Symbol.for("eido.pi.mcp.options")]?.cwd,\n            args: server.args,');

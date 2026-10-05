@@ -52,6 +52,10 @@ test("only pi packages are searchable; MCP secrets stay out of list data and inv
     const servers = await configuredMcp(dir); assert.equal(servers.length,1); assert.equal(servers[0].env[0].value,"do-not-list");
     await assert.rejects(center.execute({operation:"mcp-save",text:'{"mcpServers":{"broken":{"url":"file:///bad"}}}'}),/Invalid URL/);
     assert.equal((await configuredMcp(dir)).length,1);
+    for (const server of [{url:"http://localhost",type:"websocket"},{command:"node",type:"http"},{url:"http://localhost",type:"stdio"}]) {
+      await assert.rejects(center.execute({operation:"mcp-save",text:JSON.stringify({mcpServers:{invalid:server}})}),/Invalid transport/);
+    }
+    assert.equal((await configuredMcp(dir)).length,1);
     const edit = await center.execute({operation:"mcp-read"});
     await center.execute({operation:"mcp-toggle",name:"local",enabled:false}); assert.equal((await configuredMcp(dir)).length,0);
     await assert.rejects(center.execute({operation:"mcp-save",text:edit.text,revision:edit.revision}), /configuration changed/);
@@ -86,4 +90,31 @@ test("extension lock serializes startup, prevents overlapping mutations and reco
     await release();
     await assert.rejects(readFile(lock), {code:"ENOENT"});
   } finally {await rm(dir, {recursive:true, force:true});}
+});
+
+test('MCP follows pi enabled, env interpolation and validation without resolving secrets during inspection', async()=> {
+  const dir=await mkdtemp(join(tmpdir(),'eido-mcp-config-'));
+  const center=createExtensionCenter(dir);
+  process.env.EIDO_MCP_FIXTURE_SECRET='config-fixture-secret';
+  try {
+    const config={mcpServers:{legacy:{command:'node',disabled:true},pi:{command:'node',enabled:false},local:{command:'node',enabled:true,disabled:true,env:{KEY:'${EIDO_MCP_FIXTURE_SECRET}'}},remote:{type:'sse',url:'http://127.0.0.1:9001',headers:{Authorization:'Bearer ${EIDO_MCP_FIXTURE_SECRET}'}}}};
+    const state=await center.execute({operation:'mcp-save',text:JSON.stringify(config)});
+    assert.doesNotMatch(JSON.stringify(state),/config-fixture-secret|EIDO_MCP_FIXTURE_SECRET/);
+    const configured=await configuredMcp(dir);
+    assert.deepEqual(configured.map(s=>s.name),['local','remote']);
+    assert.equal(configured[0].env[0].value,'config-fixture-secret');
+    assert.equal(configured[1].type,'sse');
+    assert.equal(configured[1].headers[0].value,'Bearer config-fixture-secret');
+    const stored=JSON.parse(await readFile(join(dir,'mcp.json'),'utf8'));
+    assert.equal(stored.mcpServers.legacy.enabled,false);
+    assert.equal(stored.mcpServers.local.enabled,true);
+    assert.equal(stored.mcpServers.local.disabled,undefined);
+    assert.equal(stored.mcpServers.local.env.KEY,'${EIDO_MCP_FIXTURE_SECRET}');
+    for (const server of [{command:'node',timeout:0},{url:'http://localhost',oauth:{callbackUrl:'https://evil.invalid/callback'}},{url:'http://remote.invalid',auth:{provider:'test'}},{command:'node',enabled:'no'},{command:'node',toolExposure:{secret:'typo'}}]) {
+      await assert.rejects(center.execute({operation:'mcp-save',text:JSON.stringify({mcpServers:{bad:server}})}));
+    }
+    delete process.env.EIDO_MCP_FIXTURE_SECRET;
+    assert.equal((await center.execute()).mcp.length,5,'inspection does not resolve credentials');
+    await assert.rejects(configuredMcp(dir),/environment/);
+  }finally {delete process.env.EIDO_MCP_FIXTURE_SECRET;await rm(dir,{recursive:true,force:true});}
 });

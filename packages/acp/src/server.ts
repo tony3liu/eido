@@ -1,3 +1,4 @@
+import {connectMcp} from './mcp.ts';
 import {createDeliveryLedger, DELIVERY} from './delivery.ts';
 import {nativeUiAction} from './native-ui.ts';
 import { runAcp } from "@automatalabs/pi-acp";
@@ -30,6 +31,7 @@ export async function startEidoAgent(agentDir: string, sessionDir: string, strea
     deps: {
       agentDir,
       sessionDir,
+      connectMcpClient: connectMcp,
       modelRuntime: runtime,
       createAgentSession: async options => {
         if (!options.cwd || !options.sessionManager) throw new Error("Missing ACP session context.");
@@ -139,8 +141,8 @@ export async function startEidoAgent(agentDir: string, sessionDir: string, strea
     return ledger ? ledger.steer(context.params, () => steer(context)) : steer(context);
   };
   // The configured servers enter the same ACP MCP bridge as built-in tools.
-  const withMcp = async <T extends {params: {mcpServers?: McpServer[]}}>(context: T): Promise<T> => {
-    const configured = await configuredMcp(agentDir), bundled = context.params.mcpServers ?? [];
+  const withMcp = async <T extends {params: {mcpServers?: McpServer[]; cwd: string}}>(context: T): Promise<T> => {
+    const configured = await configuredMcp(agentDir, context.params.cwd), bundled = context.params.mcpServers ?? [];
     const servers = [...bundled, ...configured.filter(server => !bundled.some(s => s.name === server.name))].map(server =>
       server.name === "eido_browser" && "command" in server
         ? {...server, env: [...server.env?.filter(entry => entry.name !== "EIDO_PI_CONFIG_DIR") ?? [], {name: "EIDO_PI_CONFIG_DIR", value: agentDir}]}
