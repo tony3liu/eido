@@ -5,11 +5,12 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {spawn, type ChildProcessWithoutNullStreams} from 'node:child_process';
 import {once} from 'node:events';
-import { client, methods, type CreateElicitationRequest, type CreateElicitationResponse, type SessionUpdate } from "@agentclientprotocol/sdk";
+import { client, methods, type AgentContext, type CreateElicitationRequest, type CreateElicitationResponse, type SessionUpdate } from "@agentclientprotocol/sdk";
 import { startEidoAgent } from "../src/server.ts";
 import { fixtureModel, type FixtureStep } from "./fixture-model.ts";
 import { NATIVE_UI_ACTION } from "../src/native-ui.ts";
-import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
+import type { AgentSession, ModelRuntime } from "@earendil-works/pi-coding-agent";
+import {createPiUIState} from '../src/pi-ui-state.ts';
 
 async function harness(steps: FixtureStep[] = [], options: {
   setup?: (cwd: string) => Promise<void>;
@@ -902,4 +903,84 @@ test('pi custom component commands use the same ACP session and return to native
     await h.prompt(a.sessionId,'/theme-check');assert.match(h.text(a.sessionId),/Pi theme: dark/);
     assert.equal(h.requests(),0);
   } finally {child?.kill();await h.dispose();}
+});
+
+test('native passive components rerender with width and status, and dispose on replace and reload', {timeout:30_000}, async()=>{
+  const actions:{sessionId:string;action:string;data:Record<string,any>}[]=[];
+  const h=await harness([],{
+    setup:async cwd=>{
+      await mkdir(join(cwd,'extensions'));
+      await writeFile(join(cwd,'extensions/decorations.js'),`export default function(pi) {
+        let disposed=0, revision=0, request;
+        pi.registerCommand('decorate',{description:'Passive component fixture',handler:async(_,ctx)=>{
+          ctx.ui.setStatus('phase','Ready');
+          ctx.ui.setWidget('live',(tui,theme)=>{
+            request=()=>tui.requestRender();
+            return {render:width=>[theme.fg('accent','Widget width '+width+' revision '+revision)],invalidate(){},dispose(){disposed++;}};
+          });
+          ctx.ui.setHeader((tui,theme)=>({render:()=>['Header '+theme.name],invalidate(){},dispose(){disposed++;}}));
+          ctx.ui.setFooter((tui,theme,data)=>({render:()=>['Footer '+data.getExtensionStatuses().get('phase')+' providers '+data.getAvailableProviderCount()],invalidate(){},dispose(){disposed++;}}));
+        }});
+        pi.registerCommand('redraw',{description:'Update component',handler:async(_,ctx)=>{revision++;ctx.ui.setStatus('phase','Done');request();}});
+        pi.registerCommand('retheme',{description:'Rebuild components for theme',handler:async(_,ctx)=>{ctx.ui.setTheme('light');ctx.ui.notify('Disposed '+disposed);}});
+        pi.registerCommand('undecorate',{description:'Remove components',handler:async(_,ctx)=>{
+          ctx.ui.setWidget('live',['Plain replacement']);ctx.ui.setHeader(undefined);ctx.ui.setFooter(undefined);
+          ctx.ui.notify('Disposed '+disposed);
+        }});
+      }`);
+    },
+    form:async()=>({action:'cancel'}),native:async request=>{actions.push(request);return{handled:true};},
+  });
+  const latest=(sessionId:string)=>actions.findLast(a=>a.sessionId===sessionId&&a.action==='extension_state')?.data;
+  const wait=async(predicate:()=>boolean)=>{
+    for(let i=0;i<100;i++){if(predicate())return;await new Promise(resolve=>setTimeout(resolve,10));}
+    assert.fail('Native component state did not update');
+  };
+  try{
+    const a=await h.newTask(),b=await h.newTask();
+    await h.connection.agent.request('_eido/ui/state',{sessionId:a.sessionId,instance:'first',revision:1,text:'',columns:61});
+    await h.connection.agent.request('_eido/ui/state',{sessionId:b.sessionId,instance:'second',revision:1,text:'',columns:40});
+    await h.prompt(a.sessionId,'/decorate');
+    assert.match(latest(a.sessionId)!.widgets.live.lines[0],/\x1b\[.*Widget width 61 revision 0/);
+    assert.equal(latest(a.sessionId)!.widgets.live.component,true);
+    assert.deepEqual(latest(a.sessionId)!.header,['Header dark']);
+    assert.deepEqual(latest(a.sessionId)!.footer,['Footer Ready providers 1']);
+    assert.deepEqual(latest(b.sessionId)!.widgets,{});
+    await h.connection.agent.request('_eido/ui/state',{sessionId:a.sessionId,instance:'first',revision:2,text:'',columns:35});
+    await wait(()=>latest(a.sessionId)!.widgets.live.lines[0].includes('width 35'));
+    await h.prompt(a.sessionId,'/redraw');
+    await wait(()=>latest(a.sessionId)!.footer[0].includes('Footer Done'));
+    assert.match(latest(a.sessionId)!.widgets.live.lines[0],/revision 1/);
+    await h.prompt(a.sessionId,'/retheme');
+    assert.deepEqual(latest(a.sessionId)!.header,['Header light']);
+    assert.match(h.text(a.sessionId),/Disposed 3/);
+    await h.prompt(a.sessionId,'/undecorate');
+    assert.deepEqual(latest(a.sessionId)!.widgets.live.lines,['Plain replacement']);
+    assert.equal(latest(a.sessionId)!.header,null);assert.equal(latest(a.sessionId)!.footer,null);
+    assert.match(h.text(a.sessionId),/Disposed 6/);
+    await h.prompt(a.sessionId,'/decorate');await h.prompt(a.sessionId,'/reload');
+    assert.deepEqual(latest(a.sessionId)!.widgets,{});
+    assert.equal(latest(a.sessionId)!.header,null);assert.equal(latest(a.sessionId)!.footer,null);
+    assert.equal(h.requests(),0);
+  }finally{await h.dispose();}
+});
+
+test('slow native rendering coalesces plugin frames while preserving the last state', {timeout:5000}, async()=>{
+  let began!:()=>void,release!:()=>void;
+  const started=new Promise<void>(resolve=>{began=resolve;});
+  const gate=new Promise<void>(resolve=>{release=resolve;});
+  const frames:Record<string,any>[]=[];
+  const client={request:async(_method:string,params:any)=>{
+    frames.push(params.data);
+    if(frames.length===1){began();await gate;}
+    return {result:{handled:true}};
+  }} as unknown as AgentContext;
+  const state=createPiUIState({sessionId:'coalesced'} as AgentSession,client,message=>assert.fail(message),()=>undefined);
+  state.receive({instance:'native',revision:0,text:''});
+  await started;
+  for(let i=0;i<1000;i++)state.controls.setStatus('frame',String(i));
+  release();await state.flush();
+  assert.equal(frames.length,2);
+  assert.deepEqual(frames[1]!.statuses,{frame:'999'});
+  state.close();
 });

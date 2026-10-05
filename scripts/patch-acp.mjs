@@ -72,9 +72,13 @@ if (!(await readFile(path, "utf8")).includes('entry.customType === "eido.command
   '        case "custom":\n        case "label":',
   '        case "custom":\n            if (entry.customType === "eido.command.v1" && typeof entry.data?.command === "string" && typeof entry.data?.output === "string") {\n                return [\n                    { sessionUpdate: "user_message_chunk", content: { type: "text", text: entry.data.command } },\n                    { sessionUpdate: "agent_message_chunk", content: { type: "text", text: entry.data.output } },\n                ];\n            }\n            return [];\n        case "label":');
 }
+if (!(await readFile(path, "utf8")).includes('entry.customType === "eido.notice.v1"'))
 await patchSource(path,
   '            if (entry.customType === "eido.command.v1" && typeof entry.data?.command === "string" && typeof entry.data?.output === "string") {',
   '            if (entry.customType === "eido.notice.v1" && typeof entry.data?.text === "string")\n                return [{ sessionUpdate: "agent_message_chunk", content: { type: "text", text: entry.data.text } }];\n            if (entry.customType === "eido.command.v1" && typeof entry.data?.command === "string" && typeof entry.data?.output === "string") {');
+await patchSource(path,
+  'return [{ sessionUpdate: "agent_message_chunk", content: { type: "text", text: entry.data.text } }];',
+  'return [{ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "\\n\\n" + entry.data.text + "\\n\\n" } }];');
 
 // A local command is a real interaction, even before the first model turn.
 // Pi normally keeps setup-only journals in memory. Include Eido's custom

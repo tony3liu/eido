@@ -3,6 +3,7 @@ import type { AgentSession, ExtensionUIContext, ExtensionUIDialogOptions } from 
 import {createPiUIState, PI_UI_STATE} from './pi-ui-state.ts';
 import {showPiComponent} from './pi-component-terminal.ts';
 import {getThemeByName, getAvailableThemesWithPaths} from '../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js';
+import {createPiDecorations} from './pi-decorations.ts';
 
 /** Use the native ACP form surface for pi's dialog API. */
 export function createPiUI(pi: AgentSession, client: AgentContext, turnSignal: () => AbortSignal | undefined, emit: (update: SessionUpdate) => void, native = false, agentDir = pi.sessionManager.getCwd()): ExtensionUIContext {
@@ -40,14 +41,16 @@ export function createPiUI(pi: AgentSession, client: AgentContext, turnSignal: (
     });
   };
   const state = native ? createPiUIState(pi, client, message => notice(message), turnSignal) : undefined;
+  const decorations=state?createPiDecorations(pi,state,()=>theme,notice):undefined;
   if (state) Object.defineProperty(pi, PI_UI_STATE, {value: state});
   const dispose = pi.dispose.bind(pi);
-  pi.dispose = () => {lifetime.abort(); state?.close(); dispose();};
+  pi.dispose = () => {lifetime.abort(); decorations?.close();state?.close(); dispose();};
   const reload = pi.reload.bind(pi);
   pi.reload = async (...args) => {
-    lifetime.abort(); lifetime = new AbortController(); state?.reset();
+    lifetime.abort(); lifetime = new AbortController(); decorations?.reset();state?.reset();
     const result = await reload(...args);
     theme = findTheme(pi.settingsManager.getTheme() ?? 'dark') ?? getThemeByName('dark')!;
+    decorations?.refreshTheme();
     return result;
   };
   return {
@@ -63,6 +66,7 @@ export function createPiUI(pi: AgentSession, client: AgentContext, turnSignal: (
       const next = typeof value === 'string' ? findTheme(value) : value;
       if (!next) return {success:false,error:`Unknown pi theme: ${value}`};
       theme = next;
+      decorations?.refreshTheme();
       return {success:true};
     },
     async custom(factory, options) {
@@ -74,10 +78,8 @@ export function createPiUI(pi: AgentSession, client: AgentContext, turnSignal: (
           AbortSignal.any([lifetime.signal, turnSignal()].filter((signal):signal is AbortSignal => !!signal)));
       } finally {activeComponent=false;}
     },
-    ...(state ? {setWidget(key: string, content: Parameters<ExtensionUIContext['setWidget']>[1] | string[], options?: {placement?: 'aboveEditor' | 'belowEditor'}) {
-      if (typeof content === 'function') throw new Error('Component widgets require the native component bridge.');
-      state.setTextWidget(key, content, options?.placement);
-    }} : {}),
+    ...(decorations ? {setWidget:decorations.setWidget,setHeader:decorations.setHeader,
+      setFooter:decorations.setFooter,setStatus:decorations.setStatus} : {}),
     async select(title, options, opts) {
       if (!options.length) return undefined;
       const value = await request(title, {type: "string", title: "Choose an option", enum: options}, opts);
