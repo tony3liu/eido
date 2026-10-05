@@ -75,6 +75,28 @@ test('runtime controls save sparse pi settings, validate values and reject stale
   assert.equal(Object.hasOwn(await f.get(f.target,'settings.json'),'images'),false);
 });
 
+test('HTTP proxy settings hide credentials, preserve unrelated fields and reject stale saves', async t => {
+  const f = await fixture(t);
+  const original = await f.get(f.target, 'settings.json');
+  const initial = (await f.bridge.status()).httpProxy;
+  assert.equal(initial.configured, false);
+  const proxy = 'http://fixture-user:fixture-secret@127.0.0.1:19002';
+  const saved = await f.bridge.execute({operation:'http-proxy', proxy, expected:initial.revision});
+  assert.equal(saved.httpProxy.configured, true);
+  assert.ok(!JSON.stringify(saved).includes('fixture-secret'));
+  assert.ok(!JSON.stringify(saved).includes('fixture-user'));
+  assert.deepEqual(await f.get(f.target,'settings.json'), {...original, httpProxy:proxy});
+  await assert.rejects(f.bridge.execute({operation:'http-proxy', proxy:null, expected:initial.revision}), /changed while/);
+  for (const invalid of ['', 10, 'socks5://localhost:8080', 'https://host.invalid/path', 'http://host.invalid/?secret=fixture-secret', 'malformed fixture-secret']) {
+    await assert.rejects(f.bridge.execute({operation:'http-proxy',proxy:invalid,expected:saved.httpProxy.revision}), error => !error.message.includes('fixture-secret'));
+    assert.equal((await f.get(f.target,'settings.json')).httpProxy,proxy);
+  }
+  const removed = await f.bridge.execute({operation:'http-proxy',proxy:null,expected:saved.httpProxy.revision});
+  assert.equal(removed.httpProxy.configured,false);
+  assert.deepEqual(await f.get(f.target,'settings.json'),original);
+  assert.equal((await stat(join(f.target,'settings.json'))).mode&0o777,0o600);
+});
+
 test("auth responses contain metadata only; edits preserve other providers, OAuth and env mappings", async t => {
   const f=await fixture(t);
   const oauth={type:"oauth",access:"private-access-fixture",refresh:"private-refresh-fixture",expires:9999999999999};

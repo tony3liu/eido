@@ -1,4 +1,5 @@
 import {createMcpConnector} from './mcp.ts';
+import {refreshPiNetwork} from './pi-network.ts';
 import {preparePromptContent} from './prompt-content.ts';
 import {createDeliveryLedger, DELIVERY} from './delivery.ts';
 import {nativeUiAction} from './native-ui.ts';
@@ -76,6 +77,7 @@ export async function startEidoAgent(agentDir: string, sessionDir: string, strea
         const reloadSettings = settings.reload.bind(settings);
         settings.reload = async () => {
           await reloadSettings();
+          refreshPiNetwork(settings);
           created.session.agent.transport = settings.getTransport();
           created.session.agent.thinkingBudgets = settings.getThinkingBudgets();
           created.session.agent.maxRetryDelayMs = settings.getProviderRetrySettings().maxRetryDelayMs;

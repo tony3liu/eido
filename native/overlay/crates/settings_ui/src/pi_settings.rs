@@ -16,6 +16,8 @@ pub(crate) struct PiSettingsView {
     runtime_values: HashMap<String, Value>,
     runtime_expected: HashMap<String, Value>,
     runtime_open: HashSet<String>,
+    http_proxy: Entity<Editor>,
+    http_proxy_expected: Value,
     key: Entity<Editor>,
     custom_provider: Entity<Editor>,
     custom_url: Entity<Editor>,
@@ -44,6 +46,7 @@ impl PiSettingsView {
             data: None, scroll_handle: gpui::ScrollHandle::new(), provider: String::new(), model: String::new(), thinking: "off".into(),
             default_tools: input("Leave blank to use Eido defaults", false, window, cx),
             runtime_inputs: HashMap::new(), runtime_values: HashMap::new(), runtime_expected: HashMap::new(), runtime_open: HashSet::new(),
+            http_proxy: input("HTTP(S) proxy URL; leave blank to keep", true, window, cx), http_proxy_expected: Value::Null,
             key: input("API key or $ENV_VAR reference", true, window, cx),
             custom_provider: input("Provider ID, e.g. my-provider", false, window, cx),
             custom_url: input("Base URL, e.g. https://api.example.com/v1", false, window, cx),
@@ -89,6 +92,10 @@ impl PiSettingsView {
                 view.busy = false;
                 match result {
                     Ok(data) => {
+                        if view.data.is_none() || matches!(operation.as_str(), "status" | "http-proxy" | "import") {
+                            view.http_proxy_expected = data["httpProxy"]["revision"].clone();
+                            view.http_proxy.update(cx, |editor, cx| editor.set_text("", window, cx));
+                        }
                         if view.data.is_none() || matches!(operation.as_str(), "status" | "runtime" | "import") {
                             for field in data["runtime"].as_array().into_iter().flatten() {
                                 let Some(path) = field["path"].as_str() else { continue; };
@@ -128,6 +135,7 @@ impl PiSettingsView {
                             "defaults" => "Defaults saved for new tasks. Existing tasks keep their models.".into(),
                             "tool-defaults" => "Tool defaults saved. New tasks use this list; /reload adds newly selected tools to the current task.".into(),
                             "runtime" => "Runtime settings saved. Use /reload in an existing task to apply them.".into(),
+                            "http-proxy" => "HTTP proxy saved. Restart Eido to apply this change to all tasks.".into(),
                             "browser-decision" => "Browser decision settings saved. New tasks use this configuration.".into(),
                             "custom-model" => "Model saved. Select it above to make it the default.".into(),
                             _ => "pi credentials updated.".into(),
@@ -206,12 +214,28 @@ impl PiSettingsView {
                 section = section.child(Label::new("Token budgets apply to models that support them. The conversation's thinking level selects the budget.").size(LabelSize::Small).color(Color::Muted));
             }
             for field in fields.iter().filter(|field| field["group"] == group) {
-                let effective = if field["effective"].is_null() { "Provider default".to_owned() } else { runtime_text(&field["effective"]) };
+                let effective = if field["effective"].is_null() { "Provider default".to_owned() } else { runtime_choice(&field["effective"]) };
                 section = section.child(v_flex().gap_1()
                     .child(h_flex().gap_4().items_center().justify_between()
                         .child(Label::new(field["label"].as_str().unwrap_or_default().to_owned()).size(LabelSize::Small))
                         .child(div().w(px(240.)).child(self.runtime_control(field, window, cx))))
                     .child(Label::new(format!("Current setting: {effective}")).size(LabelSize::XSmall).color(Color::Muted)));
+            }
+            if group == "Requests" {
+                let configured = self.data.as_ref().is_some_and(|data| data["httpProxy"]["configured"] == true);
+                section = section.child(v_flex().gap_2().pt_2()
+                    .child(Label::new(if configured { "HTTP Proxy · Configured" } else { "HTTP Proxy · Environment defaults" }).size(LabelSize::Small))
+                    .child(Label::new("Stored in global pi settings. Existing proxy environment variables take precedence. Restart Eido after changes. URLs and credentials stay hidden.").size(LabelSize::Small).color(Color::Muted))
+                    .child(text_field(self.http_proxy.clone(), cx))
+                    .child(h_flex().gap_2()
+                        .child(Button::new("pi-save-http-proxy", "Save Proxy").style(ButtonStyle::Outlined).disabled(self.busy)
+                            .on_click(cx.listener(|view, _, window, cx| {
+                                let proxy = view.http_proxy.read(cx).text(cx);
+                                if proxy.trim().is_empty() { view.failed = false; view.notice = "Proxy unchanged. Enter a URL to replace it, or choose Remove Proxy.".into(); cx.notify(); return; }
+                                view.request(json!({"operation":"http-proxy", "proxy":proxy, "expected":view.http_proxy_expected}), window, cx);
+                            })))
+                        .child(Button::new("pi-remove-http-proxy", "Remove Proxy").disabled(self.busy || !configured)
+                            .on_click(cx.listener(|view, _, window, cx| view.request(json!({"operation":"http-proxy", "proxy":Value::Null, "expected":view.http_proxy_expected}), window, cx))))));
             }
         }
         section.child(h_flex().child(Button::new("pi-save-runtime", "Save Runtime Settings").style(ButtonStyle::Outlined).disabled(self.busy)

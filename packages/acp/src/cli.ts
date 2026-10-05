@@ -16,6 +16,9 @@ const { takeOverStdout, restoreStdout } = await import("../node_modules/@earendi
 takeOverStdout();
 const releaseRuntime = await createExtensionCenter(agentDir).acquireRuntime();
 restoreStdout();
+const { initializePiNetwork } = await import('./pi-network.ts');
+try { initializePiNetwork(agentDir); }
+catch { await releaseRuntime(); throw new Error('Unable to initialize pi networking. Check global HTTP proxy and timeout settings.'); }
 const { startEidoAgent } = await import("./server.ts");
 const { agent, connection } = await startEidoAgent(agentDir, sessionDir).catch(async error => {await releaseRuntime(); throw error;});
 let shuttingDown: Promise<void> | undefined;
