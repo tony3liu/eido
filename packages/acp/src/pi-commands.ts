@@ -135,11 +135,14 @@ export function installPiCommands(pi: AgentSession, client: AgentContext, suppor
       };
       try {
         signal?.throwIfAborted();
-        if (images?.length) throw new Error("Slash commands do not accept image attachments. Remove the attachment and retry.");
         if (!supported.some(command => command.name === name) && catalogue().some(command => command.name === name)) {
+          if (images?.length && pi.extensionRunner.getRegisteredCommands().some(command => command.invocationName === name)) {
+            throw new Error("This extension command accepts text arguments only. Send the image in a conversation, skill or prompt template.");
+          }
           // Preserve pi's own extension dispatch and skill/template expansion.
           return false;
         }
+        if (images?.length) throw new Error("Built-in commands do not accept image attachments. Remove the attachment and retry.");
         if (!supported.some(command => command.name === name)) {
           throw new Error(`/${name || "…"} is not available in Eido yet. Supported commands: ${supported.map(command => `/${command.name}`).join(", ")}.`);
         }

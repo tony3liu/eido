@@ -1,4 +1,5 @@
 import {createMcpConnector} from './mcp.ts';
+import {preparePromptContent} from './prompt-content.ts';
 import {createDeliveryLedger, DELIVERY} from './delivery.ts';
 import {nativeUiAction} from './native-ui.ts';
 import { runAcp } from "@automatalabs/pi-acp";
@@ -122,18 +123,22 @@ export async function startEidoAgent(agentDir: string, sessionDir: string, strea
     supportsForms = context.params.clientCapabilities?.elicitation?.form != null;
     supportsNativeUi = context.params.clientCapabilities?._meta?.eidoNativeUi === 1;
     subagents.setEnabled(context.params.clientCapabilities?._meta?.eidoSubagents === 1);
-    return initialize(context);
+    const result = initialize(context);
+    return {...result, agentCapabilities: {...result.agentCapabilities,
+      promptCapabilities: {...result.agentCapabilities?.promptCapabilities, embeddedContext: true}}};
   };
   await subagents.connect(server);
   const deliver = server.agent.prompt.bind(server.agent);
   server.agent.prompt = context => {
+    const prepared = {...context, params: {...context.params, prompt: preparePromptContent(context.params.prompt)}};
     const ledger = deliveries.get(context.params.sessionId);
-    return ledger ? ledger.deliver(context.params, () => deliver(context)) : deliver(context);
+    return ledger ? ledger.deliver(context.params, () => deliver(prepared)) : deliver(prepared);
   };
   const steer = server.agent.steer.bind(server.agent);
   server.agent.steer = context => {
+    const prepared = {...context, params: {...context.params, prompt: preparePromptContent(context.params.prompt)}};
     const ledger = deliveries.get(context.params.sessionId);
-    return ledger ? ledger.steer(context.params, () => steer(context)) : steer(context);
+    return ledger ? ledger.steer(context.params, () => steer(prepared)) : steer(prepared);
   };
   // The configured servers enter the same ACP MCP bridge as built-in tools.
   const withMcp = async <T extends {params: {mcpServers?: McpServer[]; cwd: string}}>(context: T): Promise<T> => {
