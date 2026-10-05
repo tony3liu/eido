@@ -13,18 +13,20 @@ POLYGONS = [
     [(496, 455), (706, 455), (706, 569), (496, 569)],
     [(496, 664), (770, 664), (770, 778), (496, 778)],
 ]
+COLORS = ['#4b6df3', '#a2b4fa', '#7894f7', '#557af5']
 shape = ''.join('<polygon points="' + ' '.join(f'{x},{y}' for x, y in polygon) + '"/>' for polygon in POLYGONS)
-svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024"><rect x="48" y="48" width="928" height="928" rx="220" fill="#22252c"/><g fill="#d9f2df">' + shape + '</g></svg>\n'
+colored_shape = ''.join('<polygon fill="'+color+'" points="'+' '.join(f'{x},{y}' for x,y in polygon)+'"/>' for polygon,color in zip(POLYGONS,COLORS))
+svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024"><rect x="48" y="48" width="928" height="928" rx="220" fill="#fcfdff" stroke="#e5edfc" stroke-width="2"/>'+colored_shape+'</svg>\n'
 (BRAND / 'eido.svg').write_text(svg)
 (BRAND / 'eido-mark.svg').write_text('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024"><g fill="currentColor">'+shape+'</g></svg>\n')
 scale = 3
 canvas = Image.new('RGBA', (1024*scale,1024*scale))
 shadow = Image.new('RGBA',canvas.size)
-ImageDraw.Draw(shadow).rounded_rectangle([48*scale,58*scale,976*scale,986*scale],radius=220*scale,fill=(0,0,0,38))
+ImageDraw.Draw(shadow).rounded_rectangle([48*scale,58*scale,976*scale,986*scale],radius=220*scale,fill=(95,139,183,54))
 canvas.alpha_composite(shadow.filter(ImageFilter.GaussianBlur(13*scale)))
 draw = ImageDraw.Draw(canvas)
-draw.rounded_rectangle([48*scale,48*scale,976*scale,976*scale],radius=220*scale,fill='#22252c')
-for polygon in POLYGONS: draw.polygon([(x*scale,y*scale) for x,y in polygon],fill='#d9f2df')
+draw.rounded_rectangle([48*scale,48*scale,976*scale,976*scale],radius=220*scale,fill='#fcfdff')
+for polygon,color in zip(POLYGONS,COLORS): draw.polygon([(x*scale,y*scale) for x,y in polygon],fill=color)
 canvas = canvas.resize((1024,1024),Image.Resampling.LANCZOS)
 canvas.save(BRAND / 'eido.png')
 iconset = ROOT / '.local/branding/Eido.iconset'
@@ -41,6 +43,8 @@ for name in ['app-icon.png','app-icon-dev.png','app-icon-preview.png','app-icon-
 images=ROOT/'native/overlay/assets/images'
 images.mkdir(parents=True,exist_ok=True)
 (images/'zed_logo.svg').write_text(svg)
+(images/'eido-mark.svg').write_text((BRAND/'eido-mark.svg').read_text())
+canvas.save(images/'eido-logo.png')
 ui=ROOT/'native/overlay/crates/eido_ui/resources'
 ui.mkdir(parents=True,exist_ok=True)
 canvas.save(ui/'eido.png')
