@@ -1,7 +1,7 @@
 use std::{io::Write, path::PathBuf, process::{Command, Stdio}};
 use gpui::{App, AppContext as _, Context, Window};
 use serde_json::{Value, json};
-use ui::{Tooltip, ContextMenu, DropdownMenu, DropdownStyle, prelude::*};
+use ui::{Tooltip, ContextMenu, PopoverMenu, prelude::*};
 
 pub(crate) use agent_servers::EidoAccess;
 
@@ -49,7 +49,7 @@ fn request(full_access: Option<bool>, cx: &mut App) {
     }).detach();
 }
 
-pub(crate) fn render<T: 'static>(window: &mut Window, cx: &mut Context<T>) -> impl IntoElement {
+pub(crate) fn render<T: 'static>(_window: &mut Window, cx: &mut Context<T>) -> impl IntoElement {
     let state = cx.global::<EidoAccess>();
     let full_access = state.full_access;
     let busy = state.busy;
@@ -58,21 +58,37 @@ pub(crate) fn render<T: 'static>(window: &mut Window, cx: &mut Context<T>) -> im
     } else {
         "Ask Before Actions · Global. Review tool permissions before pi acts."
     }.to_owned());
-    let menu = ContextMenu::build(window, cx, move |menu, _, _| {
-        menu.header("Agent Access · Global")
-            .toggleable_entry("Ask Before Actions", !full_access, IconPosition::Start, None, |_, cx| request(Some(false), cx))
-            .toggleable_entry("Full Access", full_access, IconPosition::Start, None, |_, cx| request(Some(true), cx))
-    });
     let label = if full_access { "Full Access" } else { "Ask Before Actions" };
-    DropdownMenu::new_with_element(
-        "eido-agent-access",
-        h_flex().gap_1()
-            .child(Label::new(label).size(LabelSize::Small).color(Color::Muted))
-            .child(Icon::new(IconName::ChevronDown).size(IconSize::XSmall).color(Color::Muted))
-            .into_any_element(),
-        menu,
-    )
-        .style(DropdownStyle::Ghost).no_chevron().disabled(busy)
-        .aria_label("Agent Access").aria_value(label)
-        .trigger_tooltip(Tooltip::text(tooltip))
+    PopoverMenu::new("eido-agent-access")
+        .trigger_with_tooltip(
+            Button::new("eido-agent-access-trigger", label)
+                .label_size(LabelSize::Small)
+                .color(Color::Muted)
+                .end_icon(Icon::new(IconName::ChevronDown).size(IconSize::XSmall).color(Color::Muted))
+                .aria_label(format!("Agent Access: {label}. Global."))
+                .disabled(busy),
+            Tooltip::text(tooltip),
+        )
+        .menu(move |window, cx| {
+            Some(ContextMenu::build(window, cx, move |mut menu, window, cx| {
+                menu = menu.fixed_width(rems(11.5).into());
+                for (name, enabled) in [("Ask Before Actions", false), ("Full Access", true)] {
+                    menu = menu.custom_entry(
+                        move |_, _| {
+                            h_flex().w_full().h_6().gap_3().justify_between()
+                                .child(Label::new(name).size(LabelSize::Small))
+                                .child(div().flex_none()
+                                    .child(Icon::new(IconName::Check).size(IconSize::XSmall).color(Color::Muted))
+                                    .when(full_access != enabled, |this| this.invisible()))
+                                .into_any_element()
+                        },
+                        move |_, cx| request(Some(enabled), cx),
+                    );
+                }
+                if full_access { menu.select_last(window, cx); }
+                menu
+            }))
+        })
+        .anchor(gpui::Anchor::BottomRight)
+        .offset(gpui::point(px(0.), px(-4.)))
 }
