@@ -12008,7 +12008,7 @@ diff --git a/crates/agent_ui/src/conversation_view.rs b/crates/agent_ui/src/conv
              ServerState::Loading { .. } => self
                  .loading_status
                  .clone()
-@@ -1615,6 +1639,95 @@
+@@ -1615,6 +1639,122 @@
  
      pub fn is_loading(&self) -> bool {
          matches!(self.server_state, ServerState::Loading { .. })
@@ -12055,6 +12055,33 @@ diff --git a/crates/agent_ui/src/conversation_view.rs b/crates/agent_ui/src/conv
 +                if state != "completed" && state != "interrupted" { return Err("Invalid delivery state".into()); }
 +                let view = self.thread_view(session_id).ok_or("Target agent is unavailable")?;
 +                view.update(cx, |view, cx| view.eido_delivery_settled(id, state == "completed", cx));
++            }
++            "mount_editor" | "unmount_editor" | "submit_editor" => {
++                let generation = request.data["generation"].as_str().ok_or("Missing editor generation")?;
++                let view = self.thread_view(session_id).ok_or("Task editor is unavailable")?;
++                return view.update(cx, |view, cx| {
++                    let editor = view.message_editor.clone();
++                    match request.action.as_str() {
++                        "mount_editor" => {
++                            let id = request.data["terminalId"].as_str().ok_or("Missing terminal ID")?;
++                            let thread = view.thread.read(cx);
++                            let terminal = thread.terminal(acp::TerminalId::new(id.to_owned())).map_err(|error| error.to_string())?;
++                            let project = thread.project().downgrade();
++                            editor.update(cx, |editor, cx| editor.eido_mount_component(generation.to_owned(), terminal, project, window, cx));
++                        }
++                        "unmount_editor" => editor.update(cx, |editor, cx| editor.eido_unmount_component(generation, window, cx)),
++                        "submit_editor" => {
++                            if !editor.read(cx).eido_component_matches(generation) { return Err("Extension editor has changed".into()); }
++                            let text = request.data["text"].as_str().ok_or("Missing editor text")?;
++                            if editor.read(cx).text(cx) != text { return Err("Draft changed before submission".into()); }
++                            if view.is_loading_contents { return Err("A message is already being submitted".into()); }
++                            view.send(window, cx);
++                        }
++                        _ => unreachable!(),
++                    }
++                    cx.notify();
++                    Ok(serde_json::json!({"handled":true,"editor":view.eido_editor_snapshot(cx)}))
++                });
 +            }
 +            "extension_state" | "set_editor" | "paste_editor" | "expand_tools" => {
 +                let view = self.thread_view(session_id).ok_or("Task editor is unavailable")?;
@@ -12104,7 +12131,7 @@ diff --git a/crates/agent_ui/src/conversation_view.rs b/crates/agent_ui/src/conv
      }
  
      fn handle_thread_event(
-@@ -1636,6 +1749,11 @@
+@@ -1636,6 +1776,11 @@
              cx.emit(RootThreadUpdated);
          }
          match event {
@@ -12116,7 +12143,7 @@ diff --git a/crates/agent_ui/src/conversation_view.rs b/crates/agent_ui/src/conv
              AcpThreadEvent::StatusChanged => {
                  if let Some(active) = self.thread_view(&session_id) {
                      active.update(cx, |active, cx| {
-@@ -1645,21 +1763,26 @@
+@@ -1645,21 +1790,26 @@
              }
              AcpThreadEvent::NewEntry => {
                  let len = thread.read(cx).entries().len();
@@ -12152,7 +12179,7 @@ diff --git a/crates/agent_ui/src/conversation_view.rs b/crates/agent_ui/src/conv
                          active.sync_editor_mode(cx);
                          active.sync_generating_indicator(cx);
                      });
-@@ -1715,6 +1838,7 @@
+@@ -1715,6 +1865,7 @@
                          matches!(thread.read(cx).status(), ThreadStatus::Generating);
                      active.update(cx, |active, cx| {
                          if !is_generating {
@@ -12160,7 +12187,7 @@ diff --git a/crates/agent_ui/src/conversation_view.rs b/crates/agent_ui/src/conv
                              active.thread_retry_status.take();
                              active.clear_auto_expand_tracking(cx);
                              if active.list_state.is_following_tail() {
-@@ -1730,11 +1854,28 @@
+@@ -1730,11 +1881,28 @@
                              thread.mark_as_subagent_output(cx);
                          });
                      }
@@ -12189,7 +12216,7 @@ diff --git a/crates/agent_ui/src/conversation_view.rs b/crates/agent_ui/src/conv
                          // Don't auto-send while the user is editing the next message.
                          let is_first_editor_focused = active
                              .message_queue
-@@ -1792,6 +1933,7 @@
+@@ -1792,6 +1960,7 @@
                          matches!(thread.read(cx).status(), ThreadStatus::Generating);
                      active.update(cx, |active, cx| {
                          if !is_generating {
@@ -12197,7 +12224,7 @@ diff --git a/crates/agent_ui/src/conversation_view.rs b/crates/agent_ui/src/conv
                              active.thread_retry_status.take();
                              if active.list_state.is_following_tail() {
                                  active.list_state.scroll_to_end();
-@@ -3431,10 +3573,43 @@
+@@ -3431,10 +3600,43 @@
  impl Render for ConversationView {
      fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
          self.sync_request_elicitation_states(window, cx);
@@ -12241,7 +12268,7 @@ diff --git a/crates/agent_ui/src/conversation_view.rs b/crates/agent_ui/src/conv
              ServerState::Loading { .. } => {
                  let label_text = self
                      .loading_status
-@@ -3496,7 +3671,7 @@
+@@ -3496,7 +3698,7 @@
          v_flex()
              .track_focus(&self.focus_handle)
              .size_full()
@@ -12250,7 +12277,7 @@ diff --git a/crates/agent_ui/src/conversation_view.rs b/crates/agent_ui/src/conv
              .child(v_flex().flex_1().min_h_0().child(content))
              .when(!active_thread_renders_request_elicitations, |this| {
                  this.children(request_elicitation_connection.as_ref().map_or_else(
-@@ -3752,6 +3927,120 @@
+@@ -3752,6 +3954,155 @@
  
      use super::*;
  
@@ -12331,6 +12358,41 @@ diff --git a/crates/agent_ui/src/conversation_view.rs b/crates/agent_ui/src/conv
 +    }
 +
 +    #[gpui::test]
++    async fn test_eido_custom_editor_mount_retains_native_draft_and_rejects_stale_submissions(cx: &mut TestAppContext) {
++        init_test(cx);
++        let (view, cx) = setup_conversation_view(StubAgentServer::new(StubAgentConnection::new()), cx).await;
++        add_to_workspace_with_size(view.clone(), true, cx);
++        let active = active_thread(&view, cx);
++        let thread = active.read_with(cx, |view, _| view.thread.clone());
++        let terminal_id = acp::TerminalId::new("extension-editor");
++        let lower_terminal = cx.new(|cx| terminal::TerminalBuilder::new_display_only(
++            Default::default(), terminal::terminal_settings::AlternateScroll::On, None, 0,
++            cx.background_executor(), util::paths::PathStyle::local()).subscribe(cx));
++        thread.update(cx, |thread, cx| { thread.register_terminal_created(terminal_id, "extension editor".into(), None, None, lower_terminal, cx); });
++        let editor = active.read_with(cx, |view, _| view.message_editor.clone());
++        editor.update_in(cx, |editor, window, cx| { editor.set_text("中文 draft", window, cx);editor.focus_handle(cx).focus(window, cx); });
++        for (action, data, succeeds, mounted) in [
++            ("mount_editor", json!({"generation":"current", "terminalId":"extension-editor"}), true, true),
++            ("submit_editor", json!({"generation":"old", "text":"中文 draft"}), false, true),
++            ("submit_editor", json!({"generation":"current", "text":"outdated"}), false, true),
++            ("unmount_editor", json!({"generation":"old"}), true, true),
++            ("unmount_editor", json!({"generation":"current"}), true, false),
++        ] {
++            let (sender, receiver) = futures::channel::oneshot::channel();
++            let request = Rc::new(acp_thread::EidoUiAction {action: action.into(), data, response: std::cell::RefCell::new(Some(sender))});
++            thread.update(cx, |_, cx| cx.emit(AcpThreadEvent::EidoUiAction(request)));
++            cx.run_until_parked();
++            assert_eq!(receiver.await.unwrap().is_ok(), succeeds);
++            editor.read_with(cx, |editor, cx| {
++                assert_eq!(editor.eido_component_matches("current"), mounted);
++                assert_eq!(editor.text(cx), "中文 draft");
++            });
++            thread.read_with(cx, |thread, _| assert!(thread.entries().is_empty()));
++        }
++        cx.update(|window, cx| assert!(editor.focus_handle(cx).contains_focused(window, cx)));
++    }
++
++    #[gpui::test]
 +    async fn test_eido_extension_ui_updates_native_editor_without_clipboard_or_review_changes(cx: &mut TestAppContext) {
 +        init_test(cx);
 +        let (view, cx) = setup_conversation_view(StubAgentServer::new(StubAgentConnection::new()), cx).await;
@@ -12371,7 +12433,7 @@ diff --git a/crates/agent_ui/src/conversation_view.rs b/crates/agent_ui/src/conv
      #[test]
      fn test_data_retention_error_maps_from_provider_error() {
          // The agent wraps the provider error in a fresh `anyhow::Error`, so
-@@ -4250,6 +4539,213 @@
+@@ -4250,6 +4601,213 @@
              0,
              "No notification should fire when a queued message will be auto-sent on Stopped"
          );
@@ -17696,6 +17758,15 @@ diff --git a/crates/agent_ui/src/mention_set.rs b/crates/agent_ui/src/mention_se
 diff --git a/crates/agent_ui/src/message_editor.rs b/crates/agent_ui/src/message_editor.rs
 --- a/crates/agent_ui/src/message_editor.rs
 +++ b/crates/agent_ui/src/message_editor.rs
+@@ -39,7 +39,7 @@
+ use std::{cmp::min, fmt::Write, ops::Range, rc::Rc, sync::Arc};
+ use text::LineEnding;
+ use theme_settings::ThemeSettings;
+-use ui::{ContextMenu, prelude::*};
++use ui::{ContextMenu, Tooltip, prelude::*};
+ use util::paths::PathStyle;
+ use util::{ResultExt, debug_panic};
+ use workspace::{CollaboratorId, Workspace};
 @@ -50,6 +50,8 @@
      prompt_capabilities: acp::PromptCapabilities,
      available_commands: Vec<acp::AvailableCommand>,
@@ -17733,10 +17804,52 @@ diff --git a/crates/agent_ui/src/message_editor.rs b/crates/agent_ui/src/message
      fn supports_images(&self, _cx: &App) -> bool {
          self.session_capabilities.read().supports_images()
      }
-@@ -616,6 +632,30 @@
+@@ -200,6 +216,7 @@
+ }
+ 
+ pub struct MessageEditor {
++    eido_component: Option<(String, Entity<acp_thread::Terminal>, Entity<terminal_view::TerminalView>)>,
+     mention_set: Entity<MentionSet>,
+     editor: Entity<Editor>,
+     workspace: WeakEntity<Workspace>,
+@@ -602,6 +619,7 @@
+         }
+ 
+         Self {
++            eido_component: None,
+             editor,
+             mention_set,
+             workspace,
+@@ -616,6 +634,56 @@
  
      pub fn set_local_commands(&self, commands: Vec<PromptLocalCommand>) {
          *self.local_commands.write() = commands;
++    }
++
++    pub(crate) fn eido_component_matches(&self, generation: &str) -> bool {
++        self.eido_component.as_ref().is_some_and(|(current, _, _)| current == generation)
++    }
++
++    pub(crate) fn eido_mount_component(&mut self, generation: String, terminal: Entity<acp_thread::Terminal>,
++        project: WeakEntity<Project>, window: &mut Window, cx: &mut Context<Self>) {
++        let workspace = self.workspace.clone();
++        let view = cx.new(|cx| {
++            let mut view = terminal_view::TerminalView::new(terminal.read(cx).inner().clone(), workspace, None, project, window, cx);
++            view.set_embedded_mode(Some(1000), cx);
++            view
++        });
++        let focused = self.focus_handle(cx).contains_focused(window, cx);
++        self.eido_component = Some((generation, terminal, view));
++        if focused { self.focus_handle(cx).focus(window, cx); }
++        cx.notify();
++    }
++
++    pub(crate) fn eido_unmount_component(&mut self, generation: &str, window: &mut Window, cx: &mut Context<Self>) {
++        if !self.eido_component_matches(generation) { return; }
++        let focused = self.focus_handle(cx).contains_focused(window, cx);
++        self.eido_component = None;
++        if focused { self.editor.focus_handle(cx).focus(window, cx); }
++        cx.notify();
 +    }
 +
 +    pub(crate) fn eido_set_shortcuts(&mut self, value: &serde_json::Value) {
@@ -17764,15 +17877,35 @@ diff --git a/crates/agent_ui/src/message_editor.rs b/crates/agent_ui/src/message
      }
  
      pub fn set_session_capabilities(
-@@ -2005,6 +2045,7 @@
+@@ -1997,14 +2065,27 @@
+ 
+ impl Focusable for MessageEditor {
+     fn focus_handle(&self, cx: &App) -> FocusHandle {
++        if let Some((_, _, view)) = &self.eido_component { return view.focus_handle(cx); }
+         self.editor.focus_handle(cx)
+     }
+ }
+ 
+ impl Render for MessageEditor {
      fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
++        if let Some((_, terminal, view)) = &self.eido_component {
++            let terminal = terminal.clone();
++            return v_flex().w_full().gap_1()
++                .child(h_flex().justify_between().pr_6()
++                    .child(Label::new("Extension editor").size(LabelSize::Small).color(Color::Muted))
++                    .child(IconButton::new("close-pi-editor", IconName::Close).icon_size(IconSize::Small)
++                        .tooltip(Tooltip::text("Use Native Editor"))
++                        .on_click(move |_, _, cx| terminal.update(cx, |terminal, cx| terminal.stop_by_user(cx)))))
++                .child(div().w_full().h(px(144.)).bg(cx.theme().colors().terminal_background).child(view.clone()))
++                .into_any_element();
++        }
          div()
              .key_context("MessageEditor")
 +            .capture_key_down(cx.listener(Self::eido_key_down))
              .on_action(cx.listener(Self::chat))
              .on_action(cx.listener(Self::send_immediately))
              .on_action(cx.listener(Self::chat_with_follow))
-@@ -2019,19 +2060,35 @@
+@@ -2019,19 +2100,35 @@
  
                  let text_style = TextStyle {
                      color: cx.theme().colors().text,
@@ -17812,7 +17945,16 @@ diff --git a/crates/agent_ui/src/message_editor.rs b/crates/agent_ui/src/message
                          local_player: cx.theme().players().local(),
                          text: text_style,
                          syntax: cx.theme().syntax().clone(),
-@@ -2772,6 +2829,73 @@
+@@ -2039,7 +2136,7 @@
+                         ..Default::default()
+                     },
+                 )
+-            })
++            }).into_any_element()
+     }
+ }
+ 
+@@ -2772,6 +2869,73 @@
      impl Render for MessageEditorItem {
          fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
              self.0.clone().into_any_element()

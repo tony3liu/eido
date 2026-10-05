@@ -10,12 +10,18 @@ import {StdinBuffer, TuiMainScreen, type Component, type Terminal} from '@earend
 import type {AgentSession, ExtensionUIContext, Theme} from '@earendil-works/pi-coding-agent';
 import {KeybindingsManager} from '../node_modules/@earendil-works/pi-coding-agent/dist/core/keybindings.js';
 
+export interface PiComponentHost {
+  mount?(terminalId:string):Promise<void>;
+  unmount?():Promise<void>;
+  input?(data:string):string|undefined;
+}
+
 const helper = fileURLToPath(new URL('../../../scripts/pi-component-terminal.mjs', import.meta.url));
 
 /** Run the plugin's real TUI in Zed's existing terminal, without starting another harness. */
 export async function showPiComponent<T>(pi: AgentSession, client: AgentContext, theme: Theme, agentDir: string,
   factory: Parameters<ExtensionUIContext['custom']>[0], options: Parameters<ExtensionUIContext['custom']>[1],
-  emit: (update: SessionUpdate) => void, signal?: AbortSignal): Promise<T> {
+  emit: (update: SessionUpdate) => void, signal?: AbortSignal, host?:PiComponentHost): Promise<T> {
   const directory = await mkdtemp(join(process.platform === 'win32' ? tmpdir() : '/tmp', 'eido-pi-ui-'));
   await chmod(directory, 0o700);
   const socketPath = process.platform === 'win32' ? `\\\\.\\pipe\\eido-pi-ui-${randomUUID()}` : join(directory, 'view.sock');
@@ -38,8 +44,15 @@ export async function showPiComponent<T>(pi: AgentSession, client: AgentContext,
   const write = (data:string) => {socket?.write(data);};
   const input = new StdinBuffer();
   const decoder = new StringDecoder('utf8');
-  input.on('data', data => {try {if (data === '\x03') abort(); else onInput(data);} catch (error) {fail(asError(error));}});
-  input.on('paste', data => {try {onInput(`\x1b[200~${data}\x1b[201~`);} catch (error) {fail(asError(error));}});
+  const dispatch=(data:string)=>{
+    try {
+      const filtered=host?.input?host.input(data):data;
+      if(filtered===undefined)return;
+      if(filtered==='\x03')abort();else onInput(filtered);
+    } catch(error){fail(asError(error));}
+  };
+  input.on('data', dispatch);
+  input.on('paste', data => dispatch(`\x1b[200~${data}\x1b[201~`));
   const terminal: Terminal = {
     start(input, resize) {onInput=input; onResize=resize; write('\x1b[?2004h');},
     stop() {onInput=()=>{}; onResize=()=>{}; write('\x1b[?2004l');},
@@ -94,7 +107,7 @@ export async function showPiComponent<T>(pi: AgentSession, client: AgentContext,
     signal?.throwIfAborted();
     await new Promise<void>((resolve,reject) => {server.once('error',reject); server.listen(socketPath, () => {server.off('error',reject); resolve();});});
     if (process.platform !== 'win32') await chmod(socketPath, 0o600);
-    emit({sessionUpdate:'tool_call', toolCallId:callId, title:'Extension interface', kind:'other', status:'in_progress',
+    if(!host?.mount)emit({sessionUpdate:'tool_call', toolCallId:callId, title:'Extension interface', kind:'other', status:'in_progress',
       content:[{type:'content',content:{type:'text',text:'Use the embedded terminal to interact with this pi extension. Ctrl+C closes it.'}}]});
     // Own a late response as well, so cancellation never leaks the terminal process.
     const creatingTerminal=client.request(methods.client.terminal.create,{sessionId:pi.sessionId,command:process.execPath,
@@ -110,7 +123,8 @@ export async function showPiComponent<T>(pi: AgentSession, client: AgentContext,
       {cancellationSignal:exitWatch.signal}).then(() => {
         if (!closing) fail(new Error('Extension terminal closed.'));
       }, error => {if (!closing) fail(asError(error));});
-    emit({sessionUpdate:'tool_call_update',toolCallId:callId,content:[{type:'terminal',terminalId}]});
+    if(host?.mount)await host.mount(terminalId);
+    else emit({sessionUpdate:'tool_call_update',toolCallId:callId,content:[{type:'terminal',terminalId}]});
     signal?.throwIfAborted();
     await ready;
     tui.start(); started=true;
@@ -141,6 +155,7 @@ export async function showPiComponent<T>(pi: AgentSession, client: AgentContext,
     clearTimeout(timeout);
     signal?.removeEventListener('abort',abort);
     let cleanupError: unknown;
+    try {await host?.unmount?.();} catch(error){cleanupError=error;}
     try {component?.dispose?.();} catch (error) {cleanupError=error;}
     try {if (started) tui.stop();} catch (error) {cleanupError??=error;}
     input.destroy();
@@ -151,7 +166,7 @@ export async function showPiComponent<T>(pi: AgentSession, client: AgentContext,
       catch (error) {cleanupError??=error;}
     }
     await rm(directory,{recursive:true,force:true});
-    emit({sessionUpdate:'tool_call_update',toolCallId:callId,status:success && !cleanupError?'completed':'failed'});
+    if(!host?.mount)emit({sessionUpdate:'tool_call_update',toolCallId:callId,status:success && !cleanupError?'completed':'failed'});
     if (cleanupError) throw operationError ? new AggregateError([operationError,cleanupError], 'Extension interface and cleanup failed.') : cleanupError;
   }
 }

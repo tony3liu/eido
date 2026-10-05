@@ -56,6 +56,10 @@ export function createPiAutocomplete(pi: AgentSession, catalogue: () => Availabl
   };
   return {
     controls,
+    provider:():AutocompleteProvider=>({
+      getSuggestions:(...args)=>provider.getSuggestions(...args),
+      applyCompletion:(...args)=>provider.applyCompletion(...args),
+    }),
     async complete(request: CompletionRequest, outerSignal?: AbortSignal) {
       if (closed) return {handled: false, items: []};
       const {text, cursor} = request;

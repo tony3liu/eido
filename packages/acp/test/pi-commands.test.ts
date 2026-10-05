@@ -11,6 +11,7 @@ import { fixtureModel, type FixtureStep } from "./fixture-model.ts";
 import { NATIVE_UI_ACTION } from "../src/native-ui.ts";
 import type { AgentSession, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import {createPiUIState} from '../src/pi-ui-state.ts';
+import {setTimeout as delay} from 'node:timers/promises';
 
 async function harness(steps: FixtureStep[] = [], options: {
   setup?: (cwd: string) => Promise<void>;
@@ -1251,4 +1252,105 @@ test('pi extension shortcuts use native drafts and reject stale, repeated and cr
     assert.deepEqual(await invoke(),{handled:false});
     assert.equal(writes.length,1);assert.equal(h.requests(),0);
   }finally{await h.dispose();}
+});
+
+test('custom pi editors share native drafts, filter raw input, submit once and clean up on reload',{timeout:30_000},async()=>{
+  const terminals=new Map<string,{child:ChildProcessWithoutNullStreams;exited:Promise<unknown>;output:string}>();
+  const actions:{action:string;data:Record<string,any>}[]=[];
+  let revision=1,text='中文 draft',generation='',mounted:string|undefined,released=0;
+  const h=await harness([],{
+    setup:async cwd=>{
+      await mkdir(join(cwd,'extensions'));
+      await writeFile(join(cwd,'extensions/editor.js'),`export default pi=>{
+        let factory,unsubscribe;
+        pi.registerCommand('editorqa',{description:'Custom editor fixture',handler:async(_,ctx)=>{
+          factory=(tui,theme,keys)=>{
+            let text='';
+            return {getText:()=>text,setText(value){text=value;tui.requestRender();},invalidate(){},
+              render:()=>[theme.borderColor('EDITOR READY'),text],dispose(){},
+              handleInput(data){
+                if(data==='\\r'){this.onSubmit?.(text);text='';this.onChange?.(text);return;}
+                if(data.startsWith('\\x1b[200~'))data=data.slice(6,-6);
+                text+=data;this.onChange?.(text);tui.requestRender();
+              }};
+          };
+          ctx.ui.setEditorComponent(factory);
+          if(ctx.ui.getEditorComponent()!==factory)throw new Error('Factory identity lost');
+          unsubscribe=ctx.ui.onTerminalInput(data=>data==='!'?{consume:true}:data==='x'?{data:'y'}:undefined);
+        }});
+        pi.registerCommand('draftqa',{description:'Set editor content',handler:async(_,ctx)=>{
+          ctx.ui.setEditorText('Changed by plugin');ctx.ui.pasteToEditor(' + paste');
+        }});
+        pi.registerCommand('nativeqa',{description:'Restore native editor',handler:async(_,ctx)=>{
+          unsubscribe?.();ctx.ui.setEditorComponent(undefined);
+          if(ctx.ui.getEditorComponent()!==undefined)throw new Error('Factory not cleared');
+        }});
+        pi.registerCommand('rawqa',{description:'Raw hooks with pi default editor',handler:async(_,ctx)=>{
+          ctx.ui.onTerminalInput(data=>data==='!'?{consume:true}:undefined);
+        }});
+      };`);
+    },
+    form:async()=>({action:"cancel"}),
+    native:async request=>{
+      actions.push(request);
+      if(request.action==='mount_editor'){generation=String(request.data.generation);mounted=String(request.data.terminalId);}
+      if(request.action==='unmount_editor'&&request.data.generation===generation)mounted=undefined;
+      if(request.action==='set_editor'){text=String(request.data.text);revision++;}
+      if(request.action==='submit_editor'){
+        assert.equal(request.data.generation,generation);assert.equal(request.data.text,text);
+        text='';revision++;
+      }
+      return {handled:true,editor:{instance:'native',revision,text}};
+    },
+    terminal:async(method,params)=>{
+      if(method===methods.client.terminal.create){
+        const id=`terminal-${terminals.size}`;
+        const child=spawn(params.command,params.args,{stdio:'pipe'});
+        const state={child,exited:once(child,'exit'),output:''};terminals.set(id,state);
+        child.stdout.on('data',data=>{state.output+=data;});
+        return {terminalId:id};
+      }
+      const terminal=terminals.get(params.terminalId)!;
+      if(method===methods.client.terminal.waitForExit){await terminal.exited;return {exitCode:0};}
+      released++;terminal.child.kill();await terminal.exited;return {};
+    },
+  });
+  const wait=async(check:()=>boolean)=>{for(let i=0;i<400;i++){if(check())return;await delay(10);}assert.fail('Editor state did not settle: '+JSON.stringify(actions.slice(-5)));};
+  try{
+    const a=await h.newTask();
+    await h.connection.agent.request('_eido/ui/state',{sessionId:a.sessionId,instance:'native',revision,text});
+    await h.prompt(a.sessionId,'/editorqa');
+    await wait(()=>!!mounted&&terminals.get(mounted)!.output.includes('EDITOR READY'));
+    let terminal=terminals.get(mounted!)!;
+    assert.match(terminal.output,/中文 draft/);
+    terminal.child.stdin.write('x!');
+    await wait(()=>text==='中文 drafty');
+    await h.prompt(a.sessionId,'/draftqa');
+    await wait(()=>text==='Changed by plugin + paste');
+    await wait(()=>terminal.output.includes('+ paste'));
+    terminal.child.stdin.write('\r');
+    await wait(()=>actions.some(action=>action.action==='submit_editor'));
+    assert.equal(actions.filter(action=>action.action==='submit_editor').length,1);
+    assert.equal(actions.find(action=>action.action==='submit_editor')!.data.text,'Changed by plugin + paste');
+    await wait(()=>text==='');
+    terminal.child.stdin.write('tail');await wait(()=>text==='tail');
+    await h.prompt(a.sessionId,'/nativeqa');await wait(()=>released===1&&!mounted);
+    assert.equal(text,'tail');
+    await h.prompt(a.sessionId,'/editorqa');
+    await wait(()=>!!mounted&&terminals.get(mounted)!.output.includes('EDITOR READY'));
+    terminal=terminals.get(mounted!)!;terminal.child.stdin.write('x');await wait(()=>text==='taily');
+    await h.prompt(a.sessionId,'/reload');await wait(()=>released===2&&!mounted);
+    assert.equal(text,'taily');
+    await h.prompt(a.sessionId,'/rawqa');
+    await wait(()=>!!mounted&&terminals.get(mounted)!.output.includes('taily'));
+    terminal=terminals.get(mounted!)!;
+    terminal.child.stdin.write('!');terminal.child.stdin.write('\r');
+    await wait(()=>actions.filter(action=>action.action==='submit_editor').length===2);
+    assert.equal(actions.filter(action=>action.action==='submit_editor').at(-1)!.data.text,'taily');
+    await wait(()=>text==='');
+    terminal.child.stdin.write('keep');await wait(()=>text==='keep');
+    terminal.child.stdin.write('\x03');await wait(()=>released===3&&!mounted);
+    assert.equal(text,'keep');assert.equal(h.requests(),0);
+    assert.equal(h.updates.some(({update})=>update.sessionUpdate==='tool_call'&&update.title==='Extension interface'),false);
+  }finally{for(const {child} of terminals.values())child.kill();await h.dispose();}
 });

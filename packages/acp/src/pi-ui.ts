@@ -6,6 +6,7 @@ import {showPiComponent} from './pi-component-terminal.ts';
 import {getThemeByName, getAvailableThemesWithPaths} from '../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js';
 import {createPiDecorations} from './pi-decorations.ts';
 import {createPiAutocomplete, PI_AUTOCOMPLETE} from './pi-autocomplete.ts';
+import {createPiEditor} from './pi-editor.ts';
 
 /** Use the native ACP form surface for pi's dialog API. */
 export function createPiUI(pi: AgentSession, client: AgentContext, turnSignal: () => AbortSignal | undefined, emit: (update: SessionUpdate) => void, native = false, agentDir = pi.sessionManager.getCwd(), catalogue: () => AvailableCommand[] = () => []): ExtensionUIContext {
@@ -49,11 +50,12 @@ export function createPiUI(pi: AgentSession, client: AgentContext, turnSignal: (
   const autocomplete = native ? createPiAutocomplete(pi, catalogue, notice) : undefined;
   if (autocomplete) Object.defineProperty(pi, PI_AUTOCOMPLETE, {value: autocomplete});
   if (state) Object.defineProperty(pi, PI_UI_STATE, {value: state});
+  const editor=state&&autocomplete&&shortcuts?createPiEditor(pi,client,state,()=>theme,agentDir,autocomplete,shortcuts,notice):undefined;
   const dispose = pi.dispose.bind(pi);
-  pi.dispose = () => {lifetime.abort(); shortcuts?.close(); autocomplete?.close(); decorations?.close();state?.close(); dispose();};
+  pi.dispose = () => {lifetime.abort(); editor?.close(); shortcuts?.close(); autocomplete?.close(); decorations?.close();state?.close(); dispose();};
   const reload = pi.reload.bind(pi);
   pi.reload = async (...args) => {
-    lifetime.abort(); lifetime = new AbortController(); shortcuts?.reset(); autocomplete?.reset(); decorations?.reset();state?.reset();
+    lifetime.abort(); lifetime = new AbortController(); await editor?.reset(); shortcuts?.reset(); autocomplete?.reset(); decorations?.reset();state?.reset();
     const result = await reload(...args);
     theme = findTheme(pi.settingsManager.getTheme() ?? 'dark') ?? getThemeByName('dark')!;
     decorations?.refreshTheme();
@@ -64,6 +66,7 @@ export function createPiUI(pi: AgentSession, client: AgentContext, turnSignal: (
     ...pi.extensionRunner.createContext().ui,
     ...state?.controls,
     ...autocomplete?.controls,
+    ...editor?.controls,
     get theme() {return theme;},
     getAllThemes() {
       return [...new Map([...getAvailableThemesWithPaths(), ...pi.resourceLoader.getThemes().themes
@@ -75,6 +78,7 @@ export function createPiUI(pi: AgentSession, client: AgentContext, turnSignal: (
       if (!next) return {success:false,error:`Unknown pi theme: ${value}`};
       theme = next;
       decorations?.refreshTheme();
+      editor?.refreshTheme();
       return {success:true};
     },
     async custom(factory, options) {
@@ -83,7 +87,7 @@ export function createPiUI(pi: AgentSession, client: AgentContext, turnSignal: (
       activeComponent = true;
       try {
         return await showPiComponent(pi, client, theme, agentDir, factory, options, emit,
-          AbortSignal.any([lifetime.signal, turnSignal()].filter((signal):signal is AbortSignal => !!signal)));
+          AbortSignal.any([lifetime.signal, turnSignal()].filter((signal):signal is AbortSignal => !!signal)),{input:editor?.input});
       } finally {activeComponent=false;}
     },
     ...(decorations ? {setWidget:decorations.setWidget,setHeader:decorations.setHeader,

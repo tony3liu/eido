@@ -21,6 +21,7 @@ export function createPiUIState(pi: AgentSession, client: AgentContext, reportEr
   let toolsExpanded = false;
   let columns=80;
   const layoutListeners=new Set<()=>void>();
+  const editorListeners=new Set<()=>void>();
   const state = {
     statuses: {} as Record<string, string>,
     shortcuts: [] as NativeShortcut[],
@@ -34,7 +35,11 @@ export function createPiUIState(pi: AgentSession, client: AgentContext, reportEr
   };
   const plain = (text: string) => stripVTControlCharacters(text);
   const sync = (value: EditorState) => {
-    if (value.instance !== editor.instance || value.revision >= editor.revision) editor = value;
+    if (value.instance !== editor.instance || value.revision >= editor.revision) {
+      const changed=value.text!==editor.text;
+      editor = value;
+      if(changed)for(const listener of editorListeners)listener();
+    }
   };
   const send = (action: string, data: Record<string, unknown> | (()=>Record<string,unknown>)) => {
     pending = pending.then(async () => {
@@ -74,6 +79,19 @@ export function createPiUIState(pi: AgentSession, client: AgentContext, reportEr
   };
   return {
     controls,
+    async whenReady(signal:AbortSignal){
+      signal.throwIfAborted();
+      if(ready)return;
+      let abort!:()=>void;
+      let timer:ReturnType<typeof setTimeout>|undefined;
+      try {await Promise.race([nativeReady,new Promise<void>((_,reject)=>{
+        abort=()=>reject(new Error('Extension interface cancelled.'));
+        signal.addEventListener('abort',abort,{once:true});
+        timer=setTimeout(()=>reject(new Error('Native editor did not become ready.')),15_000);
+      })]);}finally{signal.removeEventListener('abort',abort);clearTimeout(timer);}
+      signal.throwIfAborted();
+    },
+    onEditor(listener:()=>void){editorListeners.add(listener);return()=>{editorListeners.delete(listener);};},
     setShortcuts(shortcuts:NativeShortcut[]){state.shortcuts=shortcuts;publish();},
     columns:()=>columns,
     onLayout(listener:()=>void){layoutListeners.add(listener);return()=>{layoutListeners.delete(listener);};},
