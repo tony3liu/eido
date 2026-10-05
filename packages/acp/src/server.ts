@@ -42,6 +42,12 @@ export async function startEidoAgent(agentDir: string, sessionDir: string, strea
         // Settings are owned by pi. New tasks see credentials/models changed in
         // Eido's settings without replacing the model of an active conversation.
         if (!modelRuntime) await runtime.refresh({ allowNetwork: false });
+        // Let pi resolve explicit lists, +/- modifiers, pending registrations and
+        // reload additions. Only the absent-setting fallback is Eido-specific.
+        if (options.settingsManager) {
+          const defaults = options.settingsManager.getDefaultTools.bind(options.settingsManager);
+          options.settingsManager.getDefaultTools = () => defaults() ?? ["read", "edit", "write", "find", "grep", "ls"];
+        }
         if (options.resourceLoader) {
           const getExtensions = options.resourceLoader.getExtensions.bind(options.resourceLoader);
           options.resourceLoader.getExtensions = () => {
@@ -56,12 +62,12 @@ export async function startEidoAgent(agentDir: string, sessionDir: string, strea
         const created = await createAgentSession({
           ...options,
           agentDir,
-          // Keep pi's registry open for installed and reloaded extension tools.
-          // The active loadout below selects Eido's native tools and extensions.
+          // Preserve pi's defaultTools lifecycle with native file operations.
           tools: undefined,
-          noTools: "builtin",
-          customTools: [...editorTools(options.cwd, options.sessionManager.getSessionId(), client),
-            ...editorQueryTools(options.cwd, options.sessionManager.getSessionId(), client), preview.tool,
+          noTools: undefined,
+          customTools: [...[...editorTools(options.cwd, options.sessionManager.getSessionId(), client),
+            ...editorQueryTools(options.cwd, options.sessionManager.getSessionId(), client)]
+            .map(tool => ({...tool, defaultActive: false})), preview.tool,
             ...(subagents.enabled ? [subagents.tool(options.sessionManager.getSessionId(), client)] : [])],
         });
         const ledger = createDeliveryLedger(created.session, (id,state) => {
@@ -103,7 +109,7 @@ export async function startEidoAgent(agentDir: string, sessionDir: string, strea
         const reload = created.session.reload.bind(created.session);
         created.session.reload = async (...args) => {
           await reload(...args);
-          toolPolicy.reset();
+          toolPolicy.changed();
         };
         const beforeToolCall = created.session.agent.beforeToolCall;
         created.session.agent.beforeToolCall = async (context, signal) => {

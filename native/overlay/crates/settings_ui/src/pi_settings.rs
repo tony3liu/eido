@@ -11,6 +11,7 @@ pub(crate) struct PiSettingsView {
     provider: String,
     model: String,
     thinking: String,
+    default_tools: Entity<Editor>,
     key: Entity<Editor>,
     custom_provider: Entity<Editor>,
     custom_url: Entity<Editor>,
@@ -37,6 +38,7 @@ impl PiSettingsView {
     pub(crate) fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let mut view = Self {
             data: None, scroll_handle: gpui::ScrollHandle::new(), provider: String::new(), model: String::new(), thinking: "off".into(),
+            default_tools: input("Leave blank to use Eido defaults", false, window, cx),
             key: input("API key or $ENV_VAR reference", true, window, cx),
             custom_provider: input("Provider ID, e.g. my-provider", false, window, cx),
             custom_url: input("Base URL, e.g. https://api.example.com/v1", false, window, cx),
@@ -82,6 +84,13 @@ impl PiSettingsView {
                 view.busy = false;
                 match result {
                     Ok(data) => {
+                        if view.data.is_none() || matches!(operation.as_str(), "status" | "tool-defaults" | "import") {
+                            let text = data["defaultTools"].as_array().map(|names| {
+                                if names.is_empty() { "[]".to_owned() }
+                                else { names.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(", ") }
+                            }).unwrap_or_default();
+                            view.default_tools.update(cx, |editor, cx| editor.set_text(text, window, cx));
+                        }
                         if view.data.is_none() || matches!(operation.as_str(), "status" | "import") {
                             view.provider = data["defaultProvider"].as_str().unwrap_or_default().into();
                             view.model = data["defaultModel"].as_str().unwrap_or_default().into();
@@ -100,6 +109,7 @@ impl PiSettingsView {
                             "status" | "check-update" => String::new(),
                             "import" => "Local pi configuration imported. New tasks will use these settings.".into(),
                             "defaults" => "Defaults saved for new tasks. Existing tasks keep their models.".into(),
+                            "tool-defaults" => "Tool defaults saved. New tasks use this list; /reload adds newly selected tools to the current task.".into(),
                             "browser-decision" => "Browser decision settings saved. New tasks use this configuration.".into(),
                             "custom-model" => "Model saved. Select it above to make it the default.".into(),
                             _ => "pi credentials updated.".into(),
@@ -202,6 +212,20 @@ impl Render for PiSettingsView {
                         .on_click(cx.listener(|this, _, window, cx| this.request(json!({"operation":"defaults", "provider":this.provider,"model":this.model,"thinking":this.thinking}), window, cx))))
                     .child(Button::new("pi-refresh", "Reload").disabled(self.busy)
                         .on_click(cx.listener(|this, _, window, cx| this.request(json!({"operation":"status"}), window, cx))))))
+            .child(v_flex().gap_3().pt_4().border_t_1().border_color(cx.theme().colors().border_variant)
+                .child(Label::new("Tool Defaults"))
+                .child(text_field(self.default_tools.clone(), cx))
+                .child(Label::new("Leave blank for read, edit, write, find, grep and ls. Enter [] for no default file tools.").size(LabelSize::Small).color(Color::Muted))
+                .child(Label::new("Use tool names separated by commas. +codemode and -edit adjust pi defaults. Plugins keep their own defaults; agent roles still apply.").size(LabelSize::Small).color(Color::Muted))
+                .child(Button::new("pi-save-tool-defaults", "Save Tool Defaults").style(ButtonStyle::Outlined).disabled(self.busy)
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        let text = this.default_tools.read(cx).text(cx);
+                        let tools = if text.trim().is_empty() { Value::Null }
+                            else if text.trim() == "[]" { json!([]) }
+                            else { json!(text.split(',').map(str::trim).collect::<Vec<_>>()) };
+                        let expected = this.data.as_ref().map(|data| data["defaultTools"].clone()).unwrap_or(Value::Null);
+                        this.request(json!({"operation":"tool-defaults", "tools":tools, "expected":expected}), window, cx);
+                    }))))
             .child(v_flex().gap_3().pt_4().border_t_1().border_color(cx.theme().colors().border_variant)
                 .child(Label::new(format!("Credentials · {auth_label}")))
                 .child(text_field(self.key.clone(), cx))

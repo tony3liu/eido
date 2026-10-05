@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { client, methods, type ClientConnection, type SessionNotification } from "@agentclientprotocol/sdk";
 import { startEidoAgent } from "../src/server.ts";
 import { SUBAGENT_RUN } from "../src/subagents.ts";
-import { call, fixtureModel, lastToolText, type FixtureStep } from "./fixture-model.ts";
+import { call, declaredTools, fixtureModel, lastToolText, type FixtureStep } from "./fixture-model.ts";
 import { createExtensionCenter } from "../../../scripts/pi-extensions.mjs";
 import {policyRemote} from './fixture-mcp-policy.ts';
 
@@ -62,6 +62,24 @@ async function harness(steps: FixtureStep[], runHooks: {prepare?: (cwd: string) 
     dispose: async () => {await server.agent.dispose(); connection.close(); server.connection.close(); await rm(cwd, {recursive: true, force: true});},
   };
 }
+
+test('child roles select native tools independently of empty parent defaults', {timeout:30_000}, async () => {
+  const h = await harness([
+    context => {assert.ok(!declaredTools(context).includes('read')); return call('subagent',{agent:'scout',task:'Inspect available tools.'});},
+    context => {assert.deepEqual(declaredTools(context).sort(),['find','grep','ls','read']); return 'Scout tools verified.';},
+    context => {assert.match(lastToolText(context,'subagent'),/Scout tools verified/); return call('subagent',{agent:'explicit',task:'Inspect explicit dormant plugin selection.'});},
+    context => {assert.deepEqual(declaredTools(context).sort(),['dormant','find','grep','ls','read']); return 'Explicit selection verified.';},
+    context => {assert.match(lastToolText(context,'subagent'),/Explicit selection verified/); return 'Roles verified.';},
+  ], {prepare:async cwd => {
+    await writeFile(join(cwd,'settings.json'),JSON.stringify({defaultProvider:'eido-fixture',defaultModel:'scripted',defaultTools:[]}));
+    await mkdir(join(cwd,'agents'));
+    await writeFile(join(cwd,'agents/explicit.md'),'---\nname: explicit\ndescription: Test explicit tools\ntools: [read, "tool:dormant"]\n---\nInspect tools only.');
+    await mkdir(join(cwd,'extensions'));
+    await writeFile(join(cwd,'extensions/dormant.js'),`export default pi => pi.registerTool({name:'dormant',label:'Dormant',description:'Dormant fixture',defaultActive:false,parameters:{type:'object',properties:{}},execute:async()=>({content:[]})});`);
+  }});
+  try {assert.equal((await h.prompt('Verify independent role tools.')).stopReason,'end_turn'); assert.equal(h.requests(),5);}
+  finally {await h.dispose();}
+});
 
 test("delegation registers an independent pi child, reads native buffers and replays its ownership", {timeout: 30_000}, async () => {
   const h = await harness([

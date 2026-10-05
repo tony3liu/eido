@@ -85,6 +85,7 @@ export function createPiSettings(directory = join(root, ".local/eido"), sourceDi
       defaultProvider: manager.getDefaultProvider() ?? "",
       defaultModel: manager.getDefaultModel() ?? "",
       defaultThinkingLevel: manager.getDefaultThinkingLevel() ?? "off",
+      defaultTools: (await readJson(join(directory, "settings.json"))).defaultTools ?? null,
       fullAccess: (await readJson(join(directory, "settings.json"))).eido?.fullAccess === true,
       browserDecision: await browserDecisionSettings(directory),
       providers, update: await readJson(join(directory, "pi-update.json"), null) };
@@ -94,7 +95,23 @@ export function createPiSettings(directory = join(root, ".local/eido"), sourceDi
     const operation = request?.operation ?? "status";
     await mkdir(directory, { recursive: true, mode: 0o700 });
     if (!["status", "check-update", "import", "access"].includes(operation)) await status();
-    if (operation === "browser-decision") {
+    if (operation === "tool-defaults") {
+      const selected = request.tools;
+      if (selected !== null && (!Array.isArray(selected) || selected.length > 256
+        || selected.some(name => typeof name !== 'string' || !/^[+-]?[A-Za-z0-9_][A-Za-z0-9_.-]{0,255}$/.test(name)))) {
+        throw new PiConfigError('Enter comma-separated tool names, optional + or - prefixes, or [] for no default file tools.');
+      }
+      new FileSettingsStorage(directory, directory).withLock('global', current => {
+        const value = current ? JSON.parse(current) : {};
+        if (JSON.stringify(value.defaultTools ?? null) !== JSON.stringify(request.expected ?? null)) {
+          throw new PiConfigError('Tool defaults changed while this page was open. Reload the page before saving.');
+        }
+        if (selected === null) delete value.defaultTools;
+        else value.defaultTools = selected;
+        return JSON.stringify(value, null, 2) + '\n';
+      });
+      await chmod(join(directory, 'settings.json'), 0o600);
+    } else if (operation === "browser-decision") {
       const apiUrl = text(request.apiUrl, "Jev API URL"), model = text(request.model, "Jev model");
       const url = new URL(apiUrl);
       if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.hash) throw new PiConfigError("Enter an HTTP(S) Jev endpoint without credentials or a fragment.");

@@ -29,6 +29,22 @@ test("defaults roundtrip uses pi model validation and preserves unrelated settin
   assert.equal(await readFile(join(f.target,"settings.json"),"utf8"),before);
 });
 
+test('tool defaults preserve modifiers, explicit empty lists and concurrent edits', async t => {
+  const f = await fixture(t);
+  assert.equal((await f.bridge.status()).defaultTools, null);
+  const tools = ['+codemode','-edit','+custom_tool'];
+  assert.deepEqual((await f.bridge.execute({operation:'tool-defaults',tools,expected:null})).defaultTools,tools);
+  assert.equal((await f.get(f.target,'settings.json')).customSetting.retain,true);
+  await assert.rejects(f.bridge.execute({operation:'tool-defaults',tools:[],expected:null}),/changed while/);
+  for (const invalid of [['bad name'],['+'],[''], 'read', Array(257).fill('read')]) {
+    await assert.rejects(f.bridge.execute({operation:'tool-defaults',tools:invalid,expected:tools}));
+    assert.deepEqual((await f.bridge.status()).defaultTools,tools);
+  }
+  assert.deepEqual((await f.bridge.execute({operation:'tool-defaults',tools:[],expected:tools})).defaultTools,[]);
+  assert.equal((await f.bridge.execute({operation:'tool-defaults',tools:null,expected:[]})).defaultTools,null);
+  assert.equal(Object.hasOwn(await f.get(f.target,'settings.json'),'defaultTools'),false);
+});
+
 test("auth responses contain metadata only; edits preserve other providers, OAuth and env mappings", async t => {
   const f=await fixture(t);
   const oauth={type:"oauth",access:"private-access-fixture",refresh:"private-refresh-fixture",expires:9999999999999};

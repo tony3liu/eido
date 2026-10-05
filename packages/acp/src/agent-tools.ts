@@ -44,7 +44,7 @@ export function installAgentToolPolicy(session: AgentSession, selectors: string[
   let previous = new Map<string,string>();
   type McpDefinition = ToolDefinition & {eidoMcpExposure?:string; eidoMcpAutoEnableCodemode?:boolean};
   const definition = (name:string) => session.getToolDefinition(name) as McpDefinition|undefined;
-  const refresh = (reset = false) => {
+  const refresh = (reset = false, requested = session.getActiveToolNames()) => {
     const tools = allTools().filter(filter);
     allowed = new Set(resolveAgentTools(selectors, tools, reset));
     const indirect = tools.filter(tool => allowed.has(tool.name) && ['codemode','deferred'].includes(tool.exposure));
@@ -59,21 +59,22 @@ export function installAgentToolPolicy(session: AgentSession, selectors: string[
       if (tools.some(tool => tool.name === name && tool.sourceInfo.path === discovery.get(name))) allowed.add(name);
       else automatic.delete(name);
     }
-    const active = new Set(session.getActiveToolNames().filter(name => allowed.has(name)));
+    const active = new Set(requested.filter(name => allowed.has(name)));
     for (const tool of tools) {
-      if (allowed.has(tool.name) && selectors?.includes(`tool:${tool.name}`) && tool.exposure !== 'hidden') {
-        active.add(tool.name);
-        continue;
-      }
       if (!allowed.has(tool.name) || !['direct','model-only'].includes(tool.exposure)) continue;
-      if (definition(tool.name)?.defaultActive === false) continue;
-      if (reset || !['direct','model-only'].includes(previous.get(tool.name) ?? '')) active.add(tool.name);
+      // pi activates defaults and new extension registrations. Roles additionally
+      // activate their native tools, even when the parent's defaultTools is empty.
+      // Do not resurrect a tool a plugin disabled during the current session.
+      if (!selectors || !reset && ['direct','model-only'].includes(previous.get(tool.name) ?? '')) continue;
+      if (tool.sourceInfo.source === 'sdk' || selectors.includes(`tool:${tool.name}`)
+        || definition(tool.name)?.defaultActive !== false) active.add(tool.name);
     }
     for (const name of automatic) active.add(name);
     previous = new Map(tools.map(tool => [tool.name, tool.exposure]));
     session.setActiveToolsByName([...active]);
   };
-  const policy = {allows:(name:string) => allowed.has(name), changed:()=>refresh(), reset:()=>refresh(true)};
+  const policy = {allows:(name:string) => allowed.has(name), changed:()=>refresh(),
+    registered:(names:string[])=>refresh(false, names), reset:()=>refresh(true)};
   Object.defineProperty(session, Symbol.for('eido.pi.tools'), {value:policy});
   // Keep registry ownership visible to ACP, but discovery cannot reveal tools
   // that this role is not allowed to use.
