@@ -59,6 +59,15 @@ export const call = (name: string, args: ToolCall["arguments"] = {}): ToolCall[]
   type: "toolCall", id: `fixture-${crypto.randomUUID()}`, name, arguments: args,
 }];
 
+export function declaredTools(context: TranscriptContext): string[] {
+  const names = new Set<string>();
+  for (const message of context.messages) if (message.role === 'system') {
+    for (const tool of message.toolsAdded ?? []) names.add(tool.name);
+    for (const tool of message.toolsRemoved ?? []) names.delete(tool.name);
+  }
+  return [...names];
+}
+
 export function lastToolText(context: TranscriptContext, name: string) {
   const result = context.messages.findLast((message) => message.role === "toolResult" && message.toolName === name);
   if (!result || result.role !== "toolResult") throw new Error(`Missing tool result: ${name}`);

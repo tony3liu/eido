@@ -53,10 +53,18 @@ export async function configuredMcp(directory, cwd = directory) {
   const config = await readMcp(directory);
   return Object.entries(config.mcpServers).filter(([, s]) => s.enabled !== false).map(([name, s]) => {
     const description = `MCP server "${name}"`;
-    const server = s.command
+    let unresolved = false;
+    let server;
+    try {server = s.command
       ? {name, command: expandHome(s.command), args: (s.args ?? []).map(expandHome), env: Object.entries(s.env ?? {}).map(([name,value]) => ({name,value:resolveConfigValueOrThrow(value, `${description} environment`)}))}
       : {name, type: s.type ?? 'http', url: s.url, headers: Object.entries(resolveHeadersOrThrow(s.headers, description) ?? {}).map(([name,value]) => ({name,value}))};
-    Object.defineProperty(server, MCP_OPTIONS, {value:{config:s, directory, cwd:resolve(cwd,expandHome(s.cwd ?? '.'))}});
+    } catch {
+      // Keep configuration errors scoped to this server. No unresolved values
+      // are forwarded to a process or included in a user-facing diagnostic.
+      unresolved = true;
+      server = s.command ? {name, command:s.command, args:[], env:[]} : {name, type:s.type ?? 'http', url:s.url, headers:[]};
+    }
+    Object.defineProperty(server, MCP_OPTIONS, {value:{config:s, directory, unresolved, timeoutMs:Math.min((s.timeout ?? 60) * 1000, 2_147_483_647), cwd:resolve(cwd,expandHome(s.cwd ?? '.'))}});
     return server;
   });
 }
@@ -86,7 +94,9 @@ export function authenticatedMcpFetch(server, providerToken, fetcher = fetch) {
       if (token) headers.set('Authorization', `Bearer ${token}`);
       const response = await fetcher(input,{...init,headers,redirect:'error'});
       const unauthorized = response.status === 401 || response.status === 403 && parseWwwAuthenticate(response.headers.get('www-authenticate')).error === 'insufficient_scope';
-      if (!unauthorized || attempt || !provider?.onUnauthorized) return response;
+      if (!unauthorized) {server[Symbol.for('eido.pi.mcp.needs-auth')] = false; return response;}
+      server[Symbol.for('eido.pi.mcp.needs-auth')] = true;
+      if (attempt || !provider?.onUnauthorized) return response;
       try {await provider.onUnauthorized({response,serverUrl:baseUrl,fetch:fetcher,token});}
       finally {await response.body?.cancel().catch(()=>{});}
     }

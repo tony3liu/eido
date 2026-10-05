@@ -115,6 +115,8 @@ test('MCP follows pi enabled, env interpolation and validation without resolving
     }
     delete process.env.EIDO_MCP_FIXTURE_SECRET;
     assert.equal((await center.execute()).mcp.length,5,'inspection does not resolve credentials');
-    await assert.rejects(configuredMcp(dir),/environment/);
+    const unresolved = await configuredMcp(dir);
+    assert.deepEqual(unresolved.map(server => server[Symbol.for('eido.pi.mcp.options')].unresolved), [true, true]);
+    assert.doesNotMatch(JSON.stringify(unresolved), /EIDO_MCP_FIXTURE_SECRET|config-fixture-secret/);
   }finally {delete process.env.EIDO_MCP_FIXTURE_SECRET;await rm(dir,{recursive:true,force:true});}
 });

@@ -6,8 +6,9 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {client, methods} from '@agentclientprotocol/sdk';
 import {startEidoAgent} from '../src/server.ts';
-import {call, fixtureModel, lastToolText} from './fixture-model.ts';
+import {call, declaredTools, fixtureModel, lastToolText} from './fixture-model.ts';
 import {createExtensionCenter} from '../../../scripts/pi-extensions.mjs';
+import {mcpHarness, policyRemote} from './fixture-mcp-policy.ts';
 
 async function remoteFixture(type: 'http'|'sse') {
   const streams = new Set<ServerResponse>();
@@ -168,4 +169,67 @@ test('Extensions sign-in helper exits on owner EOF and releases the callback lis
     await assert.rejects(fetch(callback));
     assert.equal(credentials(dir).tokens('remote',remote.url),undefined);
   } finally {if(child?.exitCode===null)child.kill('SIGKILL');await remote.close();await rm(dir,{recursive:true,force:true});}
+});
+
+test('unavailable, unresolved and unsigned-in MCP servers do not block healthy tools or later prompts', {timeout:20_000}, async () => {
+  const healthy = await policyRemote(), denied = await policyRemote(), invalid = await policyRemote();
+  denied.mode('unauthorized'); invalid.mode('bad-catalog');
+  const h = await mcpHarness({mcpServers:{
+    absent:{command:'/eido-test-missing-executable', env:{SECRET:'never-display-this-secret'}},
+    unresolved:{command:process.execPath, env:{KEY:'${EIDO_FIXTURE_ENV_THAT_DOES_NOT_EXIST}'}},
+    denied:{url:denied.url}, invalid:{url:invalid.url}, healthy:{url:healthy.url},
+  }}, [context => {
+    assert.deepEqual(declaredTools(context).filter(t => t.startsWith('mcp__')), ['mcp__healthy__ping','mcp__healthy__slow','mcp__healthy__progress']);
+    return call('mcp__healthy__ping');
+  }, () => 'Healthy tool completed.', () => 'Another prompt completed.']);
+  try {
+    const task = await h.newTask();
+    assert.equal((await h.prompt(task.sessionId)).stopReason, 'end_turn');
+    const first = JSON.stringify(h.updates);
+    assert.match(first, /sign-in required/); assert.match(first, /mcp:unresolved/); assert.match(first, /mcp:invalid/);
+    assert.doesNotMatch(first, /never-display-this-secret|EIDO_FIXTURE_ENV/);
+    h.updates.length = 0;
+    assert.equal((await h.prompt(task.sessionId)).stopReason, 'end_turn');
+    assert.doesNotMatch(JSON.stringify(h.updates), /sign-in required/);
+    assert.deepEqual(healthy.calls, ['ping']);
+  } finally {await h.close(); await healthy.close(); await denied.close(); await invalid.close();}
+});
+
+test('MCP per-server deadlines include initialization and tool progress extends the request deadline', {timeout:20_000}, async () => {
+  const timed = await policyRemote(), hung = await policyRemote(); hung.mode('hang-open');
+  const h = await mcpHarness({mcpServers:{hung:{url:hung.url,timeout:0.2}, timed:{url:timed.url,timeout:0.2}}}, [
+    () => call('mcp__timed__progress'), context => {assert.match(lastToolText(context,'mcp__timed__progress'), /progress fixture reached/); return 'Progress completed.';},
+    () => call('mcp__timed__slow'), context => {
+      const result = context.messages.findLast(m => m.role === 'toolResult' && m.toolName === 'mcp__timed__slow');
+      assert.ok(result?.role === 'toolResult' && result.isError); return 'Timeout handled.';
+    }, context => {assert.ok(declaredTools(context).every(t => !t.startsWith('mcp__timed__'))); return 'Task still works.';},
+  ]);
+  try {
+    const start = performance.now(), task = await h.newTask();
+    assert.ok(performance.now() - start < 3000, 'server initialization uses its configured deadline');
+    assert.equal((await h.prompt(task.sessionId)).stopReason,'end_turn');
+    assert.equal((await h.prompt(task.sessionId)).stopReason,'end_turn');
+    assert.equal((await h.prompt(task.sessionId)).stopReason,'end_turn');
+    assert.deepEqual(timed.calls,['progress','slow']); assert.equal(h.model.requests(),5);
+    assert.equal(timed.streams.size,0);
+  } finally {await h.close(); await timed.close(); await hung.close();}
+});
+
+test('cancelling a progressing MCP request releases the stream and allows the next prompt', {timeout:20_000}, async () => {
+  const remote = await policyRemote();
+  const h = await mcpHarness({mcpServers:{remote:{url:remote.url,timeout:0.2}}}, [
+    () => call('mcp__remote__progress'), () => call('mcp__remote__ping'),
+    context => {assert.match(lastToolText(context,'mcp__remote__ping'), /ping fixture reached/); return 'Cancellation recovered.';},
+  ]);
+  try {
+    const task = await h.newTask(), running = h.prompt(task.sessionId);
+    for (let i = 0; i < 200 && !remote.calls.length; i++) await new Promise(resolve => setTimeout(resolve, 10));
+    assert.deepEqual(remote.calls,['progress']);
+    await h.connection.agent.notify(methods.agent.session.cancel,{sessionId:task.sessionId});
+    assert.equal((await running).stopReason,'cancelled');
+    for (let i = 0; i < 100 && remote.streams.size; i++) await new Promise(resolve => setTimeout(resolve, 10));
+    assert.equal(remote.streams.size,0);
+    assert.equal((await h.prompt(task.sessionId)).stopReason,'end_turn');
+    assert.deepEqual(remote.calls,['progress','ping']);
+  } finally {await h.close(); await remote.close();}
 });
