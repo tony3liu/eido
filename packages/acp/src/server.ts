@@ -13,6 +13,7 @@ export async function startEidoAgent(agentDir: string, sessionDir: string, strea
     authPath: join(agentDir, "auth.json"), modelsPath: join(agentDir, "models.json"), allowModelNetwork: false,
   });
   let connectClient!: (client: AgentContext) => void;
+  let supportsForms = false;
   const clientReady = new Promise<AgentContext>(resolve => { connectClient = resolve; });
   const server = await runAcp({
     stream,
@@ -80,11 +81,16 @@ export async function startEidoAgent(agentDir: string, sessionDir: string, strea
           browser.track(context.toolCall.name);
           return beforeToolCall?.(context, signal);
         };
-        installPiCommands(created.session);
+        installPiCommands(created.session, client, supportsForms, agentDir);
         return created;
       },
     },
   });
+  const initialize = server.agent.initialize.bind(server.agent);
+  server.agent.initialize = context => {
+    supportsForms = context.params.clientCapabilities?.elicitation?.form != null;
+    return initialize(context);
+  };
   connectClient(server.connection.client);
   return server;
 }

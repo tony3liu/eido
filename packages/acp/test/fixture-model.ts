@@ -30,6 +30,11 @@ export async function fixtureModel(directory: string, steps: FixtureStep[]) {
               cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
           };
           stream.push({ type: "start", partial: message });
+          if (typeof output === "string") {
+            stream.push({ type: "text_start", contentIndex: 0, partial: message });
+            stream.push({ type: "text_delta", contentIndex: 0, delta: output, partial: message });
+            stream.push({ type: "text_end", contentIndex: 0, content: output, partial: message });
+          }
           stream.push({ type: "done", reason: message.stopReason as "stop" | "toolUse", message });
           stream.end();
         } catch (error) {

@@ -66,9 +66,14 @@ await patchSource(sessionPath,
 await patchSource(agentPath,
   '            this.live.set(id, wrapper);\n            bindingState.published = true;\n            this.opening.delete(id);\n            return wrapper;',
   '            const commands = pi[Symbol.for("eido.pi.commands")];\n            if (commands) {\n                wrapper.enqueue({ sessionUpdate: "available_commands_update", availableCommands: commands.commands });\n                await wrapper.drain();\n                this.gate(opening);\n            }\n            this.live.set(id, wrapper);\n            bindingState.published = true;\n            this.opening.delete(id);\n            return wrapper;');
-await patchSource(path,
+if (!(await readFile(path, "utf8")).includes('entry.customType === "eido.command.v1"')) {
+  await patchSource(path,
   '        case "custom":\n        case "label":',
   '        case "custom":\n            if (entry.customType === "eido.command.v1" && typeof entry.data?.command === "string" && typeof entry.data?.output === "string") {\n                return [\n                    { sessionUpdate: "user_message_chunk", content: { type: "text", text: entry.data.command } },\n                    { sessionUpdate: "agent_message_chunk", content: { type: "text", text: entry.data.output } },\n                ];\n            }\n            return [];\n        case "label":');
+}
+await patchSource(path,
+  '            if (entry.customType === "eido.command.v1" && typeof entry.data?.command === "string" && typeof entry.data?.output === "string") {',
+  '            if (entry.customType === "eido.notice.v1" && typeof entry.data?.text === "string")\n                return [{ sessionUpdate: "agent_message_chunk", content: { type: "text", text: entry.data.text } }];\n            if (entry.customType === "eido.command.v1" && typeof entry.data?.command === "string" && typeof entry.data?.output === "string") {');
 
 // A local command is a real interaction, even before the first model turn.
 // Pi normally keeps setup-only journals in memory. Include Eido's custom
@@ -77,3 +82,21 @@ await patchSource(new URL("../../@earendil-works/pi-coding-agent/dist/core/sessi
   'return this.fileEntries.some((e) => e.type === "message" && (e.message.role === "user" || e.message.role === "assistant"));',
   'return this.fileEntries.some((e) => (e.type === "message" && (e.message.role === "user" || e.message.role === "assistant")) || (e.type === "custom" && e.customType === "eido.command.v1"));');
 console.log("Applied Eido pi command discovery, dispatch and history patches.");
+
+await patchSource(path,
+  '        case "custom_message":\n            return entry.display\n                ? blocks(entry.content).map((content) => ({\n                    sessionUpdate: "user_message_chunk",',
+  '        case "custom_message":\n            return entry.display\n                ? blocks(entry.content).map((content) => ({\n                    sessionUpdate: "agent_message_chunk",');
+await patchSource(new URL("dist/translate.js", directory),
+  '        case "agent_start":',
+  '        case "message_end":\n            if (event.message.role === "custom" && event.message.display) {\n                const content = typeof event.message.content === "string" ? [{ type: "text", text: event.message.content }] : event.message.content ?? [];\n                return content.map((item) => ({ sessionUpdate: "agent_message_chunk", content: item }));\n            }\n            return [];\n        case "session_info_changed":\n            return [{ sessionUpdate: "session_info_update", title: event.name ?? "" }];\n        case "agent_start":');
+// For removals the replacement is a substring of the old text, so the
+// generic insertion helper's "already patched" check cannot be used.
+const translatePath = new URL("dist/translate.js", directory);
+for (const [before, after] of [
+  ['        case "message_start":\n        case "message_end":', '        case "message_start":'],
+  ['        case "entry_appended":\n        case "session_info_changed":', '        case "entry_appended":'],
+]) {
+  const source = await readFile(translatePath, "utf8");
+  if (source.includes(before)) await writeFile(translatePath, source.replace(before, after));
+  else if (!source.includes(after)) throw new Error("Review Eido event translation patch.");
+}

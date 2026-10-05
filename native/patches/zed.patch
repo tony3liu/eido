@@ -27693,6 +27693,62 @@ diff --git a/crates/workspace/src/pane.rs b/crates/workspace/src/pane.rs
                              } else {
                                  if self.welcome_page.is_none() {
                                      let workspace = self.workspace.clone();
+diff --git a/crates/workspace/src/persistence.rs b/crates/workspace/src/persistence.rs
+--- a/crates/workspace/src/persistence.rs
++++ b/crates/workspace/src/persistence.rs
+@@ -2790,7 +2790,9 @@
+             .join(", ");
+ 
+         let query = format!(
+-            "DELETE FROM {table} WHERE workspace_id = ? AND item_id NOT IN ({placeholders})"
++            "DELETE FROM {table} WHERE workspace_id = ? AND item_id NOT IN ({placeholders}) \
++             AND NOT EXISTS (SELECT 1 FROM items WHERE items.workspace_id = {table}.workspace_id \
++             AND items.item_id = {table}.item_id)"
+         );
+ 
+         db.write(move |conn| {
+@@ -2829,6 +2831,41 @@
+     use remote::SshConnectionOptions;
+     use serde_json::json;
+     use std::{thread, time::Duration};
++
++    #[gpui::test]
++    async fn test_eido_cleanup_preserves_referenced_recovery_data(cx: &mut gpui::TestAppContext) {
++        let db = WorkspaceDb::open_test_db("eido_recovery_cleanup").await;
++        db.write(|conn| {
++            for query in [
++                "INSERT INTO workspaces (workspace_id) VALUES (1), (2)",
++                "INSERT INTO panes (pane_id, workspace_id, active) VALUES (1, 1, 1)",
++                "INSERT INTO items (item_id, workspace_id, pane_id, kind, position, active) VALUES (10, 1, 1, 'Editor', 0, 1)",
++                "CREATE TABLE recovery_fixture (item_id INTEGER, workspace_id INTEGER, contents TEXT)",
++                "INSERT INTO recovery_fixture VALUES (10, 1, 'old referenced draft'), (20, 1, 'restored draft'), (30, 1, 'unreferenced'), (40, 2, 'other workspace')",
++            ] {
++                conn.exec(query)?()?;
++            }
++            anyhow::Ok(())
++        }).await.unwrap();
++
++        // Cleanup may race an older pane snapshot: keep both that referenced
++        // draft and the freshly restored item until the new layout is durable.
++        cx.update(|cx| delete_unloaded_items(vec![20], WorkspaceId(1), "recovery_fixture", &db, cx))
++            .await.unwrap();
++        let remaining = db.select::<(u64, String)>(
++            "SELECT item_id, contents FROM recovery_fixture ORDER BY item_id"
++        ).unwrap()().unwrap();
++        assert_eq!(remaining, vec![
++            (10, "old referenced draft".into()), (20, "restored draft".into()),
++            (40, "other workspace".into()),
++        ]);
++
++        db.write(|conn| conn.exec("UPDATE items SET item_id = 20 WHERE item_id = 10")?())
++            .await.unwrap();
++        cx.update(|cx| delete_unloaded_items(vec![20], WorkspaceId(1), "recovery_fixture", &db, cx))
++            .await.unwrap();
++        assert_eq!(db.select::<u64>("SELECT item_id FROM recovery_fixture ORDER BY item_id").unwrap()().unwrap(), vec![20, 40]);
++    }
+ 
+     /// Creates a unique directory in a FakeFs, returning the path.
+     /// Uses a UUID suffix to avoid collisions with other tests sharing the global DB.
 diff --git a/crates/workspace/src/workspace.rs b/crates/workspace/src/workspace.rs
 --- a/crates/workspace/src/workspace.rs
 +++ b/crates/workspace/src/workspace.rs
@@ -27746,7 +27802,24 @@ diff --git a/crates/workspace/src/workspace.rs b/crates/workspace/src/workspace.
              weak_self: weak_handle.clone(),
              zoomed: None,
              zoomed_position: None,
-@@ -8642,7 +8677,12 @@
+@@ -7965,6 +8000,16 @@
+                                 .with_serialized_breakpoints(serialized_workspace.breakpoints, cx)
+                         })
+                 })
++                .await;
++
++            // Item IDs change during restoration. Persist the new item contents
++            // and their pane references before reclaiming the previous IDs, so
++            // an interrupted restore cannot leave a layout pointing at deleted
++            // recovery data.
++            workspace
++                .update_in(cx, |workspace, window, cx| {
++                    workspace.flush_serialization(window, cx)
++                })?
+                 .await;
+ 
+             // Clean up all the items that have _not_ been loaded. Our ItemIds aren't stable. That means
+@@ -8642,7 +8687,12 @@
          window: &mut Window,
          cx: &mut App,
      ) -> Option<Stateful<Div>> {
@@ -27760,7 +27833,7 @@ diff --git a/crates/workspace/src/workspace.rs b/crates/workspace/src/workspace.
              return None;
          }
  
-@@ -8878,7 +8918,7 @@
+@@ -8878,7 +8928,7 @@
          window: &mut Window,
          cx: &mut App,
      ) -> impl IntoElement {
@@ -27769,7 +27842,7 @@ diff --git a/crates/workspace/src/workspace.rs b/crates/workspace/src/workspace.
              .id("editor-region")
              .role(gpui::Role::Main)
              .aria_label("Editor")
-@@ -8892,7 +8932,298 @@
+@@ -8892,7 +8942,298 @@
                  render_cx,
                  window,
                  cx,

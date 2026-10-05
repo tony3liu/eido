@@ -1,24 +1,29 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { client, methods, type SessionUpdate } from "@agentclientprotocol/sdk";
+import { client, methods, type CreateElicitationRequest, type CreateElicitationResponse, type SessionUpdate } from "@agentclientprotocol/sdk";
 import { startEidoAgent } from "../src/server.ts";
 import { fixtureModel, type FixtureStep } from "./fixture-model.ts";
 
-async function harness(steps: FixtureStep[] = []) {
+async function harness(steps: FixtureStep[] = [], options: {
+  setup?: (cwd: string) => Promise<void>;
+  form?: (params: CreateElicitationRequest, signal: AbortSignal) => Promise<CreateElicitationResponse>;
+} = {}) {
   const cwd = await realpath(await mkdtemp(join(tmpdir(), "eido-commands-")));
   const settings = JSON.stringify({defaultProvider: "eido-fixture", defaultModel: "scripted", defaultThinkingLevel: "off", compaction: {enabled: false, keepRecentTokens: 100, reserveTokens: 1000}});
   await writeFile(join(cwd, "settings.json"), settings);
+  await options.setup?.(cwd);
   const fixture = await fixtureModel(cwd, steps);
   const toAgent = new TransformStream(), toClient = new TransformStream();
   const server = await startEidoAgent(cwd, join(cwd, "sessions"), {readable: toAgent.readable, writable: toClient.writable}, fixture.runtime);
   const updates: {sessionId: string; update: SessionUpdate}[] = [];
   const connection = client({name: "eido-command-test"})
     .onNotification(methods.client.session.update, ({params}) => { updates.push(params); })
+    .onRequest(methods.client.elicitation.create, ({params, signal}) => options.form?.(params, signal) ?? {action: "cancel"})
     .connect({readable: toClient.readable, writable: toAgent.writable});
-  await connection.agent.request(methods.agent.initialize, {protocolVersion: 1, clientCapabilities: {}});
+  await connection.agent.request(methods.agent.initialize, {protocolVersion: 1, clientCapabilities: options.form ? {elicitation: {form: {}}} : {}});
   return {
     cwd, settings, updates, requests: fixture.requests, connection,
     newTask: () => connection.agent.request(methods.agent.session.new, {cwd, mcpServers: []}),
@@ -42,7 +47,7 @@ test("ACP discovers pi commands; local commands persist and replay without model
     const discovered = h.updates.find(item => item.sessionId === a.sessionId && item.update.sessionUpdate === "available_commands_update")?.update;
     assert.equal(discovered?.sessionUpdate, "available_commands_update");
     if (discovered?.sessionUpdate !== "available_commands_update") throw new Error("Missing catalogue");
-    assert.deepEqual(discovered.availableCommands.map(command => command.name), ["session", "name", "model", "thinking", "compact"]);
+    assert.deepEqual(discovered.availableCommands.slice(0, 5).map(command => command.name), ["session", "name", "model", "thinking", "compact"]);
     await h.prompt(a.sessionId, "/name private-command-marker");
     assert.ok(h.updates.some(({update}) => update.sessionUpdate === "session_info_update" && update.title === "private-command-marker"));
     for (const command of ["/session", "/name", "/model", "/thinking", "/thinking off", "/model eido-fixture/scripted"]) {
@@ -72,11 +77,91 @@ test("ACP discovers pi commands; local commands persist and replay without model
   } finally { await h.dispose(); }
 });
 
-test("invalid, unimplemented and attached commands never reach the model or mutate configuration", {timeout: 30_000}, async () => {
+test("pi extension commands, prompt templates and skills use the dynamic ACP catalogue", {timeout: 30_000}, async () => {
+  const received: CreateElicitationRequest[] = [];
+  const h = await harness([
+    context => {assert.match(JSON.stringify(context), /Explain orchard precisely/); return "Template expanded.";},
+    context => {assert.match(JSON.stringify(context), /Use the fixture skill rules/); return "Skill expanded.";},
+  ], {
+    setup: async cwd => {
+      await mkdir(join(cwd, "extensions"));
+      await writeFile(join(cwd, "extensions/survey.js"), `export default function(pi) {
+        pi.registerCommand("survey", {description: "Choose a fixture value", handler: async (args, ctx) => {
+          if (!ctx.hasUI || ctx.mode !== "rpc") throw new Error("Missing native dialog binding");
+          const selected = await ctx.ui.select("Fixture choice", ["Orchard", "Garden"]);
+          if (selected) ctx.ui.notify("Selected " + selected);
+          const value = await ctx.ui.input("Fixture input", "A short value");
+          const confirmed = await ctx.ui.confirm("Fixture confirmation", "Use the entered value?");
+          pi.sendMessage({customType:"fixture-survey", content: "Survey: " + selected + "/" + value + "/" + confirmed, display:true});
+        }});
+      }`);
+      await mkdir(join(cwd, "prompts"));
+      await writeFile(join(cwd, "prompts/brief.md"), "---\ndescription: Fixture template\n---\nExplain $1 precisely");
+      await mkdir(join(cwd, "skills/fixture"), {recursive: true});
+      await writeFile(join(cwd, "skills/fixture/SKILL.md"), "---\nname: fixture\ndescription: Fixture skill\n---\nUse the fixture skill rules");
+    },
+    form: async params => {
+      received.push(params);
+      if (params.message === "Fixture choice") return {action: "accept", content: {value: "Orchard"}};
+      if (params.message === "Fixture input") return {action: "accept", content: {value: "local"}};
+      return {action: "accept"};
+    },
+  });
+  try {
+    const a = await h.newTask();
+    const catalogue = h.updates.flatMap(({update}) => update.sessionUpdate === "available_commands_update" ? update.availableCommands.map(command => command.name) : []);
+    assert.ok(catalogue.includes("survey") && catalogue.includes("brief") && catalogue.includes("skill:fixture"), catalogue.join(","));
+    await h.prompt(a.sessionId, "/survey");
+    assert.equal(h.requests(), 0);
+    assert.equal(received.length, 3);
+    assert.ok(received.every(request => "sessionId" in request && request.sessionId === a.sessionId && request.mode === "form"));
+    assert.match(h.text(a.sessionId), /Selected Orchard/);
+    assert.match(h.text(a.sessionId), /Survey: Orchard\/local\/true/);
+    await h.prompt(a.sessionId, "/brief orchard");
+    await h.prompt(a.sessionId, "/skill:fixture");
+    assert.equal(h.requests(), 2);
+    await h.connection.agent.request(methods.agent.session.close, {sessionId: a.sessionId});
+    h.updates.length = 0;
+    await h.connection.agent.request(methods.agent.session.load, {sessionId: a.sessionId, cwd: h.cwd, mcpServers: []});
+    assert.match(h.text(a.sessionId), /Selected Orchard/);
+    assert.match(h.text(a.sessionId), /Survey: Orchard\/local\/true/);
+  } finally { await h.dispose(); }
+});
+
+test("native model form selection applies config; cancelling a dialog releases the turn", {timeout: 30_000}, async () => {
+  let cancelForm = false;
+  let began!: () => void;
+  const started = new Promise<void>(resolve => {began = resolve;});
+  let dismissed = false;
+  const h = await harness([], {form: async (_params, signal) => {
+    if (!cancelForm) return {action: "accept", content: {value: "off"}};
+    began();
+    await new Promise<void>(resolve => {
+      if (signal.aborted) resolve(); else signal.addEventListener("abort", () => resolve(), {once: true});
+    });
+    dismissed = true;
+    return {action: "cancel"};
+  }});
+  try {
+    const a = await h.newTask();
+    await h.prompt(a.sessionId, "/thinking");
+    assert.ok(h.updates.some(({update}) => update.sessionUpdate === "config_option_update"));
+    cancelForm = true;
+    const pending = h.prompt(a.sessionId, "/thinking");
+    await started;
+    await h.connection.agent.notify(methods.agent.session.cancel, {sessionId: a.sessionId});
+    assert.equal((await pending).stopReason, "cancelled");
+    assert.equal(dismissed, true);
+    await h.prompt(a.sessionId, "/session");
+    assert.equal(h.requests(), 0);
+  } finally { await h.dispose(); }
+});
+
+test("invalid, unknown and attached commands never reach the model or mutate configuration", {timeout: 30_000}, async () => {
   const h = await harness();
   try {
     const a = await h.newTask();
-    for (const command of ["/session extra", "/model missing/model", "/thinking impossible", "/name first\nsecond", "/reload", "/share", "/unknown", "/"]) {
+    for (const command of ["/session extra", "/model missing/model", "/thinking impossible", "/name first\nsecond", "/reload extra", "/changelog extra", "/unknown", "/"]) {
       h.updates.length = 0;
       await h.prompt(a.sessionId, command);
       assert.match(h.text(a.sessionId), /^Command failed:/);
@@ -90,6 +175,99 @@ test("invalid, unimplemented and attached commands never reach the model or muta
     assert.match(h.text(a.sessionId), /Nothing to compact/);
     assert.equal(h.requests(), 0);
     assert.equal(await readFile(join(h.cwd, "settings.json"), "utf8"), h.settings);
+  } finally { await h.dispose(); }
+});
+
+test("reload refreshes commands and templates while preserving the session and model", {timeout: 30_000}, async () => {
+  const h = await harness([context => {
+    assert.match(JSON.stringify(context), /Fresh template orchard/);
+    return "Model still usable after reload.";
+  }]);
+  try {
+    const a = await h.newTask();
+    await h.prompt(a.sessionId, "/name Reload fixture");
+    await mkdir(join(h.cwd, "prompts"));
+    await writeFile(join(h.cwd, "prompts/fresh.md"), "Fresh template $1");
+    await h.prompt(a.sessionId, "/reload");
+    assert.match(h.text(a.sessionId), /Reloaded global pi/);
+    assert.ok(h.updates.some(({update}) => update.sessionUpdate === "available_commands_update" && update.availableCommands.some(command => command.name === "fresh")));
+    assert.equal(h.requests(), 0);
+    await h.prompt(a.sessionId, "/fresh orchard");
+    assert.equal(h.requests(), 1);
+    assert.match(h.text(a.sessionId), /Model still usable after reload/);
+    await h.prompt(a.sessionId, "/name");
+    assert.match(h.text(a.sessionId), /Session name: Reload fixture/);
+  } finally { await h.dispose(); }
+});
+
+test("model shortlist saves global pi preferences and rejects unmatched patterns", {timeout: 30_000}, async () => {
+  const h = await harness();
+  try {
+    const a = await h.newTask();
+    await h.prompt(a.sessionId, "/scoped-models eido-fixture/*");
+    assert.match(h.text(a.sessionId), /Global model shortlist: eido-fixture\/\*/);
+    const saved = await readFile(join(h.cwd, "settings.json"), "utf8");
+    assert.deepEqual(JSON.parse(saved).enabledModels, ["eido-fixture/*"]);
+    assert.ok(h.updates.some(({update}) => update.sessionUpdate === "config_option_update" && JSON.stringify(update.configOptions).includes('"preferred":["eido-fixture/scripted"]')));
+    await h.prompt(a.sessionId, "/scoped-models missing/no-such-model");
+    assert.match(h.text(a.sessionId), /Unmatched model patterns/);
+    assert.equal(await readFile(join(h.cwd, "settings.json"), "utf8"), saved);
+    await h.prompt(a.sessionId, "/scoped-models all");
+    assert.equal(JSON.parse(await readFile(join(h.cwd, "settings.json"), "utf8")).enabledModels, undefined);
+    assert.equal(h.requests(), 0);
+  } finally { await h.dispose(); }
+});
+
+test("reload reports broken extensions, removes stale commands, and recovers native dialogs", {timeout: 30_000}, async () => {
+  const source = `export default pi => pi.registerCommand("reload-check", {
+    description: "Reload fixture", handler: async (_args, ctx) => {
+      const confirmed = await ctx.ui.confirm("Reload confirmation", "Continue?");
+      pi.sendMessage({customType: "reload-check", content: "Reload dialog: " + confirmed, display: true});
+    }
+  });`;
+  let forms = 0;
+  const h = await harness([], {
+    setup: async cwd => { await mkdir(join(cwd, "extensions")); await writeFile(join(cwd, "extensions/reload-check.js"), source); },
+    form: async () => { forms++; return {action: "accept"}; },
+  });
+  try {
+    const a = await h.newTask();
+    await writeFile(join(h.cwd, "extensions/reload-check.js"), "export default () => { throw new Error('Fixture load failure'); }");
+    h.updates.length = 0;
+    await h.prompt(a.sessionId, "/reload");
+    assert.match(h.text(a.sessionId), /Reload completed with extension errors/);
+    assert.ok(h.updates.some(({update}) => update.sessionUpdate === "available_commands_update" && !update.availableCommands.some(command => command.name === "reload-check")));
+    await writeFile(join(h.cwd, "extensions/reload-check.js"), source);
+    await h.prompt(a.sessionId, "/reload");
+    await h.prompt(a.sessionId, "/reload-check");
+    assert.equal(forms, 1);
+    assert.match(h.text(a.sessionId), /Reload dialog: true/);
+    assert.equal(h.requests(), 0);
+  } finally { await h.dispose(); }
+});
+
+test("exports use pi formats, refuse overwrite and clean temporary files; changelog is bundled", {timeout: 30_000}, async () => {
+  const h = await harness();
+  try {
+    const a = await h.newTask();
+    await h.prompt(a.sessionId, "/name Export fixture");
+    for (const extension of ["html", "jsonl"]) {
+      const path = join(h.cwd, `fixture export.${extension}`);
+      await h.prompt(a.sessionId, `/export "${path}"`);
+      const exported = await readFile(path, "utf8");
+      if (extension === "html") assert.match(exported, /<!DOCTYPE html>/i);
+      else assert.equal(JSON.parse(exported.trim().split("\n")[0]!).id, a.sessionId);
+      await h.prompt(a.sessionId, `/export "${path}"`);
+      assert.match(h.text(a.sessionId), /destination already exists/);
+      assert.equal(await readFile(path, "utf8"), exported);
+    }
+    await h.prompt(a.sessionId, "/export");
+    const exports = await readdir(join(h.cwd, "exports"));
+    assert.equal(exports.length, 1);
+    assert.ok(exports[0]?.endsWith(".html"));
+    await h.prompt(a.sessionId, "/changelog");
+    assert.match(h.text(a.sessionId), /1\.0\.2/);
+    assert.equal(h.requests(), 0);
   } finally { await h.dispose(); }
 });
 
