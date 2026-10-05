@@ -9,7 +9,7 @@ type Query = {path?: string; pattern?: string; glob?: string; limit?: number; co
 export function editorQueryTools(cwd: string, sessionId: string, client: Pick<AgentContext, "request">) {
   const execute = (operation: "find" | "grep" | "ls") => async (_id: string, args: Query, signal?: AbortSignal) => {
     signal?.throwIfAborted();
-    const path = await workspacePath(cwd, args.path ?? ".");
+    const path = await workspacePath(cwd, args.path ?? ".", true);
     for (const key of ["limit", "context"] as const) {
       const value = args[key];
       if (value !== undefined && (!Number.isSafeInteger(value) || value < (key === "limit" ? 1 : 0))) {

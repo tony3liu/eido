@@ -36,7 +36,7 @@ pub struct EidoFileQueryResult {
 const MAX_BYTES: usize = 50 * 1024;
 const MAX_LINE: usize = 500;
 
-fn allowed_path(root: &Path, path: &Path) -> bool {
+pub(super) fn allowed_path(root: &Path, path: &Path) -> bool {
     path.strip_prefix(root).is_ok_and(|relative| {
         relative.components().all(|part| {
             !matches!(part, Component::ParentDir)
@@ -47,7 +47,7 @@ fn allowed_path(root: &Path, path: &Path) -> bool {
     })
 }
 
-fn visible_path(project: &Project, root: &Path, path: &Path, cx: &App) -> bool {
+pub(super) fn visible_path(project: &Project, root: &Path, path: &Path, cx: &App) -> bool {
     if !allowed_path(root, path) {
         return false;
     }
@@ -112,6 +112,40 @@ fn escape_glob(path: &str) -> String {
         .collect()
 }
 
+/// Resolve new editor paths without creating directories or following dangling links.
+pub(super) async fn canonical_editor_path(fs: &dyn project::Fs, path: &Path) -> Result<PathBuf> {
+    let mut ancestor = path.to_owned();
+    let mut suffix = Vec::new();
+    loop {
+        match fs.canonicalize(&ancestor).await {
+            Ok(mut canonical) => {
+                for part in suffix.into_iter().rev() {
+                    canonical.push(part);
+                }
+                return Ok(canonical);
+            }
+            Err(error) => {
+                if fs.metadata(&ancestor).await?.is_some() {
+                    return Err(error);
+                }
+                if fs.read_link(&ancestor).await.is_ok() {
+                    bail!("Dangling symlinks are not available to file tools");
+                }
+                suffix.push(
+                    ancestor
+                        .file_name()
+                        .context("Path has no existing ancestor")?
+                        .to_owned(),
+                );
+                ancestor = ancestor
+                    .parent()
+                    .context("Path has no existing ancestor")?
+                    .to_owned();
+            }
+        }
+    }
+}
+
 /// Queries are observations: they never authorize a later write or record an edit.
 /// Dropping this task drops the native search handle and cancels its work.
 pub fn eido_file_query(
@@ -139,11 +173,42 @@ pub fn eido_file_query(
         }
         let fs = project.read_with(cx, |project, _| project.fs().clone());
         let canonical_root = fs.canonicalize(&root).await?;
-        let canonical = fs.canonicalize(&args.path).await?;
+        let canonical = canonical_editor_path(fs.as_ref(), &args.path).await?;
         if !allowed_path(&canonical_root, &canonical) {
             bail!("File is outside this workspace or in private storage");
         }
-        let metadata = fs.metadata(&args.path).await?.context("Path not found")?;
+        let metadata = fs.metadata(&args.path).await?;
+        let new_paths = project.read_with(cx, |project, cx| {
+            project
+                .opened_buffers(cx)
+                .iter()
+                .filter_map(|buffer| {
+                    let buffer = buffer.read(cx);
+                    let file = buffer.file()?;
+                    if file.disk_state() != language::DiskState::New {
+                        return None;
+                    }
+                    let path = project.absolute_path(
+                        &project::ProjectPath {
+                            worktree_id: file.worktree_id(cx),
+                            path: file.path().clone(),
+                        },
+                        cx,
+                    )?;
+                    visible_path(project, &root, &path, cx).then_some(path)
+                })
+                .collect::<Vec<_>>()
+        });
+        let is_new_file = new_paths.contains(&args.path);
+        let is_dir = metadata
+            .as_ref()
+            .map(|metadata| metadata.is_dir)
+            .unwrap_or_else(|| {
+                !is_new_file && new_paths.iter().any(|path| path.starts_with(&args.path))
+            });
+        if metadata.is_none() && !is_new_file && !is_dir {
+            bail!("Path not found");
+        }
         if !project.read_with(cx, |project, cx| {
             visible_path(project, &root, &args.path, cx)
         }) {
@@ -154,14 +219,18 @@ pub fn eido_file_query(
             truncated: false,
         };
         if args.operation == "ls" {
-            if !metadata.is_dir {
+            if !is_dir {
                 bail!("Not a directory");
             }
-            let entries = project
-                .update(cx, |project, cx| {
-                    project.list_directory(args.path.to_string_lossy().into_owned(), cx)
-                })
-                .await?;
+            let entries = if metadata.is_some() {
+                project
+                    .update(cx, |project, cx| {
+                        project.list_directory(args.path.to_string_lossy().into_owned(), cx)
+                    })
+                    .await?
+            } else {
+                Vec::new()
+            };
             let mut lines = Vec::new();
             for mut entry in entries {
                 entry.path = args.path.join(entry.path);
@@ -185,7 +254,22 @@ pub fn eido_file_query(
                     if entry.is_dir { "/" } else { "" }
                 ));
             }
+            for path in &new_paths {
+                let Ok(relative) = path.strip_prefix(&args.path) else {
+                    continue;
+                };
+                let mut components = relative.components();
+                let Some(first) = components.next() else {
+                    continue;
+                };
+                lines.push(format!(
+                    "{}{}",
+                    first.as_os_str().to_string_lossy(),
+                    if components.next().is_some() { "/" } else { "" }
+                ));
+            }
             lines.sort_by_key(|line| line.to_lowercase());
+            lines.dedup();
             result.truncated = lines.len() > limit;
             for line in lines.into_iter().take(limit) {
                 if !append_line(&mut result, &line) {
@@ -195,7 +279,7 @@ pub fn eido_file_query(
             return Ok(finish(result, "(empty directory)"));
         }
         if args.operation == "find" {
-            if !metadata.is_dir {
+            if !is_dir {
                 bail!("Not a directory");
             }
             let pattern = args.pattern.as_deref().context("Missing find pattern")?;
@@ -221,7 +305,13 @@ pub fn eido_file_query(
             let root_path = root.clone();
             let candidates = cx
                 .background_spawn(async move {
-                    let mut paths = Vec::new();
+                    let mut paths = new_paths
+                        .into_iter()
+                        .filter(|path| {
+                            path.strip_prefix(&search_path)
+                                .is_ok_and(|relative| matcher.is_match_std_path(relative))
+                        })
+                        .collect::<Vec<_>>();
                     'trees: for snapshot in snapshots {
                         for entry in snapshot.entries(false, 0) {
                             if entry.is_dir() || entry.is_private || entry.is_external {
@@ -285,7 +375,7 @@ pub fn eido_file_query(
             let full_path = tree.read(cx).snapshot().root_name().join(&path.path);
             anyhow::Ok((escape_glob(&full_path.to_string()), project.path_style(cx)))
         })?;
-        let include = if metadata.is_dir {
+        let include = if is_dir {
             PathMatcher::new([format!("{scope}/**")], style)?
         } else {
             PathMatcher::default()
@@ -296,7 +386,7 @@ pub fn eido_file_query(
             .as_ref()
             .map(|glob| PathMatcher::new([glob], style))
             .transpose()?;
-        let buffers = if metadata.is_dir {
+        let buffers = if is_dir {
             None
         } else {
             let load = project.update(cx, |project, cx| {
@@ -312,10 +402,10 @@ pub fn eido_file_query(
                 pattern,
                 false,
                 !args.ignore_case.unwrap_or(false),
-                !metadata.is_dir,
+                !is_dir,
                 include,
                 exclude,
-                metadata.is_dir,
+                is_dir,
                 buffers,
             )?
         } else {
@@ -323,11 +413,11 @@ pub fn eido_file_query(
                 pattern,
                 false,
                 !args.ignore_case.unwrap_or(false),
-                !metadata.is_dir,
+                !is_dir,
                 true,
                 include,
                 exclude,
-                metadata.is_dir,
+                is_dir,
                 buffers,
             )?
         };
@@ -359,19 +449,17 @@ pub fn eido_file_query(
             else {
                 continue;
             };
-            if !path.starts_with(&args.path)
-                || (!metadata.is_dir && path.as_path() != args.path.as_path())
-            {
+            if !path.starts_with(&args.path) || (!is_dir && path.as_path() != args.path.as_path()) {
                 continue;
             }
             if !project.read_with(cx, |project, cx| visible_path(project, &root, &path, cx)) {
                 continue;
             }
-            let canonical = fs.canonicalize(&path).await?;
+            let canonical = canonical_editor_path(fs.as_ref(), &path).await?;
             if !allowed_path(&canonical_root, &canonical) {
                 continue;
             }
-            let relative = if metadata.is_dir {
+            let relative = if is_dir {
                 path.strip_prefix(&args.path)?
             } else {
                 Path::new(path.file_name().context("Missing filename")?)

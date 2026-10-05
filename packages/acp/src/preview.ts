@@ -23,7 +23,7 @@ export function createPreview(cwd: string, storage: string, sessionId: string, c
   let stopping: Promise<void> | undefined;
 
   async function observe(path: string, signal?: AbortSignal) {
-    const canonical = await workspacePath(cwd, path);
+    const canonical = await workspacePath(cwd, path, true);
     const response = await client.request(methods.client.fs.readTextFile, {
       sessionId, path: canonical, _meta: { [observationKey]: true },
     }, { cancellationSignal: signal });
@@ -86,7 +86,7 @@ export function createPreview(cwd: string, storage: string, sessionId: string, c
 
   const tool = defineTool({
     name: "preview", label: "Development preview", executionMode: "sequential",
-    description: "Start, inspect or stop a task-owned static HTML/CSS/JS preview using current editor buffers, including unsaved edits. Start requires an explicit list of existing workspace files (max 64, 4 MiB total) and an HTML entry within it. Paths are workspace relative. Only listed files are served; use relative asset URLs. No npm/build scripts or backend, no external network resources. Restart after editing. Status checks whether inputs still match; it is not an acceptance test. Use the bundled browser tools to observe and interact with the returned URL.",
+    description: "Start, inspect or stop a task-owned static HTML/CSS/JS preview using current editor buffers, including unsaved edits. Start requires an explicit list of saved or new editor files (max 64, 4 MiB total) and an HTML entry within it. Paths are workspace relative. Only listed files are served; use relative asset URLs. No npm/build scripts or backend, no external network resources. Restart after editing. Status checks whether inputs still match; it is not an acceptance test. Use the bundled browser tools to observe and interact with the returned URL.",
     promptSnippet: "Start and inspect static previews of current editor buffers",
     parameters: Type.Object({
       action: Type.Union([Type.Literal("start"), Type.Literal("status"), Type.Literal("stop")]),
@@ -104,7 +104,7 @@ export function createPreview(cwd: string, storage: string, sessionId: string, c
       const inputs = new Map<string, { content: string; differsFromDisk: boolean }>();
       let bytes = 0;
       for (const path of params.files) {
-        const local = relative(root, await workspacePath(root, path)).split(sep).join("/");
+        const local = relative(root, await workspacePath(root, path, true)).split(sep).join("/");
         if (local.split("/").some(part => part.startsWith(".")) || ![".html", ".css", ".js", ".mjs", ".json", ".svg", ".txt"].includes(extname(local))) {
           throw new Error("Preview accepts non-hidden HTML, CSS, JS, MJS, JSON, SVG and TXT inputs only.");
         }
@@ -113,9 +113,13 @@ export function createPreview(cwd: string, storage: string, sessionId: string, c
         const size = Buffer.byteLength(content);
         bytes += size;
         if (size > 1024 * 1024 || bytes > 4 * 1024 * 1024) throw new Error("Preview input limit exceeded (1 MiB per file, 4 MiB total).");
-        inputs.set(local, { content, differsFromDisk: hash(await readFile(canonical)) !== hash(content) });
+        const disk = await readFile(canonical).catch((error: NodeJS.ErrnoException) => {
+          if (error.code !== "ENOENT") throw error;
+          return undefined;
+        });
+        inputs.set(local, { content, differsFromDisk: disk === undefined || hash(disk) !== hash(content) });
       }
-      const entry = relative(root, await workspacePath(root, params.entry)).split(sep).join("/");
+      const entry = relative(root, await workspacePath(root, params.entry, true)).split(sep).join("/");
       if (!inputs.has(entry) || extname(entry) !== ".html") throw new Error("Entry must be an HTML file included in files.");
       const files = [...inputs].sort(([a], [b]) => a.localeCompare(b)).map(([path, file]) => ({ path, hash: hash(file.content), differsFromDisk: file.differsFromDisk }));
       const runId = randomUUID();

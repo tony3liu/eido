@@ -731,7 +731,7 @@ diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thr
          let git_store = self.project.read(cx).git_store().clone();
  
          let client_user_message_ids = self.connection.client_user_message_ids(cx);
-@@ -4566,12 +4614,33 @@
+@@ -4566,19 +4614,45 @@
          reuse_shared_snapshot: bool,
          cx: &mut Context<Self>,
      ) -> Task<Result<String, acp::Error>> {
@@ -764,9 +764,21 @@ diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thr
 -        let should_update_agent_location = self.parent_session_id.is_none();
 +        let should_update_agent_location = record_read && self.parent_session_id.is_none();
          cx.spawn(async move |this, cx| {
++            let fs = project.read_with(cx, |project, _| project.fs().clone());
++            let exists = fs.metadata(&path).await.map_err(acp::Error::from)?.is_some();
              let load = project.update(cx, |project, cx| {
                  let path = project
-@@ -4597,14 +4666,15 @@
+                     .project_path_for_absolute_path(&path, cx)
+                     .ok_or_else(|| {
+                         acp::Error::resource_not_found(Some(path.display().to_string()))
+                     })?;
++                if !exists && project.get_open_buffer(&path, cx).is_none() {
++                    return Err(acp::Error::resource_not_found(Some("File has not been created".into())));
++                }
+                 Ok::<_, acp::Error>(project.open_buffer(path, cx))
+             })?;
+ 
+@@ -4597,14 +4671,15 @@
              let snapshot = if let Some(snapshot) = snapshot {
                  snapshot
              } else {
@@ -789,11 +801,11 @@ diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thr
                  snapshot
              };
  
-@@ -4644,8 +4714,32 @@
+@@ -4644,10 +4719,54 @@
          content: String,
          cx: &mut Context<Self>,
      ) -> Task<Result<()>> {
-+        self.write_text_file_with_policy(path, content, std::env::var_os("EIDO_ROOT").is_some(), cx)
++        self.write_text_file_with_policy(path, content, std::env::var_os("EIDO_ROOT").is_some(), false, cx)
 +    }
 +
 +    #[cfg(any(test, feature = "test-support"))]
@@ -803,7 +815,12 @@ diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thr
 +        content: String,
 +        cx: &mut Context<Self>,
 +    ) -> Task<Result<()>> {
-+        self.write_text_file_with_policy(path, content, true, cx)
++        self.write_text_file_with_policy(path, content, true, false, cx)
++    }
++
++    /// Create a new unsaved file using the same native review transaction.
++    pub fn create_text_file(&self, path: PathBuf, content: String, cx: &mut Context<Self>) -> Task<Result<()>> {
++        self.write_text_file_with_policy(path, content, true, true, cx)
 +    }
 +
 +    fn write_text_file_with_policy(
@@ -811,6 +828,7 @@ diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thr
 +        path: PathBuf,
 +        content: String,
 +        eido: bool,
++        create: bool,
 +        cx: &mut Context<Self>,
 +    ) -> Task<Result<()>> {
          let project = self.project.clone();
@@ -821,8 +839,24 @@ diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thr
 +        };
          let should_update_agent_location = self.parent_session_id.is_none();
          cx.spawn(async move |this, cx| {
++            if create {
++                let fs = project.read_with(cx, |project, _| project.fs().clone());
++                let root = this.read_with(cx, |thread, _| thread.work_dirs().and_then(|dirs| dirs.ordered_paths().next()).cloned())?
++                    .context("Session has no workspace")?;
++                let canonical_root = fs.canonicalize(&root).await?;
++                let canonical = eido_fs::canonical_editor_path(fs.as_ref(), &path).await?;
++                if !eido_fs::allowed_path(&canonical_root, &canonical)
++                    || !project.read_with(cx, |project,cx| eido_fs::visible_path(project, &root, &path, cx)) {
++                    anyhow::bail!("File is outside this workspace or in private storage");
++                }
++                if fs.metadata(&path).await?.is_some() {
++                    anyhow::bail!("File now exists on disk; read it before writing");
++                }
++            }
              let load = project.update(cx, |project, cx| {
-@@ -4656,11 +4750,13 @@
+                 let path = project
+                     .project_path_for_absolute_path(&path, cx)
+@@ -4656,11 +4775,18 @@
              });
              let buffer = load?.await?;
              let snapshot = this.update(cx, |this, cx| {
@@ -833,7 +867,12 @@ diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thr
 -            })?;
 +                let snapshot = this.shared_buffers.get(&buffer).cloned();
 +                if eido && snapshot.is_none() {
-+                    anyhow::bail!("Read this file through Eido before writing it");
++                    let buffer = buffer.read(cx);
++                    let pristine_new_file = create && buffer.file().is_some_and(|file| file.disk_state() == language::DiskState::New)
++                        && buffer.version() == Default::default() && buffer.is_empty();
++                    if !pristine_new_file {
++                        anyhow::bail!("Read this file through Eido before writing it");
++                    }
 +                }
 +                anyhow::Ok(snapshot.unwrap_or_else(|| buffer.read(cx).snapshot()))
 +            })??;
@@ -841,12 +880,22 @@ diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thr
              let edits = cx
                  .background_executor()
                  .spawn(async move {
-@@ -4691,10 +4787,16 @@
+@@ -4674,6 +4800,9 @@
+                 })
+                 .await;
+ 
++            if create && project.read_with(cx, |project, _| project.fs().clone()).metadata(&path).await?.is_some() {
++                anyhow::bail!("File appeared on disk during creation; read it before writing");
++            }
+             if should_update_agent_location {
+                 project.update(cx, |project, cx| {
+                     project.set_agent_location(
+@@ -4691,10 +4820,16 @@
  
              let format_on_save = cx.update(|cx| {
                  action_log.update(cx, |action_log, cx| {
 +                    if eido {
-+                        action_log.set_save_on_review(false);
++                        action_log.set_save_on_review(false, cx);
 +                    }
                      action_log.buffer_read(buffer.clone(), cx);
                  });
@@ -858,7 +907,7 @@ diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thr
                      buffer.start_transaction();
                      buffer.edit(edits, None, cx);
                      buffer.end_transaction_with_source(BufferEditSource::Agent, cx);
-@@ -4702,13 +4804,24 @@
+@@ -4702,13 +4837,24 @@
                      let settings =
                          language::language_settings::LanguageSettings::for_buffer(buffer, cx);
  
@@ -889,10 +938,63 @@ diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thr
  
              if format_on_save {
                  let format_task = project.update(cx, |project, cx| {
-@@ -6930,6 +7043,160 @@
+@@ -6930,6 +7076,213 @@
              "zero\none\ntwo\nthree\nfour\nfive\n"
          );
          request.await.unwrap();
++    }
++
++    #[gpui::test]
++    async fn test_eido_new_files_share_unsaved_contents_and_reject_conflicting_creators(cx: &mut TestAppContext) {
++        init_test(cx);
++        let fs = FakeFs::new(cx.executor());
++        fs.insert_tree("/newfiles", json!({"existing.txt":"keep\n"})).await;
++        let project = Project::test(fs.clone(), [Path::new("/newfiles")], cx).await;
++        let connection = Rc::new(FakeAgentConnection::new());
++        let first = cx.update(|cx| connection.clone().new_session(project.clone(), PathList::new(&[Path::new("/newfiles")]), cx)).await.unwrap();
++        let second = cx.update(|cx| connection.new_session(project.clone(), PathList::new(&[Path::new("/newfiles")]), cx)).await.unwrap();
++        assert!(first.update(cx, |thread,cx| thread.read_text_file("/newfiles/missing.txt".into(),None,None,false,cx)).await.is_err());
++        assert!(first.update(cx, |thread,cx| thread.create_text_file("/newfiles/existing.txt".into(),"replace".into(),cx)).await.is_err());
++        assert!(first.update(cx, |thread,cx| thread.create_text_file("/newfiles/.local/private.txt".into(),"private".into(),cx)).await.is_err());
++        fs.insert_tree("/elsewhere", json!({})).await;
++        fs.insert_symlink("/newfiles/link", "/elsewhere".into()).await;
++        assert!(first.update(cx, |thread,cx| thread.create_text_file("/newfiles/link/escape.txt".into(),"escape".into(),cx)).await.is_err());
++        let parent_log = cx.new(|_| ActionLog::new(project.clone()));
++        let child_log = cx.new(|_| ActionLog::new(project.clone()).with_linked_action_log(parent_log.clone()));
++        let leaf_log = cx.new(|_| ActionLog::new(project.clone()).with_linked_action_log(child_log));
++        first.update(cx, |thread, _| thread.action_log = leaf_log);
++        let path = PathBuf::from("/newfiles/nested/created.txt");
++        first.update(cx, |thread,cx| thread.create_text_file(path.clone(),"created in editor\n".into(),cx)).await.unwrap();
++        assert!(fs.read_file_sync(&path).is_err());
++        assert!(second.update(cx, |thread,cx| thread.create_text_file(path.clone(),"overwrite unread\n".into(),cx)).await.is_err());
++        let content = second.update(cx, |thread,cx| thread.read_text_file(path.clone(),None,None,false,cx)).await.unwrap();
++        assert_eq!(content,"created in editor\n");
++        for (operation, search_path, pattern, expected) in [
++            ("ls","/newfiles","","nested/"),
++            ("ls","/newfiles/nested","","created.txt"),
++            ("find","/newfiles","*.txt","nested/created.txt"),
++            ("grep","/newfiles","created in editor","nested/created.txt:1: created in editor"),
++            ("grep","/newfiles/nested/created.txt","created in editor","created.txt:1: created in editor"),
++        ] {
++            let query = EidoFileQuery {operation:operation.into(),path:search_path.into(),pattern:Some(pattern.into()),glob:None,limit:None,context:None,ignore_case:None,literal:Some(true)};
++            let result = cx.update(|cx| eido_file_query(project.clone(),"/newfiles".into(),query,cx)).await.unwrap();
++            assert!(result.output.contains(expected),"{operation}: {}",result.output);
++        }
++        first.update(cx, |thread,cx| thread.create_text_file(path.clone(),"creator changed\n".into(),cx)).await.unwrap();
++        assert!(second.update(cx, |thread,cx| thread.create_text_file(path.clone(),"stale write\n".into(),cx)).await.is_err());
++        let log = first.read_with(cx,|thread,_|thread.action_log.clone());
++        assert_eq!(log.read_with(cx,|log,cx|log.changed_buffers(cx).count()),1);
++        // Single-line creations without a trailing newline still show +1 in review.
++        first.update(cx, |thread,cx| thread.create_text_file(path.clone(),"no trailing newline".into(),cx)).await.unwrap();
++        cx.run_until_parked();
++        let stats = log.read_with(cx, |log,cx| action_log::DiffStats::all_files(log.changed_buffers(cx),cx));
++        assert_eq!(stats, action_log::DiffStats { lines_added: 1, lines_removed: 0 });
++        // Reviewing a descendant from the root must retain the same unsaved policy.
++        parent_log.update(cx,|log,cx|log.reject_all_edits(None,cx)).await;
++        cx.run_until_parked();
++        assert_eq!(first.update(cx,|thread,cx|thread.read_text_file(path.clone(),None,None,false,cx)).await.unwrap(),"");
++        assert!(fs.read_file_sync(&path).is_err());
++        assert_eq!(String::from_utf8(fs.read_file_sync("/newfiles/existing.txt").unwrap()).unwrap(),"keep\n");
 +    }
 +
 +    #[gpui::test]
@@ -929,7 +1031,7 @@ diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thr
 +                thread.write_text_file_with_policy(
 +                    path!("/tmp/foo").into(),
 +                    "unread\n".into(),
-+                    true,
++                    true, false,
 +                    cx,
 +                )
 +            })
@@ -963,7 +1065,7 @@ diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thr
 +                thread.write_text_file_with_policy(
 +                    path!("/tmp/foo").into(),
 +                    "stale\n".into(),
-+                    true,
++                    true, false,
 +                    cx,
 +                )
 +            })
@@ -983,7 +1085,7 @@ diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thr
 +            .unwrap();
 +        assert_eq!(current, "manual\ndisk\n");
 +        thread.update(cx, |thread, cx| thread.write_text_file_with_policy(
-+            path!("/tmp/foo").into(), current, true, cx,
++            path!("/tmp/foo").into(), current, true, false, cx,
 +        )).await.unwrap();
 +        assert!(action_log.read_with(cx, |log, cx| log.edit_sources(buffer.read(cx).remote_id(), cx)).is_empty(), "No-op writes must not claim authorship");
 +        for content in ["manual\ndisk\nagent\n", "manual\ndisk\nagent again\n"] {
@@ -992,7 +1094,7 @@ diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thr
 +                    thread.write_text_file_with_policy(
 +                        path!("/tmp/foo").into(),
 +                        content.into(),
-+                        true,
++                        true, false,
 +                        cx,
 +                    )
 +                })
@@ -1139,7 +1241,7 @@ diff --git a/crates/action_log/src/action_log.rs b/crates/action_log/src/action_
  }
  
  impl ActionLog {
-@@ -73,12 +82,17 @@
+@@ -73,12 +82,20 @@
              linked_action_log: None,
              last_reject_undo: None,
              file_read_times: HashMap::default(),
@@ -1152,12 +1254,15 @@ diff --git a/crates/action_log/src/action_log.rs b/crates/action_log/src/action_
          self
 +    }
 +
-+    pub fn set_save_on_review(&mut self, save: bool) {
++    pub fn set_save_on_review(&mut self, save: bool, cx: &mut Context<Self>) {
 +        self.save_on_review = save;
++        if let Some(parent) = &self.linked_action_log {
++            parent.update(cx, |log, cx| log.set_save_on_review(save, cx));
++        }
      }
  
      pub fn project(&self) -> &Entity<Project> {
-@@ -190,6 +204,7 @@
+@@ -190,6 +207,7 @@
                  }
                  TrackedBuffer {
                      buffer: buffer.clone(),
@@ -1165,7 +1270,7 @@ diff --git a/crates/action_log/src/action_log.rs b/crates/action_log/src/action_
                      diff_base,
                      unreviewed_edits,
                      snapshot: text_snapshot,
-@@ -579,6 +594,35 @@
+@@ -579,6 +597,35 @@
      /// Mark a buffer as edited by agent, so we can refresh it in the context
      pub fn buffer_edited(&mut self, buffer: Entity<Buffer>, cx: &mut Context<Self>) {
          self.buffer_edited_impl(buffer, true, cx);
@@ -1201,7 +1306,7 @@ diff --git a/crates/action_log/src/action_log.rs b/crates/action_log/src/action_
      }
  
      fn buffer_edited_impl(
-@@ -751,8 +795,12 @@
+@@ -751,8 +798,12 @@
                          },
                      });
  
@@ -1216,7 +1321,7 @@ diff --git a/crates/action_log/src/action_log.rs b/crates/action_log/src/action_
                  } else {
                      // For a file created by AI with no pre-existing content,
                      // only delete the file if we're certain it contains only AI content
-@@ -801,9 +849,12 @@
+@@ -801,9 +852,12 @@
                  buffer.update(cx, |buffer, cx| {
                      buffer.set_text(tracked_buffer.diff_base.to_string(), cx)
                  });
@@ -1232,7 +1337,7 @@ diff --git a/crates/action_log/src/action_log.rs b/crates/action_log/src/action_
  
                  // Clear all tracked edits for this buffer and start over as if we just read it.
                  metrics.add_edits(tracked_buffer.unreviewed_edits.edits());
-@@ -883,8 +934,12 @@
+@@ -883,8 +937,12 @@
                      });
                  }
  
@@ -1247,7 +1352,7 @@ diff --git a/crates/action_log/src/action_log.rs b/crates/action_log/src/action_
              }
          };
          if let Some(telemetry) = telemetry {
-@@ -1009,10 +1064,12 @@
+@@ -1009,10 +1067,12 @@
                  self.buffer_edited(buffer.clone(), cx);
              }
  
@@ -1264,7 +1369,7 @@ diff --git a/crates/action_log/src/action_log.rs b/crates/action_log/src/action_
          }
  
          cx.notify();
-@@ -1268,6 +1325,7 @@
+@@ -1268,6 +1328,7 @@
  
  pub struct TrackedBuffer {
      buffer: Entity<Buffer>,
@@ -1680,7 +1785,7 @@ diff --git a/crates/agent_servers/src/acp.rs b/crates/agent_servers/src/acp.rs
                  .flatten_acp()?;
              cancellation
                  .run_until_cancelled(async { Ok(task.await) })
-@@ -4736,6 +4980,44 @@
+@@ -4736,12 +4980,51 @@
      .detach();
  }
  
@@ -1725,7 +1830,24 @@ diff --git a/crates/agent_servers/src/acp.rs b/crates/agent_servers/src/acp.rs
  fn handle_write_text_file(
      args: acp::WriteTextFileRequest,
      responder: Responder<acp::WriteTextFileResponse>,
-@@ -4777,6 +5059,9 @@
+     cx: &mut AsyncApp,
+     ctx: &ClientContext,
+ ) {
++    let create = args.meta.as_ref().and_then(|meta| meta.get("eido.dev/createFile")).and_then(|value| value.as_bool()) == Some(true);
+     let thread = match session_thread(ctx, &args.session_id) {
+         Ok(t) => t,
+         Err(e) => return respond_err(responder, e),
+@@ -4751,7 +5034,8 @@
+         let result: Result<_, acp::Error> = async {
+             thread
+                 .update(cx, |thread, cx| {
+-                    thread.write_text_file(args.path, args.content, cx)
++                    if create {thread.create_text_file(args.path, args.content, cx)}
++                    else {thread.write_text_file(args.path, args.content, cx)}
+                 })
+                 .map_err(acp::Error::from)?
+                 .await?;
+@@ -4777,6 +5061,9 @@
      cx: &mut AsyncApp,
      ctx: &ClientContext,
  ) {
@@ -1735,7 +1857,7 @@ diff --git a/crates/agent_servers/src/acp.rs b/crates/agent_servers/src/acp.rs
      let thread = match session_thread(ctx, &args.session_id) {
          Ok(t) => t,
          Err(e) => return respond_err(responder, e),
-@@ -4788,16 +5073,167 @@
+@@ -4788,16 +5075,167 @@
              .run_until_cancelled(async {
                  thread
                      .update(cx, |thread, cx| {
@@ -1905,7 +2027,7 @@ diff --git a/crates/agent_servers/src/acp.rs b/crates/agent_servers/src/acp.rs
  }
  
  fn handle_session_notification(
-@@ -4983,6 +5419,7 @@
+@@ -4983,6 +5421,7 @@
                      .into_iter()
                      .map(|env| (env.name, env.value))
                      .collect(),
@@ -18153,6 +18275,40 @@ diff --git a/crates/agent_ui/src/ui.rs b/crates/agent_ui/src/ui.rs
 +        ..Default::default()
 +    }
 +}
+diff --git a/crates/buffer_diff/src/buffer_diff.rs b/crates/buffer_diff/src/buffer_diff.rs
+--- a/crates/buffer_diff/src/buffer_diff.rs
++++ b/crates/buffer_diff/src/buffer_diff.rs
+@@ -220,6 +220,14 @@
+     removed_rows: u32,
+ }
+ 
++fn changed_rows(range: Range<Point>) -> u32 {
++    if range.is_empty() {
++        0
++    } else {
++        range.end.row.saturating_sub(range.start.row) + u32::from(range.end.column > 0)
++    }
++}
++
+ impl sum_tree::Item for InternalDiffHunk {
+     type Summary = DiffHunkSummary;
+ 
+@@ -229,12 +237,9 @@
+         DiffHunkSummary {
+             buffer_range: self.buffer_range.clone(),
+             diff_base_byte_range: self.diff_base_byte_range.clone(),
+-            added_rows: buffer_end.row.saturating_sub(buffer_start.row),
+-            removed_rows: self
+-                .diff_base_point_range
+-                .end
+-                .row
+-                .saturating_sub(self.diff_base_point_range.start.row),
++            // A non-empty final line counts even when the file has no trailing newline.
++            added_rows: changed_rows(buffer_start..buffer_end),
++            removed_rows: changed_rows(self.diff_base_point_range.clone()),
+         }
+     }
+ }
 diff --git a/crates/extensions_ui/Cargo.toml b/crates/extensions_ui/Cargo.toml
 --- a/crates/extensions_ui/Cargo.toml
 +++ b/crates/extensions_ui/Cargo.toml

@@ -14,6 +14,31 @@ const name = (action: string) => `mcp__eido_browser__browser_${action}`;
 const start = () => call("preview", { action: "start", files: ["index.html"], entry: "index.html" });
 const source = (increment: number) => `<!doctype html><title>Preview repair fixture</title><p id="count">Count: 0</p><button onclick="document.querySelector('#count').textContent='Count: ${increment}'">Increment</button>`;
 
+test("new unsaved files can be captured and verified in a browser without saving the workspace", {timeout:90_000}, async () => {
+  let preview: any;
+  const h = await harness([
+    () => call("write",{path:"new/index.html",content:source(1)}),
+    context => {lastToolText(context,"write");return call("preview",{action:"start",files:["new/index.html"],entry:"new/index.html"});},
+    context => {preview=JSON.parse(lastToolText(context,"preview"));assert.equal(preview.files[0].differsFromDisk,true);return call(name("open"),{url:preview.url});},
+    context => {assert.match(lastToolText(context,name("open")),/Count: 0/);return call(name("snapshot"));},
+    context => {
+      const text=lastToolText(context,name("snapshot"));assert.match(text,/Count: 0/);
+      const element=text.match(/\[(\d+)\].*Increment/);assert.ok(element);
+      return call(name("act"),{action:"click",element:Number(element[1])});
+    },
+    () => call(name("snapshot")),
+    context => {assert.match(lastToolText(context,name("snapshot")),/Count: 1/);return "New page verified.";},
+  ],{browser:true});
+  try {
+    const session=await h.newTask();await h.prompt(session.sessionId);
+    assert.equal(h.requests(),7);
+    await assert.rejects(readFile(join(h.cwd,"new/index.html")));
+    assert.match(await (await fetch(preview.url)).text(),/Increment/);
+    await h.close(session.sessionId);
+    await assert.rejects(fetch(preview.url));
+  } finally {await h.dispose();}
+});
+
 async function harness(steps: FixtureStep[], options: {
   browser?: boolean;
   beforeRead?: (observation: boolean) => Promise<void>;
