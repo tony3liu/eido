@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
-import { mkdir, mkdtemp, readFile, realpath, rm, writeFile, readdir, symlink } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile, readdir, symlink, cp, readlink, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -66,7 +66,7 @@ async function harness(steps: FixtureStep[], options: {
   const connection = client({ name: "eido-preview-test" })
     .onRequest(methods.client.fs.readTextFile, async ({ params }) => {
       await options.beforeRead?.(params._meta?.["eido.dev/observeBuffer"] === true);
-      return { content: buffers.get(params.path) ?? "", _meta: params._meta };
+      return { content: buffers.get(params.path) ?? await readFile(params.path, "utf8"), _meta: params._meta };
     })
     .onRequest(methods.client.fs.writeTextFile, ({ params }) => { buffers.set(params.path, params.content); return {}; })
     .onRequest(methods.client.session.requestPermission, () => ({ outcome: { outcome: "selected", optionId: "allow_once" } }))
@@ -234,4 +234,177 @@ test("cancelling a later turn stops the task's existing preview", { timeout: 30_
     await assert.rejects(fetch(url));
     assert.ok([...h.terminals.values()].every(t => t.exited && t.released));
   } finally { finish(); await h.dispose(); }
+});
+
+
+const projectSource = (increment: number) => `export const html: string = ${JSON.stringify(source(increment))};`;
+const projectServer = `import {createServer} from 'node:http';
+import {createRequire} from 'node:module';
+const {html} = createRequire(import.meta.url)('./dist/page.js');
+createServer((_req,res)=>{res.setHeader('Content-Type','text/html');res.end(html)}).listen(Number(process.env.PORT), process.env.HOST);`;
+const projectStart = () => call("preview", {
+  action: "start", files: ["page.ts", "server.mjs"], dependencies: ["node_modules/typescript", `node_modules/@typescript/typescript-${process.platform}-${process.arch}`],
+  commands: [{command:"node",args:["--check","server.mjs"]}, {command:"node",args:["node_modules/typescript/bin/tsc","page.ts","--outDir","dist","--module","commonjs","--target","es2020","--skipLibCheck"]}],
+  server: {command:"node",args:["server.mjs"]},
+});
+
+async function assertProjectInputsReleased(cwd: string) {
+  const previews = join(cwd, "previews");
+  const links = (await readdir(previews, {recursive: true})).filter(path => path.endsWith("/files"));
+  assert.ok(links.length > 0);
+  for (const path of links) {
+    const target = await readlink(join(previews, path));
+    await assert.rejects(stat(target), {code: "ENOENT"}, "temporary inputs must be removed before the ACP session is closed");
+  }
+}
+
+test("pi builds unsaved TypeScript with installed dependencies, repairs browser behavior and rechecks a fresh project", {timeout:120_000}, async () => {
+  let first:any, repaired:any;
+  const click=(context:Parameters<FixtureStep>[0])=>{
+    const result=lastToolText(context,name("snapshot"));
+    const element=result.match(/\[(\d+)\].*Increment/);assert.ok(element);
+    return call(name("act"),{action:"click",element:Number(element[1])});
+  };
+  const h=await harness([
+    projectStart,
+    context=>{
+      first=JSON.parse(lastToolText(context,"preview"));
+      assert.equal(first.project.stage,"serving");assert.equal(first.project.checks.length,2);
+      assert.ok(first.project.checks.every((check:any)=>check.exitCode===0));
+      assert.equal(first.freshness.state,"current");assert.ok(first.dependencies.entries>10);
+      return call(name("open"),{url:first.url});
+    },
+    ()=>call(name("snapshot")),click,()=>call(name("snapshot")),
+    context=>{assert.match(lastToolText(context,name("snapshot")),/Count: 2/);return call("read",{path:"page.ts"});},
+    ()=>call("edit",{path:"page.ts",edits:[{oldText:"Count: 2",newText:"Count: 1"}]}),
+    ()=>call("preview",{action:"status"}),
+    context=>{assert.equal(JSON.parse(lastToolText(context,"preview")).freshness.state,"stale");return projectStart();},
+    context=>{
+      repaired=JSON.parse(lastToolText(context,"preview"));assert.notEqual(repaired.fingerprint,first.fingerprint);
+      assert.equal(repaired.freshness.state,"current");assert.equal(repaired.project.stage,"serving");
+      return call(name("open"),{url:repaired.url});
+    },
+    ()=>call(name("snapshot")),click,()=>call(name("snapshot")),
+    context=>{
+      const result=lastToolText(context,name("snapshot"));assert.match(result,/Count: 1/);
+      assert.match(result, /"previewEvidence"/);assert.match(result,/"state": "current"/);
+      return call("preview",{action:"stop"});
+    },
+    ()=>"The captured TypeScript project was rebuilt and the increment behavior verified.",
+  ],{browser:true});
+  try {
+    await mkdir(join(h.cwd,"node_modules"));
+    await cp(fileURLToPath(new URL("../../../node_modules/typescript",import.meta.url)),join(h.cwd,"node_modules/typescript"),{recursive:true});
+    await cp(fileURLToPath(new URL(`../../../node_modules/@typescript/typescript-${process.platform}-${process.arch}`,import.meta.url)),join(h.cwd,`node_modules/@typescript/typescript-${process.platform}-${process.arch}`),{recursive:true});
+    await writeFile(join(h.cwd,"page.ts"),projectSource(7));await writeFile(join(h.cwd,"server.mjs"),projectServer);
+    h.buffers.set(join(h.cwd,"page.ts"),projectSource(2));
+    const task=await h.newTask();await h.prompt(task.sessionId);
+    assert.equal(h.requests(),15);
+    assert.equal(await readFile(join(h.cwd,"page.ts"),"utf8"),projectSource(7));
+    assert.equal(h.buffers.get(join(h.cwd,"page.ts")),projectSource(1));
+    await assert.rejects(readFile(join(h.cwd,"dist/page.js")));
+    await assert.rejects(fetch(first.url));await assert.rejects(fetch(repaired.url));
+    assert.ok([...h.terminals.values()].every(terminal=>terminal.exited&&terminal.released));
+    const files=(await readdir(join(h.cwd,"previews"),{recursive:true})).filter(path=>path.endsWith("evidence.jsonl"));
+    assert.equal(files.length,2);
+    const evidence=(await Promise.all(files.map(path=>readFile(join(h.cwd,"previews",path),"utf8")))).join("\n");
+    assert.match(evidence,/"command":"node"/);assert.match(evidence,/Count: 1/);
+    await assertProjectInputsReleased(h.cwd);
+  } finally {await h.dispose();}
+});
+
+test("project command failure, timeout and snapshot mutation never claim a current successful verification",{timeout:30_000},async()=>{
+  let failed:any, timed:any, mutated:any;
+  const errorResult=(context:Parameters<FixtureStep>[0])=>{
+    const result=context.messages.findLast(m=>m.role==="toolResult"&&m.toolName==="preview");
+    assert.ok(result?.role==="toolResult"&&result.isError);
+    return JSON.parse(result.content.filter(p=>p.type==="text").map(p=>p.text).join("\n"));
+  };
+  const run=(code:string,timeoutSeconds=5)=>call("preview",{action:"start",files:["index.html"],commands:[{command:"node",args:["-e",code],timeoutSeconds}]});
+  const h=await harness([
+    ()=>run(`console.log('EIDO_PROJECT_RESULT {"stage":"completed"}');process.exit(9)`),
+    context=>{failed=errorResult(context);assert.equal(failed.project.checks[0].exitCode,9);return run("setInterval(()=>{},1000)",1);},
+    context=>{timed=errorResult(context);assert.equal(timed.project.checks[0].timedOut,true);return run("require('fs').writeFileSync('index.html','rewritten by check')");},
+    context=>{mutated=JSON.parse(lastToolText(context,"preview"));assert.equal(mutated.project.stage,"completed");assert.equal(mutated.freshness.state,"stale");assert.deepEqual(mutated.freshness.changed,["snapshot:index.html"]);return "Check evidence reviewed.";},
+  ]);
+  try {
+    const task=await h.newTask();await h.prompt(task.sessionId);assert.equal(h.requests(),4);
+    assert.equal(failed.service,"stopped");assert.equal(timed.service,"stopped");
+    assert.equal(await readFile(join(h.cwd,"index.html"),"utf8"),source(7));
+    assert.ok([...h.terminals.values()].every(t=>t.exited&&t.released));
+    await assertProjectInputsReleased(h.cwd);
+  } finally {await h.dispose();}
+});
+
+test("cancelling project startup cleans a stubborn descendant and a terminal returned late",{timeout:30_000},async()=>{
+  let finish!:()=>void, began!:()=>void, pid=0;
+  const held=new Promise<void>(r=>finish=r),started=new Promise<void>(r=>began=r);
+  const code=`const {spawn}=require('child_process');const fs=require('fs');const child=spawn(process.execPath,['-e',"process.on('SIGTERM',()=>{});setInterval(()=>{},1000)"],{stdio:'ignore'});fs.writeFileSync('child.pid',String(child.pid));setInterval(()=>{},1000);`;
+  const h=await harness([()=>call("preview",{action:"start",files:["index.html"],commands:[{command:"node",args:["-e",code]}]})],{
+    create:async(params,launch)=>{
+      const result=await launch();
+      const until=Date.now()+5000;
+      while(Date.now()<until){try {pid=Number(await readFile(join(params.cwd!,"files/child.pid"),"utf8"));break;}catch{await new Promise(r=>setTimeout(r,30));}}
+      assert.ok(pid);began();await held;return result;
+    },
+  });
+  try {
+    const task=await h.newTask(),pending=h.prompt(task.sessionId);await started;
+    await h.cancel(task.sessionId);finish();assert.equal((await pending).stopReason,"cancelled");
+    assert.throws(()=>process.kill(pid,0));assert.ok([...h.terminals.values()].every(t=>t.exited&&t.released));
+    await assertProjectInputsReleased(h.cwd);
+  }finally{finish();await h.dispose();}
+});
+
+const simpleServer = `const http=require('http');http.createServer((_req,res)=>res.end('owned server')).listen(Number(process.env.PORT),process.env.HOST);`;
+const simpleProject = () => call("preview",{action:"start",files:["index.html"],server:{command:"node",args:["-e",simpleServer]}});
+
+for(const ending of ["complete","model error","force-killed terminal"] as const){
+  test(`project server cleans up after ${ending} without an explicit stop tool call`,{timeout:20_000},async()=>{
+    let url="",group=0;
+    const h=await harness([
+      simpleProject,
+      async context=>{
+        const result=JSON.parse(lastToolText(context,"preview"));url=result.url;group=result.project.serverPid;
+        assert.equal((await fetch(url)).status,200);
+        if(ending==="model error")throw new Error("Fixture model error after server startup");
+        if(ending==="force-killed terminal"){
+          const terminal=[...h.terminals.values()][0]!;terminal.child.kill("SIGKILL");
+          const deadline=Date.now()+5000;
+          while(Date.now()<deadline){try{await fetch(url);}catch{break;}await new Promise(r=>setTimeout(r,40));}
+          await assert.rejects(fetch(url));
+        }
+        return "Verification turn finished.";
+      },
+    ]);
+    try{
+      const task=await h.newTask();
+      if(ending==="model error")await assert.rejects(h.prompt(task.sessionId));else await h.prompt(task.sessionId);
+      assert.equal(h.requests(),2);await assert.rejects(fetch(url));
+      assert.throws(()=>process.kill(group,0));
+      assert.ok([...h.terminals.values()].every(t=>t.exited&&t.released));
+      await assertProjectInputsReleased(h.cwd);
+    }finally{await h.dispose();}
+  });
+}
+
+test("project commands cannot silently resolve uncaptured workspace packages through ancestor directories",{timeout:15_000},async()=>{
+  let result:any;
+  const h=await harness([
+    ()=>call("preview",{action:"start",files:["index.html"],commands:[{command:"node",args:["-e","console.log(process.cwd());require('eido-uncaptured-fixture')"]}]}),
+    context=>{
+      const message=context.messages.findLast(m=>m.role==="toolResult"&&m.toolName==="preview");
+      assert.ok(message?.role==="toolResult"&&message.isError);
+      result=JSON.parse(message.content.filter(p=>p.type==="text").map(p=>p.text).join("\n"));
+      assert.equal(result.project.stage,"failed");
+      assert.match(result.project.checks[0].output,/MODULE_NOT_FOUND/);
+      assert.ok(!result.project.checks[0].output.includes(h.cwd));
+      return "Missing dependency was reported without using workspace packages.";
+    },
+  ]);
+  try{
+    await mkdir(join(h.cwd,"node_modules/eido-uncaptured-fixture"),{recursive:true});
+    await writeFile(join(h.cwd,"node_modules/eido-uncaptured-fixture/index.js"),"module.exports = 'must not resolve';");
+    const task=await h.newTask();await h.prompt(task.sessionId);assert.equal(h.requests(),2);
+  }finally{await h.dispose();}
 });

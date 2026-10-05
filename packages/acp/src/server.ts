@@ -47,7 +47,7 @@ export async function startEidoAgent(agentDir: string, sessionDir: string, strea
           };
           const append = options.resourceLoader.getAppendSystemPrompt.bind(options.resourceLoader);
           options.resourceLoader.getAppendSystemPrompt = () => [...append(),
-            "For static HTML/CSS/JS tasks, use preview start with explicit files and an HTML entry to serve current editor buffers, including unsaved changes. Open its exact URL with the bundled browser tools, observe, interact, then observe the actual result. After a failure, read and repair the files, start a new preview and repeat the check. Capture a screenshot when visual inspection matters. Before reporting completion, use preview status; a stale or unknown input state does not verify current edits. Include the run ID and tested criteria in the result. Preview status and successful browser calls are not acceptance passes. Evidence covers only listed static inputs, not arbitrary builds or external dependencies. Re-observe after cancellation or user takeover. Stop preview when finished. Eido automatically closes the task browser when this turn ends or is cancelled; reopen and re-observe in a later turn. If the target cannot be started with available tools, report missing verification instead of claiming success."
+            "For development verification, use preview start with explicit editor files, including unsaved changes. For static HTML/CSS/JS supply an HTML entry. For projects supply commands for checks/builds and a server command; select installed dependency directories to copy into the captured project. Read the project configuration before choosing commands. Commands run in a copy and do not update source buffers. Open its exact URL with the bundled browser tools, observe, interact, then observe the actual result. After a failure, read and repair the files, start a new preview and repeat the check. Capture a screenshot when visual inspection matters. Before reporting completion, use preview status; a stale or unknown input state does not verify current edits. Include the run ID and tested criteria in the result. Preview status and successful browser calls are not acceptance passes. Evidence covers only captured files and copied dependencies. Successful check exits and server reachability alone do not demonstrate correct behavior. Commands that modify captured source invalidate freshness; repair editor buffers and recapture instead. Never install missing dependencies without user authorization. Re-observe after cancellation or user takeover. Stop preview when finished. Project commands and servers also stop automatically when this turn ends. Eido automatically closes the task browser when this turn ends or is cancelled; reopen and re-observe in a later turn. If the target cannot be started with available tools, report missing verification instead of claiming success."
           ];
         }
         const created = await createAgentSession({
@@ -73,8 +73,9 @@ export async function startEidoAgent(agentDir: string, sessionDir: string, strea
         const prompt = created.session.prompt.bind(created.session);
         created.session.prompt = async (...args) => {
           try { return await prompt(...args); } finally {
-            await browser.close();
-            if (child) await preview.stop();
+            const cleanup = await Promise.allSettled([browser.close(), preview.finishTurn(!!child)]);
+            const failed = cleanup.find(result => result.status === "rejected");
+            if (failed?.status === "rejected") throw failed.reason;
           }
         };
         // The adapter awaits pi.abort() on cancellation. Settlement hooks are not
@@ -82,7 +83,7 @@ export async function startEidoAgent(agentDir: string, sessionDir: string, strea
         const abort = created.session.abort.bind(created.session);
         created.session.abort = async () => {
           try { await abort(); } finally {
-            const results = await Promise.allSettled([preview.stop(), browser.close()]);
+            const results = await Promise.allSettled([preview.finishTurn(true), browser.close()]);
             const failed = results.find(result => result.status === "rejected");
             if (failed?.status === "rejected") throw failed.reason;
           }

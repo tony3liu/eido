@@ -30,7 +30,7 @@
     "probe": "tsx scripts/tools.ts probe",
     "test:native": "python3 scripts/native.py test-native",
     "test:browser": "tsx --test packages/acp/test/browser.test.ts",
-    "test:preview": "tsx --test packages/acp/test/preview.test.ts"
+    "test:preview": "tsx --test packages/acp/test/preview.test.ts packages/acp/test/preview-dependencies.test.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.32.0",
