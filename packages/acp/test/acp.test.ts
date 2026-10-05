@@ -6,6 +6,77 @@ import { tmpdir } from "node:os";
 import { client, methods } from "@agentclientprotocol/sdk";
 import { startEidoAgent } from "../src/server.ts";
 import { fixtureModel, call, lastToolText } from "./fixture-model.ts";
+import { createExtensionCenter } from "../../../scripts/pi-extensions.mjs";
+
+test("globally configured MCP tools join the existing ACP bridge and disappear when disabled", {timeout:30_000}, async () => {
+  const dir = await realpath(await mkdtemp(join(tmpdir(), "eido-configured-mcp-")));
+  const script = join(dir,"mcp.mjs");
+  await writeFile(script, `import readline from 'node:readline';
+readline.createInterface({input:process.stdin}).on('line',line=>{
+ const r=JSON.parse(line);if(r.id===undefined)return;
+ const result=r.method==='initialize'?{protocolVersion:r.params.protocolVersion,capabilities:{tools:{}},serverInfo:{name:'fixture',version:'1'}}:
+ r.method==='tools/list'?{tools:[{name:'ping',description:'Ping local fixture',inputSchema:{type:'object',properties:{}}}]}:
+ r.method==='tools/call'?{content:[{type:'text',text:'MCP fixture reached'}]}:{};
+ process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:r.id,result})+'\\n');
+});`);
+  await writeFile(join(dir,"settings.json"),JSON.stringify({defaultProvider:"eido-fixture",defaultModel:"scripted",compaction:{enabled:false}}));
+  const center = createExtensionCenter(dir);
+  await center.execute({operation:"mcp-save",text:JSON.stringify({mcpServers:{fixture:{command:process.execPath,args:[script]}}})});
+  const fixture = await fixtureModel(dir,[
+    () => call("mcp__fixture__ping"),
+    context => {assert.match(lastToolText(context,"mcp__fixture__ping"),/MCP fixture reached/);return "MCP verified.";},
+    context => {assert.doesNotMatch(JSON.stringify(context.messages.filter(m=>m.role==="system")),/mcp__fixture__ping/);return "MCP disabled.";},
+  ]);
+  const toAgent = new TransformStream(), toClient = new TransformStream();
+  const server = await startEidoAgent(dir,join(dir,"sessions"),{readable:toAgent.readable,writable:toClient.writable},fixture.runtime);
+  const output:string[]=[];
+  const connection = client({name:"eido-mcp-config-test"})
+    .onNotification(methods.client.session.update,({params})=>{const u=params.update;if(u.sessionUpdate==="agent_message_chunk"&&u.content.type==="text")output.push(u.content.text);})
+    .onRequest(methods.client.session.requestPermission,()=>({outcome:{outcome:"selected",optionId:"allow_once"}}))
+    .connect({readable:toClient.readable,writable:toAgent.writable});
+  try {
+    await connection.agent.request(methods.agent.initialize,{protocolVersion:1,clientCapabilities:{}});
+    const a=await connection.agent.request(methods.agent.session.new,{cwd:dir,mcpServers:[]});
+    await connection.agent.request(methods.agent.session.prompt,{sessionId:a.sessionId,prompt:[{type:"text",text:"Ping MCP"}]});
+    await center.execute({operation:"mcp-toggle",name:"fixture",enabled:false});
+    const b=await connection.agent.request(methods.agent.session.new,{cwd:dir,mcpServers:[]});
+    await connection.agent.request(methods.agent.session.prompt,{sessionId:b.sessionId,prompt:[{type:"text",text:"Inspect tools"}]});
+    assert.match(output.join(""),/MCP verified/);assert.match(output.join(""),/MCP disabled/);assert.equal(fixture.requests(),3);
+  } finally {await server.agent.dispose();connection.close();server.connection.close();await rm(dir,{recursive:true,force:true});}
+});
+
+test("installed pi plugin tools execute through ACP and disabling removes them from new tasks", {timeout:30_000}, async () => {
+  const dir = await realpath(await mkdtemp(join(tmpdir(), "eido-plugin-acp-")));
+  const pkg = join(dir,"plugin"); await mkdir(pkg);
+  await writeFile(join(pkg,"package.json"),JSON.stringify({name:"pi-local-fixture",version:"1.0.0",pi:{extensions:["index.js"]}}));
+  await writeFile(join(pkg,"index.js"), `export default api => api.registerTool({name:"fixture_plugin", label:"Plugin fixture", description:"Report fixture status", parameters:{type:"object",properties:{}}, async execute(){return {content:[{type:"text",text:"Plugin executed"}]}}});`);
+  await writeFile(join(dir,"settings.json"),JSON.stringify({defaultProvider:"eido-fixture",defaultModel:"scripted",compaction:{enabled:false}}));
+  const center = createExtensionCenter(dir);
+  await center.execute({operation:"install",source:pkg});
+  const fixture = await fixtureModel(dir,[
+    context => {assert.match(JSON.stringify(context.messages.filter(m => m.role === "system")), /fixture_plugin/); return call("fixture_plugin");},
+    context => {assert.match(lastToolText(context,"fixture_plugin"),/Plugin executed/); return "Plugin verified.";},
+    context => {assert.doesNotMatch(JSON.stringify(context.messages.filter(m => m.role === "system")), /fixture_plugin/); return "Disabled plugin unavailable.";},
+  ]);
+  const toAgent = new TransformStream(), toClient = new TransformStream();
+  const server = await startEidoAgent(dir,join(dir,"sessions"),{readable:toAgent.readable,writable:toClient.writable},fixture.runtime);
+  const output: string[] = [];
+  const connection = client({name:"eido-plugin-test"})
+    .onNotification(methods.client.session.update, ({params}) => {const u = params.update; if (u.sessionUpdate === "agent_message_chunk" && u.content.type === "text") output.push(u.content.text);})
+    .onRequest(methods.client.session.requestPermission, () => ({outcome:{outcome:"selected",optionId:"allow_once"}}))
+    .connect({readable:toClient.readable,writable:toAgent.writable});
+  try {
+    await connection.agent.request(methods.agent.initialize,{protocolVersion:1,clientCapabilities:{}});
+    const a = await connection.agent.request(methods.agent.session.new,{cwd:dir,mcpServers:[]});
+    await connection.agent.request(methods.agent.session.prompt,{sessionId:a.sessionId,prompt:[{type:"text",text:"Run installed plugin"}]});
+    const state = await center.execute() as {packages: Array<{source:string}>};
+    await center.execute({operation:"toggle-package",source:state.packages[0]!.source,enabled:false});
+    const b = await connection.agent.request(methods.agent.session.new,{cwd:dir,mcpServers:[]});
+    await connection.agent.request(methods.agent.session.prompt,{sessionId:b.sessionId,prompt:[{type:"text",text:"Inspect tools"}]});
+    assert.equal(fixture.requests(),3);
+    assert.match(output.join(""), /Plugin verified/); assert.match(output.join(""), /Disabled plugin unavailable/);
+  } finally {await server.agent.dispose();connection.close();server.connection.close();await rm(dir,{recursive:true,force:true});}
+});
 
 test("existing ACP adapter retains sessions and delegates edits to editor buffers", { timeout: 30_000 }, async () => {
   const cwd = await realpath(await mkdtemp(join(tmpdir(), "eido-acp-")));

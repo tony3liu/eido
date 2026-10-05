@@ -188,11 +188,15 @@ impl Render for Composer {
         } else {
             title
         };
-        let viewing_subagent = panel.active_conversation_view().is_some_and(|view| {
-            view.read(cx).as_connected().and_then(|connected| connected.active_view())
-                .is_some_and(|view| view.read(cx).thread.read(cx).parent_session_id().is_some())
+        let viewing_child = panel.active_conversation_view().and_then(|view| {
+            view.read(cx).as_connected().and_then(|connected| connected.active_view()).cloned()
+                .filter(|view| view.read(cx).thread.read(cx).parent_session_id().is_some())
         });
         let thread = self.panel.read(cx).active_thread_view(cx);
+        let recipient = thread.as_ref().and_then(|thread| thread.read(cx).eido_recipient());
+        let recipient_title = recipient.as_ref().and_then(|view| view.read(cx).thread.read(cx).title());
+        let delivery_status = thread.as_ref().and_then(|thread| thread.read(cx).eido_delivery_status.clone());
+        let recipient_running = recipient.as_ref().or(thread.as_ref()).is_some_and(|view| view.read(cx).eido_is_generating(cx));
         let focused = thread.as_ref().is_some_and(|thread| {
             thread
                 .read(cx)
@@ -238,18 +242,52 @@ impl Render for Composer {
                     )
                     .child(
                         div().flex_1().min_w_0().child(
-                            Label::new(if viewing_subagent { format!("To Main agent · {title}").into() } else { title })
+                            Label::new(if let Some(recipient) = &recipient_title { format!("To {recipient} · {title}") } else { format!("To Main agent · {title}") })
                                 .truncate()
                                 .size(LabelSize::XSmall)
                                 .color(Color::Muted),
                         ),
                     )
+                    .when_some(viewing_child, |this, child| {
+                        let root = thread.clone();
+                        this.child(Button::new("eido-message-agent", "Message agent")
+                            .label_size(LabelSize::XSmall)
+                            .tooltip(Tooltip::text("Send the global draft to this agent. Reading a child never changes the recipient automatically."))
+                            .on_click(move |_, window, cx| {
+                                if let Some(root) = &root {
+                                    root.update(cx, |root, cx| {
+                                        root.eido_set_recipient(Some(child.clone()), cx);
+                                        root.message_editor.focus_handle(cx).focus(window, cx);
+                                    });
+                                }
+                            }))
+                    })
+                    .when(recipient.is_some(), |this| {
+                        let root = thread.clone();
+                        this.child(Button::new("eido-message-main", "Main agent")
+                            .label_size(LabelSize::XSmall)
+                            .on_click(move |_, _, cx| {
+                                if let Some(root) = &root { root.update(cx, |root, cx| root.eido_set_recipient(None, cx)); }
+                            }))
+                    })
+                    .when(recipient_running, |this| {
+                        let root = thread.clone();
+                        this.child(Button::new("eido-send-next", "Send next")
+                            .label_size(LabelSize::XSmall)
+                            .tooltip(Tooltip::text("Insert the global draft at the agent's next safe boundary"))
+                            .on_click(move |_, window, cx| {
+                                if let Some(root) = &root { root.update(cx, |root, cx| root.eido_send_next(window, cx)); }
+                            }))
+                    })
                     .child(
-                        Label::new("⌘↵ Send")
+                        Label::new(if recipient_running { "⌘↵ Queue" } else { "⌘↵ Send" })
                             .size(LabelSize::XSmall)
                             .color(Color::Muted),
                     ),
             )
+            .when_some(delivery_status, |this, status| this.child(
+                div().w_full().max_w(px(780.)).mx_auto().px_1()
+                    .child(Label::new(status).size(LabelSize::XSmall).color(Color::Muted))))
             .child(
                 div()
                     .key_context("AcpThread")

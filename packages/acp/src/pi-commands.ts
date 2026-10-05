@@ -3,6 +3,7 @@ import { resolveModelScopeWithDiagnostics, type AgentSession } from "@earendil-w
 import type { Api, Model } from "@earendil-works/pi-ai";
 import { createPiUI } from "./pi-ui.ts";
 import { exportPiSession, piChangelog } from "./pi-command-files.ts";
+import { manageAgentRoles } from "./agent-roles.ts";
 
 // The audited adapter hook runs inside its existing turn boundary. Commands
 // share admission, cancellation and notification ordering with ordinary prompts.
@@ -18,6 +19,7 @@ export const piCommands: AvailableCommand[] = [
   { name: "scoped-models", description: "Configure the global model shortlist", input: {hint: "[patterns | all]"} },
   { name: "export", description: "Export this pi session to HTML or JSONL", input: {hint: "[path.html | path.jsonl]"} },
   { name: "changelog", description: "Show release notes from the bundled pi version" },
+  { name: "agents", description: "List, create or edit global agent roles", input: {hint: "[list | new | agent-name]"} },
 ];
 
 interface CommandContext {
@@ -99,6 +101,9 @@ export function installPiCommands(pi: AgentSession, client: AgentContext, suppor
         }
         let output: string;
         switch (name) {
+          case "agents":
+            output = await manageAgentRoles(agentDir, argument, ui, signal);
+            break;
           case "session":
             if (argument) throw new Error("Usage: /session (no arguments).");
             output = sessionInfo(pi);

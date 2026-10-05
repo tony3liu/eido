@@ -92,6 +92,9 @@ await patchSource(agentPath,
 await patchSource(path,
   '            if (entry.customType === "eido.notice.v1"',
   '            if (entry.customType === "eido.subagent.v1" && entry.data?.kind === "parent") {\n                const child = entry.data;\n                return [{ sessionUpdate: "tool_call_update", toolCallId: child.toolCallId, title: child.title, status: "failed", content: [{type:"content", content:{type:"text", text:"Subagent interrupted before its result was recorded."}}], _meta: {subagent_session_info: {session_id: child.childSessionId, message_start_index: 0}} }];\n            }\n            if (entry.customType === "eido.notice.v1"');
+await patchSource(path,
+  '        case "custom":\n            if (entry.customType === "eido.subagent.v1"',
+  '        case "custom":\n            if (entry.customType === "eido.agents.event.v1" && entry.data?.update) {\n                const update = structuredClone(entry.data.update);\n                if (update.status === "in_progress" || update.status === "pending") {\n                    update.status = "failed";\n                    if (update.rawInput?.eidoAgent) {\n                        update.rawInput.eidoAgent.state = "Interrupted";\n                        update.rawInput.eidoAgent.detail = update.rawInput.eidoAgent.detail.replace(/Running|Queued|Stopping/g, "Interrupted");\n                    }\n                    update.content = [{type:"content",content:{type:"text",text:"Run interrupted. Continue or retry explicitly; no actions were replayed."}}];\n                }\n                return [update];\n            }\n            if (entry.customType === "eido.subagent.v1"');
 await patchSource(new URL("../../@earendil-works/pi-coding-agent/dist/core/session-manager.js", directory),
   '(e.type === "custom" && e.customType === "eido.command.v1")',
   '(e.type === "custom" && (e.customType === "eido.command.v1" || e.customType === "eido.subagent.v1"))');

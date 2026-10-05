@@ -11,14 +11,19 @@ const agentDir = resolve(root, ".local/eido");
 const sessionDir = resolve(root, ".local/eido/acp-sessions");
 process.env.PI_CODING_AGENT_DIR = agentDir;
 await mkdir(sessionDir, { recursive: true, mode: 0o700 });
+const { createExtensionCenter } = await import("../../../scripts/pi-extensions.mjs");
+const { takeOverStdout, restoreStdout } = await import("../node_modules/@earendil-works/pi-coding-agent/dist/core/output-guard.js");
+takeOverStdout();
+const releaseRuntime = await createExtensionCenter(agentDir).acquireRuntime();
+restoreStdout();
 const { startEidoAgent } = await import("./server.ts");
-const { agent, connection } = await startEidoAgent(agentDir, sessionDir);
+const { agent, connection } = await startEidoAgent(agentDir, sessionDir).catch(async error => {await releaseRuntime(); throw error;});
 let shuttingDown: Promise<void> | undefined;
 const shutdown = (code: number) => {
   shuttingDown ??= (async () => {
     const deadline = setTimeout(() => process.exit(1), 15_000);
-    try { await agent.dispose(); clearTimeout(deadline); process.exit(code); }
-    catch { clearTimeout(deadline); console.error("Eido ACP cleanup failed."); process.exit(1); }
+    try { await agent.dispose(); await releaseRuntime(); clearTimeout(deadline); process.exit(code); }
+    catch { await releaseRuntime(); clearTimeout(deadline); console.error("Eido ACP cleanup failed."); process.exit(1); }
   })();
   return shuttingDown;
 };

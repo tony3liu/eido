@@ -182,3 +182,102 @@ test("stopping only the child reports failure to the parent without cancelling t
     assert.equal(reportReceived, true);
   } finally {await h.dispose();}
 });
+
+test("parallel agents actually overlap and preserve independent results and replay", {timeout: 30_000}, async () => {
+  let count = 0, release!: () => void;
+  const both = new Promise<void>(resolve => {release = resolve;});
+  const child: FixtureStep = async context => {
+    const own = context.messages.findLast(m => m.role === "user");
+    const text = JSON.stringify(own);
+    assert.ok(text.includes("Inspect A") || text.includes("Inspect B"));
+    if (++count === 2) release();
+    await both;
+    return text.includes("Inspect A") ? "Result A" : "Result B";
+  };
+  const h = await harness([
+    () => call("subagent", {tasks: [{title: "A", task: "Inspect A"}, {title: "B", task: "Inspect B"}]}), child, child,
+    context => {const result = lastToolText(context, "subagent"); assert.match(result, /Result A/); assert.match(result, /Result B/); return "Both inspected.";},
+  ]);
+  try {
+    assert.equal((await h.prompt("Run parallel inspection.")).stopReason, "end_turn");
+    assert.equal(count, 2);
+    assert.equal(new Set(h.runs.map(r => r.childSessionId)).size, 2);
+    assert.equal(new Set(h.runs.map(r => r.toolCallId)).size, 2);
+    const requests = h.requests();
+    await h.connection.agent.request(methods.agent.session.close, {sessionId: h.parent.sessionId});
+    h.updates.length = 0;
+    await h.connection.agent.request(methods.agent.session.load, {sessionId: h.parent.sessionId, cwd: h.cwd, mcpServers: []});
+    for (const run of h.runs) assert.ok(h.updates.some(({update}) => update.sessionUpdate === "tool_call_update" && update.toolCallId === run.toolCallId && update.status === "completed"));
+    assert.equal(h.requests(), requests);
+  } finally {release(); await h.dispose();}
+});
+
+test("a failed parallel agent does not cancel its independent sibling", {timeout: 30_000}, async () => {
+  const inspect: FixtureStep = context => {
+    if (JSON.stringify(context.messages).includes("Fail this inspection")) throw new Error("Fixture inspection failed");
+    return "Independent result survives.";
+  };
+  const h = await harness([
+    () => call("subagent", {tasks: [{title: "Fail", task: "Fail this inspection"}, {title: "Survive", task: "Complete independently"}]}), inspect, inspect,
+    context => {
+      const result = context.messages.findLast(m => m.role === "toolResult" && m.toolName === "subagent");
+      assert.ok(result?.role === "toolResult" && result.isError);
+      assert.match(JSON.stringify(result.content), /Independent result survives/);
+      return "Partial failure reported.";
+    },
+  ]);
+  try {assert.equal((await h.prompt("Run both inspections.")).stopReason, "end_turn"); assert.equal(h.runs.length, 2);}
+  finally {await h.dispose();}
+});
+
+test("chain passes verified output forward and blocks later steps after failure", {timeout: 30_000}, async () => {
+  const h = await harness([
+    () => call("subagent", {chain: [{task: "Inspect first"}, {task: "Review {previous}"}, {task: "Must never run"}]}),
+    () => "first verified result",
+    context => {assert.match(JSON.stringify(context.messages), /Review first verified result/); throw new Error("Second step failed");},
+    context => {
+      const result = context.messages.findLast(m => m.role === "toolResult" && m.toolName === "subagent");
+      assert.ok(result?.role === "toolResult" && result.isError);
+      assert.match(JSON.stringify(result.content), /Blocked/);
+      return "Chain failure reported.";
+    },
+  ]);
+  try {
+    assert.equal((await h.prompt("Run the chain.")).stopReason, "end_turn");
+    assert.equal(h.runs.length, 2);
+    assert.ok(h.updates.some(({update}) => update.sessionUpdate === "tool_call_update" && JSON.stringify(update.content).includes("Blocked by step 2")));
+  } finally {await h.dispose();}
+});
+
+test("worker delegates a nested review while read-only roles cannot write", {timeout: 30_000}, async () => {
+  const h = await harness([
+    () => call("subagent", {agent: "worker", task: "Delegate review"}),
+    () => call("subagent", {agent: "reviewer", task: "Try a forbidden write"}),
+    () => call("write", {path: "source.ts", content: "should not be written"}),
+    context => {assert.match(JSON.stringify(context.messages), /not (enabled|found|available)|Unknown tool/i); return "No write performed.";},
+    context => {assert.match(lastToolText(context, "subagent"), /No write performed/); return "Review collected.";},
+    context => {assert.match(lastToolText(context, "subagent"), /Review collected/); return "Nested review done.";},
+  ]);
+  try {
+    assert.equal((await h.prompt("Delegate implementation review.")).stopReason, "end_turn");
+    assert.equal(h.runs.length, 2);
+    assert.equal(h.runs[1]?.parentSessionId, h.runs[0]?.childSessionId);
+    assert.equal(h.writes(), 0);
+  } finally {await h.dispose();}
+});
+
+test("an explicit user follow-up continues the same child and records its result in the parent", {timeout: 30_000}, async () => {
+  const h = await harness([
+    () => call("subagent", {title: "Reviewer", task: "Inspect initial state"}),
+    () => "Initial review.", () => "Review collected.",
+    context => {assert.match(JSON.stringify(context.messages), /Initial review/); return "Updated review after user correction.";},
+  ]);
+  try {
+    await h.prompt("Delegate review.");
+    const id = h.runs[0]!.childSessionId;
+    const response = await h.connection.agent.request(methods.agent.session.prompt, {sessionId: id, prompt: [{type: "text", text: "Check this correction"}], _meta: {eidoUserMessage: true}});
+    assert.equal(response.stopReason, "end_turn");
+    assert.ok(h.updates.some(({sessionId, update}) => sessionId === h.parent.sessionId && update.sessionUpdate === "agent_message_chunk" && update.content.type === "text" && update.content.text.includes("Updated review")));
+    assert.equal(h.runs.length, 1);
+  } finally {await h.dispose();}
+});

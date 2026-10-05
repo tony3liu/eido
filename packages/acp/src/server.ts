@@ -1,13 +1,14 @@
 import { runAcp } from "@automatalabs/pi-acp";
 import { createAgentSession, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { join } from "node:path";
-import type { AgentContext, Stream } from "@agentclientprotocol/sdk";
+import type { AgentContext, McpServer, Stream } from "@agentclientprotocol/sdk";
 import { editorTools } from "./editor-tools.ts";
 import { createPreview } from "./preview.ts";
 import { browserLifecycle } from "./browser-lifecycle.ts";
 import { accessPolicy } from "./access-policy.ts";
 import { installPiCommands } from "./pi-commands.ts";
 import { createSubagents } from "./subagents.ts";
+import { configuredMcp } from "../../../scripts/pi-extensions.mjs";
 
 export async function startEidoAgent(agentDir: string, sessionDir: string, stream?: Stream, modelRuntime?: ModelRuntime) {
   const runtime = modelRuntime ?? await ModelRuntime.create({
@@ -15,7 +16,7 @@ export async function startEidoAgent(agentDir: string, sessionDir: string, strea
   });
   let connectClient!: (client: AgentContext) => void;
   let supportsForms = false;
-  const subagents = createSubagents(sessionDir);
+  const subagents = createSubagents(agentDir, sessionDir);
   const clientReady = new Promise<AgentContext>(resolve => { connectClient = resolve; });
   const server = await runAcp({
     stream,
@@ -41,21 +42,23 @@ export async function startEidoAgent(agentDir: string, sessionDir: string, strea
             "For static HTML/CSS/JS tasks, use preview start with explicit files and an HTML entry to serve current editor buffers, including unsaved changes. Open its exact URL with the bundled browser tools, observe, interact, then observe the actual result. After a failure, read and repair the files, start a new preview and repeat the check. Capture a screenshot when visual inspection matters. Before reporting completion, use preview status; a stale or unknown input state does not verify current edits. Include the run ID and tested criteria in the result. Preview status and successful browser calls are not acceptance passes. Evidence covers only listed static inputs, not arbitrary builds or external dependencies. Re-observe after cancellation or user takeover. Stop preview when finished. Eido automatically closes the task browser when this turn ends or is cancelled; reopen and re-observe in a later turn. If the target cannot be started with available tools, report missing verification instead of claiming success."
           ];
         }
-        const browserNames = options.resourceLoader?.getExtensions().extensions
-          .filter(extension => extension.path === "<inline:agentprism-pi-acp-mcp>")
-          .flatMap(extension => [...extension.tools.keys()])
-          .filter(name => name.startsWith("mcp__eido_browser__")) ?? [];
         const created = await createAgentSession({
           ...options,
           agentDir,
-          tools: ["read", "edit", "write", "preview", "bash", ...(subagents.enabled ? ["subagent"] : []), ...browserNames],
+          // Keep pi's registry open for installed and reloaded extension tools.
+          // The active loadout below selects Eido's native tools and extensions.
+          tools: undefined,
+          noTools: "builtin",
           customTools: [...editorTools(options.cwd, options.sessionManager.getSessionId(), client), preview.tool,
             ...(subagents.enabled ? [subagents.tool(options.sessionManager.getSessionId(), client)] : [])],
         });
         const browser = browserLifecycle(created.session);
         const prompt = created.session.prompt.bind(created.session);
         created.session.prompt = async (...args) => {
-          try { return await prompt(...args); } finally { await browser.close(); }
+          try { return await prompt(...args); } finally {
+            await browser.close();
+            if (child) await preview.stop();
+          }
         };
         // The adapter awaits pi.abort() on cancellation. Settlement hooks are not
         // guaranteed on an aborted turn, so release preview after tools settle.
@@ -75,8 +78,20 @@ export async function startEidoAgent(agentDir: string, sessionDir: string, strea
           && tool.name.startsWith("mcp__eido_browser__")
         ).map(tool => tool.name);
         const child = subagents.register(created.session);
-        const activeTools = new Set(child ? ["read"] : ["read", "edit", "write", "preview", ...(subagents.enabled ? ["subagent"] : []), ...browserTools]);
+        const rootTools = () => created.session.getAllTools().filter(t =>
+          t.name !== "bash" && !t.sourceInfo.path.startsWith("<builtin:")
+          && t.sourceInfo.path !== "<inline:agentprism-pi-acp-control>"
+        ).map(t => t.name);
+        let activeTools = new Set(child
+          ? (child.role?.tools ?? ["read"]).flatMap(name => name === "browser" ? browserTools : [name])
+          : rootTools());
         created.session.setActiveToolsByName([...activeTools]);
+        const reload = created.session.reload.bind(created.session);
+        created.session.reload = async (...args) => {
+          await reload(...args);
+          if (!child) activeTools = new Set(rootTools());
+          created.session.setActiveToolsByName([...activeTools]);
+        };
         const beforeToolCall = created.session.agent.beforeToolCall;
         created.session.agent.beforeToolCall = async (context, signal) => {
           if (!activeTools.has(context.toolCall.name)) {
@@ -97,6 +112,14 @@ export async function startEidoAgent(agentDir: string, sessionDir: string, strea
     return initialize(context);
   };
   await subagents.connect(server);
+  // The configured servers enter the same ACP MCP bridge as built-in tools.
+  const withMcp = async <T extends {params: {mcpServers?: McpServer[]}}>(context: T): Promise<T> => {
+    const configured = await configuredMcp(agentDir), bundled = context.params.mcpServers ?? [];
+    return {...context, params: {...context.params, mcpServers: [...bundled, ...configured.filter(server => !bundled.some(s => s.name === server.name))]}};
+  };
+  const create = server.agent.newSession.bind(server.agent), load = server.agent.loadSession.bind(server.agent);
+  server.agent.newSession = async context => create(await withMcp(context));
+  server.agent.loadSession = async context => load(await withMcp(context));
   connectClient(server.connection.client);
   return server;
 }

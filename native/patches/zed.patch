@@ -620,7 +620,52 @@ diff --git a/assets/keymaps/vim.json b/assets/keymaps/vim.json
 diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thread.rs
 --- a/crates/acp_thread/src/acp_thread.rs
 +++ b/crates/acp_thread/src/acp_thread.rs
-@@ -4566,12 +4566,33 @@
+@@ -3936,7 +3936,7 @@
+         message: Vec<acp::ContentBlock>,
+         cx: &mut Context<Self>,
+     ) -> BoxFuture<'static, Result<Option<acp::PromptResponse>>> {
+-        self.send_inner(message, true, cx)
++        self.send_inner(message, true, false, cx)
+     }
+ 
+     /// Sends a prompt without displaying a user-message bubble for it.
+@@ -3948,13 +3948,22 @@
+         message: Vec<acp::ContentBlock>,
+         cx: &mut Context<Self>,
+     ) -> BoxFuture<'static, Result<Option<acp::PromptResponse>>> {
+-        self.send_inner(message, false, cx)
++        self.send_inner(message, false, false, cx)
++    }
++
++    pub fn send_delegated(
++        &mut self,
++        message: Vec<acp::ContentBlock>,
++        cx: &mut Context<Self>,
++    ) -> BoxFuture<'static, Result<Option<acp::PromptResponse>>> {
++        self.send_inner(message, true, true, cx)
+     }
+ 
+     fn send_inner(
+         &mut self,
+         message: Vec<acp::ContentBlock>,
+         push_user_message: bool,
++        delegated: bool,
+         cx: &mut Context<Self>,
+     ) -> BoxFuture<'static, Result<Option<acp::PromptResponse>>> {
+         let language_registry = self.project.read(cx).languages().clone();
+@@ -3963,7 +3972,10 @@
+         for chunk in &message {
+             block.append_prompt(chunk.clone(), &language_registry, path_style, cx);
+         }
+-        let request = acp::PromptRequest::new(self.session_id.clone(), message.clone());
++        let mut request = acp::PromptRequest::new(self.session_id.clone(), message.clone());
++        if !delegated && self.parent_session_id.is_some() {
++            request.meta = Some(acp::Meta::from_iter([("eidoUserMessage".into(), true.into())]));
++        }
+         let git_store = self.project.read(cx).git_store().clone();
+ 
+         let client_user_message_ids = self.connection.client_user_message_ids(cx);
+@@ -4566,12 +4578,33 @@
          reuse_shared_snapshot: bool,
          cx: &mut Context<Self>,
      ) -> Task<Result<String, acp::Error>> {
@@ -655,7 +700,7 @@ diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thr
          cx.spawn(async move |this, cx| {
              let load = project.update(cx, |project, cx| {
                  let path = project
-@@ -4597,14 +4618,15 @@
+@@ -4597,14 +4630,15 @@
              let snapshot = if let Some(snapshot) = snapshot {
                  snapshot
              } else {
@@ -678,13 +723,23 @@ diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thr
                  snapshot
              };
  
-@@ -4642,6 +4664,16 @@
+@@ -4642,6 +4676,26 @@
          &self,
          path: PathBuf,
          content: String,
 +        cx: &mut Context<Self>,
 +    ) -> Task<Result<()>> {
 +        self.write_text_file_with_policy(path, content, std::env::var_os("EIDO_ROOT").is_some(), cx)
++    }
++
++    #[cfg(any(test, feature = "test-support"))]
++    pub fn eido_test_write_text_file(
++        &self,
++        path: PathBuf,
++        content: String,
++        cx: &mut Context<Self>,
++    ) -> Task<Result<()>> {
++        self.write_text_file_with_policy(path, content, true, cx)
 +    }
 +
 +    fn write_text_file_with_policy(
@@ -695,7 +750,7 @@ diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thr
          cx: &mut Context<Self>,
      ) -> Task<Result<()>> {
          let project = self.project.clone();
-@@ -4656,11 +4688,13 @@
+@@ -4656,11 +4710,13 @@
              });
              let buffer = load?.await?;
              let snapshot = this.update(cx, |this, cx| {
@@ -714,7 +769,7 @@ diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thr
              let edits = cx
                  .background_executor()
                  .spawn(async move {
-@@ -4691,10 +4725,16 @@
+@@ -4691,10 +4747,16 @@
  
              let format_on_save = cx.update(|cx| {
                  action_log.update(cx, |action_log, cx| {
@@ -731,7 +786,7 @@ diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thr
                      buffer.start_transaction();
                      buffer.edit(edits, None, cx);
                      buffer.end_transaction_with_source(BufferEditSource::Agent, cx);
-@@ -4702,13 +4742,20 @@
+@@ -4702,13 +4764,20 @@
                      let settings =
                          language::language_settings::LanguageSettings::for_buffer(buffer, cx);
  
@@ -756,7 +811,7 @@ diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thr
  
              if format_on_save {
                  let format_task = project.update(cx, |project, cx| {
-@@ -6930,6 +6977,144 @@
+@@ -6930,6 +6999,144 @@
              "zero\none\ntwo\nthree\nfour\nfive\n"
          );
          request.await.unwrap();
@@ -901,6 +956,37 @@ diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thr
      }
  
      #[gpui::test]
+diff --git a/crates/acp_thread/src/connection.rs b/crates/acp_thread/src/connection.rs
+--- a/crates/acp_thread/src/connection.rs
++++ b/crates/acp_thread/src/connection.rs
+@@ -194,6 +194,11 @@
+ 
+     fn prompt(&self, params: acp::PromptRequest, cx: &mut App)
+     -> Task<Result<acp::PromptResponse>>;
++
++    /// Inject an explicit user message at pi's next safe boundary.
++    fn eido_send_next(&self, _params: acp::PromptRequest, _cx: &mut App) -> Task<Result<bool>> {
++        Task::ready(Err(anyhow::anyhow!("This agent does not support boundary messages")))
++    }
+ 
+     fn retry(&self, _session_id: &acp::SessionId, _cx: &App) -> Option<Rc<dyn AgentSessionRetry>> {
+         None
+@@ -830,10 +835,14 @@
+             title: Option<SharedString>,
+             cx: &mut gpui::App,
+         ) -> Entity<AcpThread> {
++            let parent_session_id = self.sessions.lock().iter().find_map(|(id, session)| {
++                let thread = session.thread.upgrade()?;
++                thread.read(cx).tool_call_for_subagent(&session_id).map(|_| id.clone())
++            });
+             let action_log = cx.new(|_| ActionLog::new(project.clone()));
+             let thread = cx.new(|cx| {
+                 AcpThread::new(
+-                    None,
++                    parent_session_id,
+                     title,
+                     Some(work_dirs),
+                     self.clone(),
 diff --git a/crates/action_log/src/action_log.rs b/crates/action_log/src/action_log.rs
 --- a/crates/action_log/src/action_log.rs
 +++ b/crates/action_log/src/action_log.rs
@@ -1058,14 +1144,21 @@ diff --git a/crates/agent_servers/src/acp.rs b/crates/agent_servers/src/acp.rs
          ("terminal-auth".into(), true.into()),
      ]);
  
-@@ -1050,9 +1055,13 @@
+@@ -1049,10 +1054,19 @@
+                 let session_id = session_id.clone();
                  let this = self.clone();
                  async move |cx| {
-                     let action_log = cx.new(|_| ActionLog::new(project.clone()));
+-                    let action_log = cx.new(|_| ActionLog::new(project.clone()));
 +                    let parent_session_id = cx.update(|cx| this.sessions.borrow().iter().find_map(|(id, session)| {
 +                        let thread = session.thread.upgrade()?;
 +                        thread.read(cx).tool_call_for_subagent(&session_id).map(|_| id.clone())
 +                    }));
++                    let action_log = cx.new(|cx| {
++                        let log = ActionLog::new(project.clone());
++                        if let Some(parent) = parent_session_id.as_ref().and_then(|id| this.sessions.borrow().get(id).and_then(|session| session.thread.upgrade())) {
++                            log.with_linked_action_log(parent.read(cx).action_log().clone())
++                        } else { log }
++                    });
                      let thread: Entity<AcpThread> = cx.new(|cx| {
                          AcpThread::new(
 -                            None,
@@ -1073,7 +1166,25 @@ diff --git a/crates/agent_servers/src/acp.rs b/crates/agent_servers/src/acp.rs
                              title,
                              Some(work_dirs),
                              this.clone(),
-@@ -2459,6 +2468,52 @@
+@@ -1752,6 +1766,17 @@
+                     }
+                 }
+             }
++        })
++    }
++
++    fn eido_send_next(&self, params: acp::PromptRequest, cx: &mut App) -> Task<Result<bool>> {
++        let conn = self.connection.clone();
++        cx.foreground_executor().spawn(async move {
++            let response = conn.send_request(EidoSteering {
++                session_id: params.session_id,
++                prompt: params.prompt,
++            }).block_task().await?;
++            Ok(response.outcome == "injected")
+         })
+     }
+ 
+@@ -2459,6 +2484,52 @@
      }
  
      #[gpui::test]
@@ -1126,7 +1237,16 @@ diff --git a/crates/agent_servers/src/acp.rs b/crates/agent_servers/src/acp.rs
      async fn client_capabilities_include_elicitation_without_acp_beta(
          cx: &mut gpui::TestAppContext,
      ) {
-@@ -3956,6 +4011,31 @@
+@@ -3759,7 +3830,7 @@
+         });
+ 
+         let fs = fs::FakeFs::new(cx.executor());
+-        fs.insert_tree("/", serde_json::json!({ "a": {} })).await;
++        fs.insert_tree("/", serde_json::json!({ "a": {"shared.txt": "disk\n"} })).await;
+         let project = project::Project::test(fs, [std::path::Path::new("/a")], cx).await;
+ 
+         let load_count = Arc::new(AtomicUsize::new(0));
+@@ -3956,6 +4027,55 @@
      }
  
      #[gpui::test]
@@ -1145,20 +1265,44 @@ diff --git a/crates/agent_servers/src/acp.rs b/crates/agent_servers/src/acp.rs
 +        *updates.lock().unwrap() = vec![serde_json::from_value(serde_json::json!({
 +            "sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "Early child output"}
 +        })).unwrap()];
-+        let child = cx.update(|cx| connection.clone().load_session(child_id.clone(), project, dirs, None, cx)).await.unwrap();
++        let child = cx.update(|cx| connection.clone().load_session(child_id.clone(), project.clone(), dirs.clone(), None, cx)).await.unwrap();
 +        cx.run_until_parked();
 +        child.read_with(cx, |child, cx| {
 +            assert_eq!(child.parent_session_id(), Some(&parent_id));
 +            assert!(child.to_markdown(cx).contains("Early child output"));
 +        });
 +        assert_eq!(parent.read_with(cx, |parent, _| parent.tool_call_for_subagent(&child_id).unwrap().id.clone()), acp::ToolCallId::new("delegate-1"));
++        parent.update(cx, |parent, cx| {
++            parent.handle_session_update(serde_json::from_value(serde_json::json!({
++                "sessionUpdate": "tool_call", "toolCallId": "delegate-2", "title": "Second writer",
++                "status": "in_progress", "_meta": {"subagent_session_info": {"session_id": "sibling", "message_start_index": 0}}
++            })).unwrap(), cx).unwrap();
++        });
++        let sibling = cx.update(|cx| connection.clone().load_session(acp::SessionId::new("sibling"), project.clone(), dirs, None, cx)).await.unwrap();
++        for writer in [&child, &sibling] {
++            let contents = writer.update(cx, |thread, cx| thread.read_text_file("/a/shared.txt".into(), None, None, false, cx)).await.unwrap();
++            assert_eq!(contents, "disk\n");
++        }
++        child.update(cx, |thread, cx| thread.eido_test_write_text_file("/a/shared.txt".into(), "first child\n".into(), cx)).await.unwrap();
++        let error = sibling.update(cx, |thread, cx| thread.eido_test_write_text_file("/a/shared.txt".into(), "stale sibling\n".into(), cx)).await.unwrap_err();
++        assert!(error.to_string().contains("File changed"));
++        cx.run_until_parked();
++        let log = parent.read_with(cx, |thread, _| thread.action_log().clone());
++        log.read_with(cx, |log, cx| assert_eq!(log.changed_buffers(cx).count(), 1, "child changes must be reviewable from the parent"));
++        let contents = child.update(cx, |thread, cx| thread.observe_text_file("/a/shared.txt".into(), cx)).await.unwrap();
++        assert_eq!(contents, "first child\n");
++        log.update(cx, |log, cx| log.reject_all_edits(None, cx)).await;
++        cx.run_until_parked();
++        let contents = child.update(cx, |thread, cx| thread.observe_text_file("/a/shared.txt".into(), cx)).await.unwrap();
++        assert_eq!(contents, "disk\n");
++
 +    }
 +
 +    #[gpui::test]
      async fn test_loaded_sessions_keep_state_until_last_handle_drops(
          cx: &mut gpui::TestAppContext,
      ) {
-@@ -4382,6 +4462,22 @@
+@@ -4382,6 +4502,22 @@
  }
  
  fn mcp_servers_for_project(project: &Entity<Project>, cx: &App) -> Vec<acp::McpServer> {
@@ -1181,7 +1325,7 @@ diff --git a/crates/agent_servers/src/acp.rs b/crates/agent_servers/src/acp.rs
      let context_server_store = project.read(cx).context_server_store().read(cx);
      let is_local = project.read(cx).is_local();
      context_server_store
-@@ -4566,6 +4662,66 @@
+@@ -4566,6 +4702,66 @@
      }
  }
  
@@ -1248,7 +1392,7 @@ diff --git a/crates/agent_servers/src/acp.rs b/crates/agent_servers/src/acp.rs
  fn handle_request_permission(
      args: acp::RequestPermissionRequest,
      responder: Responder<acp::RequestPermissionResponse>,
-@@ -4581,15 +4737,15 @@
+@@ -4581,15 +4777,15 @@
      let tool_call_id = args.tool_call.tool_call_id.clone();
      cx.spawn(async move |cx| {
          let result: Result<_, acp::Error> = async {
@@ -1273,7 +1417,7 @@ diff --git a/crates/agent_servers/src/acp.rs b/crates/agent_servers/src/acp.rs
                  .flatten_acp()?;
              cancellation
                  .run_until_cancelled(async { Ok(task.await) })
-@@ -4777,6 +4933,9 @@
+@@ -4777,6 +4973,9 @@
      cx: &mut AsyncApp,
      ctx: &ClientContext,
  ) {
@@ -1283,7 +1427,7 @@ diff --git a/crates/agent_servers/src/acp.rs b/crates/agent_servers/src/acp.rs
      let thread = match session_thread(ctx, &args.session_id) {
          Ok(t) => t,
          Err(e) => return respond_err(responder, e),
-@@ -4788,16 +4947,95 @@
+@@ -4788,16 +4987,105 @@
              .run_until_cancelled(async {
                  thread
                      .update(cx, |thread, cx| {
@@ -1311,6 +1455,16 @@ diff --git a/crates/agent_servers/src/acp.rs b/crates/agent_servers/src/acp.rs
      })
      .detach();
 +}
++
++#[derive(Debug, Clone, Serialize, Deserialize, agent_client_protocol::JsonRpcRequest)]
++#[request(method = "_session/steering", response = EidoSteeringResponse)]
++#[serde(rename_all = "camelCase")]
++struct EidoSteering {
++    session_id: acp::SessionId,
++    prompt: Vec<acp::ContentBlock>,
++}
++#[derive(Debug, Clone, Serialize, Deserialize, agent_client_protocol::JsonRpcResponse)]
++struct EidoSteeringResponse { outcome: String }
 +
 +#[derive(Debug, Clone, Serialize, Deserialize, agent_client_protocol::JsonRpcRequest)]
 +#[request(method = "_eido/subagent/run", response = acp::PromptResponse)]
@@ -1368,7 +1522,7 @@ diff --git a/crates/agent_servers/src/acp.rs b/crates/agent_servers/src/acp.rs
 +            // A normal AcpThread turn owns status, cancellation, permissions and
 +            // native buffer/diff events. The host must register before prompting.
 +            running_child = Some(child.clone());
-+            let response = child.update(cx, |child, cx| child.send(vec![request.task.into()], cx)).await.map_err(acp::Error::from)?;
++            let response = child.update(cx, |child, cx| child.send_delegated(vec![request.task.into()], cx)).await.map_err(acp::Error::from)?;
 +            response.ok_or_else(|| acp::Error::internal_error().data("Child turn ended without a response"))
 +        }).await;
 +        if result.is_err() {
@@ -9626,7 +9780,16 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
      conversation_view::thread_search_bar::{ThreadSearchBar, ThreadSearchBarEvent},
      open_abs_path_at_point,
      thread_metadata_store::{ThreadId, ThreadMetadataStore},
-@@ -799,11 +799,17 @@
+@@ -568,6 +568,8 @@
+     pub session_id: acp::SessionId,
+     pub parent_session_id: Option<acp::SessionId>,
+     pub thread: Entity<AcpThread>,
++    eido_recipient: Option<WeakEntity<ThreadView>>,
++    pub eido_delivery_status: Option<SharedString>,
+     pub(crate) conversation: Entity<super::Conversation>,
+     pub server_view: WeakEntity<ConversationView>,
+     pub agent_icon: IconName,
+@@ -799,11 +801,17 @@
          window: &mut Window,
          cx: &mut Context<Self>,
      ) -> Self {
@@ -9645,7 +9808,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
  
          let mut should_auto_submit = false;
          let mut show_external_source_prompt_warning = false;
-@@ -818,7 +824,11 @@
+@@ -818,7 +826,11 @@
                  &placeholder,
                  editor::EditorMode::AutoHeight {
                      min_lines: AgentSettings::get_global(cx).message_editor_min_lines,
@@ -9658,7 +9821,121 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
                  },
                  window,
                  cx,
-@@ -4350,7 +4360,7 @@
+@@ -981,6 +993,8 @@
+ 
+         let mut this = Self {
+             root_thread_id,
++            eido_recipient: None,
++            eido_delivery_status: None,
+             session_id,
+             parent_session_id,
+             focus_handle: cx.focus_handle(),
+@@ -1477,7 +1491,93 @@
+         }
+     }
+ 
++    pub fn eido_is_generating(&self, cx: &App) -> bool {
++        self.thread.read(cx).status() != ThreadStatus::Idle
++    }
++
++    pub fn eido_recipient(&self) -> Option<Entity<ThreadView>> {
++        self.eido_recipient.as_ref().and_then(|recipient| recipient.upgrade())
++    }
++
++    pub fn eido_set_recipient(&mut self, recipient: Option<Entity<ThreadView>>, cx: &mut Context<Self>) {
++        self.eido_recipient = recipient.map(|view| view.downgrade());
++        self.eido_delivery_status = None;
++        cx.notify();
++    }
++
++    pub fn eido_send_next(&mut self, window: &mut Window, cx: &mut Context<Self>) {
++        if self.message_editor.read(cx).is_empty(cx) || self.is_loading_contents { return; }
++        let thread = self.eido_recipient().map(|view| view.read(cx).thread.clone()).unwrap_or_else(|| self.thread.clone());
++        let target = thread.read(cx).title().unwrap_or_else(|| "Main agent".into());
++        let session_id = thread.read(cx).session_id().clone();
++        let connection = thread.read(cx).connection().clone();
++        let editor = self.message_editor.clone();
++        let snapshot = editor.read(cx).text(cx);
++        let contents = self.resolve_message_contents(&editor, cx);
++        self.is_loading_contents = true;
++        self.eido_delivery_status = Some(format!("Sending to {target}…").into());
++        cx.notify();
++        cx.spawn_in(window, async move |this, cx| {
++            let result: Result<()> = async {
++                let (content, _) = contents.await?;
++                if content.is_empty() { return Ok(()); }
++                let injected = cx.update(|_, cx| connection.eido_send_next(acp::PromptRequest::new(session_id, content.clone()), cx))?.await?;
++                // If pi became idle before delivery, send a normal explicit user turn.
++                if !injected {
++                    thread.update(cx, |thread, cx| thread.send(content, cx)).await?;
++                }
++                this.update_in(cx, |this, window, cx| {
++                    if editor.read(cx).text(cx) == snapshot { editor.update(cx, |editor, cx| editor.clear(window, cx)); }
++                    this.eido_recipient = None;
++                    this.eido_delivery_status = Some(format!("{} · {target}", if injected { "Queued for next boundary" } else { "Reply received" }).into());
++                })?;
++                Ok(())
++            }.await;
++            this.update(cx, |this, cx| {
++                this.is_loading_contents = false;
++                if let Err(error) = result { this.eido_delivery_status = Some(format!("Message not delivered: {error}").into()); }
++                cx.notify();
++            }).ok();
++        }).detach();
++    }
++
+     pub fn send(&mut self, window: &mut Window, cx: &mut Context<Self>) {
++        if !self.is_loading_contents && !self.message_editor.read(cx).is_empty(cx) {
++            if let Some(recipient) = self.eido_recipient() {
++                let editor = self.message_editor.clone();
++                let snapshot = editor.read(cx).text(cx);
++                let contents = self.resolve_message_contents(&editor, cx);
++                self.is_loading_contents = true;
++                cx.spawn_in(window, async move |this, cx| {
++                    let result: Result<()> = async {
++                        let (content, tracked_buffers) = contents.await?;
++                        if content.is_empty() { return Ok(()); }
++                        recipient.update_in(cx, |recipient, window, cx| {
++                            recipient.message_queue.resume();
++                            if recipient.eido_is_generating(cx) {
++                                recipient.add_to_queue(content, tracked_buffers, window, cx);
++                            } else {
++                                recipient.send_content(Task::ready(Ok(Some((content, tracked_buffers)))), false, window, cx);
++                            }
++                        })?;
++                        this.update_in(cx, |this, window, cx| {
++                            if editor.read(cx).text(cx) == snapshot { editor.update(cx, |editor, cx| editor.clear(window, cx)); }
++                            this.eido_recipient = None;
++                            this.eido_delivery_status = Some("Message submitted to selected agent".into());
++                        })?;
++                        Ok(())
++                    }.await;
++                    this.update(cx, |this, cx| {
++                        this.is_loading_contents = false;
++                        if let Err(error) = result { this.eido_delivery_status = Some(format!("Message not delivered: {error}").into()); }
++                        cx.notify();
++                    }).ok();
++                }).detach();
++                cx.notify();
++                return;
++            }
++        }
++
+         let thread = &self.thread;
+ 
+         if self.is_loading_contents {
+@@ -1811,6 +1911,10 @@
+     }
+ 
+     pub fn interrupt_and_send(&mut self, window: &mut Window, cx: &mut Context<Self>) {
++        if self.eido_recipient().is_some() {
++            self.eido_send_next(window, cx);
++            return;
++        }
+         let thread = &self.thread;
+ 
+         if self.is_loading_contents {
+@@ -4350,7 +4454,7 @@
          )
      }
  
@@ -9667,7 +9944,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
          &mut self,
          window: &mut Window,
          cx: &mut Context<Self>,
-@@ -4370,7 +4380,8 @@
+@@ -4370,7 +4474,8 @@
          };
  
          let max_content_width = AgentSettings::get_global(cx).max_content_width;
@@ -9677,7 +9954,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
          let fills_container = !has_messages || editor_expanded;
  
          h_flex()
-@@ -4381,8 +4392,9 @@
+@@ -4381,8 +4486,9 @@
              .map(|this| {
                  if has_messages {
                      this.on_action(cx.listener(Self::expand_message_editor))
@@ -9689,7 +9966,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
                          .when(editor_expanded, |this| this.h(vh(0.8, window)))
                  } else {
                      this.flex_1().size_full()
-@@ -4407,6 +4419,10 @@
+@@ -4407,6 +4513,10 @@
                              .when(fills_container, |this| this.flex_1())
                              .pt_1()
                              .pr_2p5()
@@ -9700,7 +9977,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
                              .child(self.message_editor.clone())
                              .when(has_messages, |this| {
                                  this.child(
-@@ -4464,6 +4480,9 @@
+@@ -4464,6 +4574,9 @@
                                      .flex_wrap()
                                      .gap_1()
                                      .children(self.render_token_usage(cx))
@@ -9710,7 +9987,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
                                      .children(self.profile_selector.clone())
                                      .map(|this| match self.config_options_view.clone() {
                                          Some(config_view) => this.child(config_view),
-@@ -6261,6 +6280,11 @@
+@@ -6261,6 +6374,11 @@
                                                  s.border_color(focus_border.opacity(0.8))
                                              })
                                      })
@@ -9722,7 +9999,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
                                      .text_xs()
                                      .child(editor.clone().into_any_element())
                              )
-@@ -7278,7 +7302,7 @@
+@@ -7278,7 +7396,7 @@
  
      pub(crate) fn sync_editor_mode(&mut self, cx: &mut Context<Self>) {
          let has_messages = self.list_state.item_count() > 0;
@@ -9731,7 +10008,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
  
          if !has_messages {
              self.editor_expanded = false;
-@@ -7299,7 +7323,11 @@
+@@ -7299,7 +7417,11 @@
          } else {
              EditorMode::AutoHeight {
                  min_lines: AgentSettings::get_global(cx).message_editor_min_lines,
@@ -9744,7 +10021,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
              }
          };
          self.message_editor.update(cx, |editor, cx| {
-@@ -7505,7 +7533,7 @@
+@@ -7505,7 +7627,7 @@
              }
          }
  
@@ -9753,7 +10030,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
  
          v_flex()
              .id(("thinking-block", chunk_ix))
-@@ -10082,6 +10110,11 @@
+@@ -10082,6 +10204,11 @@
              .into_any_element()
          };
  
@@ -9765,7 +10042,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
          let gradient_overlay = {
              div()
                  .absolute()
-@@ -10089,24 +10122,11 @@
+@@ -10089,24 +10216,11 @@
                  .right_0()
                  .w_12()
                  .h_full()
@@ -9795,7 +10072,25 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
          };
  
          h_flex()
-@@ -12293,6 +12313,31 @@
+@@ -10693,6 +10807,8 @@
+                 let model = thread.model()?;
+                 Some(model.name().0)
+             });
++        let agent_detail = tool_call.raw_input.as_ref().and_then(|input| input.get("eidoAgent"))
++            .and_then(|agent| agent.get("detail")).and_then(|detail| detail.as_str()).map(SharedString::from);
+         let thread_title = thread
+             .as_ref()
+             .and_then(|t| t.read(cx).title())
+@@ -10811,7 +10927,7 @@
+                                                     .flex_1()
+                                                     .truncate(),
+                                             )
+-                                            .when_some(model_name, |this, model_name| {
++                                            .when_some(agent_detail.or(model_name), |this, model_name| {
+                                                 this.child(
+                                                     Label::new(format!("· {model_name}"))
+                                                         .size(LabelSize::Custom(
+@@ -12293,6 +12409,31 @@
                          .size_full()
                          .child(self.render_entries(cx))
                          .vertical_scrollbar_for(&list_state, window, cx)
@@ -9827,7 +10122,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
                          .into_any()
                  } else {
                      this.into_any()
-@@ -12631,7 +12676,9 @@
+@@ -12631,7 +12772,9 @@
              )
              .children(self.render_token_limit_callout(cx))
              .children(self.render_request_elicitations(cx))
@@ -9899,7 +10194,27 @@ diff --git a/crates/agent_ui/src/conversation_view.rs b/crates/agent_ui/src/conv
              ServerState::Loading { .. } => self
                  .loading_status
                  .clone()
-@@ -3431,10 +3454,43 @@
+@@ -1728,6 +1751,19 @@
+                     if *stop_reason == acp::StopReason::EndTurn {
+                         thread.update(cx, |thread, cx| {
+                             thread.mark_as_subagent_output(cx);
++                        });
++                    }
++                    if let Some(child_view) = self.thread_view(&session_id) {
++                        child_view.update(cx, |child, cx| {
++                            if *stop_reason != acp::StopReason::EndTurn {
++                                child.message_queue.pause();
++                                return;
++                            }
++                            let editing = child.message_queue.first()
++                                .is_some_and(|entry| entry.editor.focus_handle(cx).is_focused(window));
++                            if let Some(entry) = child.message_queue.on_generation_stopped(editing) {
++                                child.dispatch_queued_entry(entry, window, cx);
++                            }
+                         });
+                     }
+                     return;
+@@ -3431,10 +3467,43 @@
  impl Render for ConversationView {
      fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
          self.sync_request_elicitation_states(window, cx);
@@ -9943,7 +10258,7 @@ diff --git a/crates/agent_ui/src/conversation_view.rs b/crates/agent_ui/src/conv
              ServerState::Loading { .. } => {
                  let label_text = self
                      .loading_status
-@@ -3496,7 +3552,7 @@
+@@ -3496,7 +3565,7 @@
          v_flex()
              .track_focus(&self.focus_handle)
              .size_full()
@@ -9952,6 +10267,67 @@ diff --git a/crates/agent_ui/src/conversation_view.rs b/crates/agent_ui/src/conv
              .child(v_flex().flex_1().min_h_0().child(content))
              .when(!active_thread_renders_request_elicitations, |this| {
                  this.children(request_elicitation_connection.as_ref().map_or_else(
+@@ -4250,6 +4319,60 @@
+             0,
+             "No notification should fire when a queued message will be auto-sent on Stopped"
+         );
++    }
++
++    #[gpui::test]
++    async fn test_eido_child_target_preserves_draft_and_drains_only_on_end_turn(cx: &mut TestAppContext) {
++        init_test(cx);
++        let connection = StubAgentConnection::new().with_supports_load_session(true);
++        let (conversation, cx) = setup_conversation_view(StubAgentServer::new(connection.clone()), cx).await;
++        add_to_workspace(conversation.clone(), cx);
++        let root = active_thread(&conversation, cx);
++        let parent_id = root.read_with(cx, |view, cx| view.thread.read(cx).session_id().clone());
++        let child_id = acp::SessionId::new("queue-child");
++        cx.update(|_, cx| connection.send_update(parent_id.clone(), serde_json::from_value(serde_json::json!({
++            "sessionUpdate":"tool_call", "toolCallId":"delegate-child", "title":"Child queue",
++            "status":"in_progress", "_meta":{"subagent_session_info":{"session_id":"queue-child","message_start_index":0}}
++        })).unwrap(), cx));
++        cx.run_until_parked();
++        conversation.update_in(cx, |view, window, cx| view.load_subagent_session(child_id.clone(), parent_id.clone(), window, cx));
++        cx.run_until_parked();
++        let child = conversation.read_with(cx, |view, _| view.thread_view(&child_id).unwrap());
++        child.read_with(cx, |view, cx| assert_eq!(view.thread.read(cx).parent_session_id(), Some(&parent_id)));
++        let editor = message_editor(&conversation, cx);
++        editor.update_in(cx, |editor, window, cx| editor.set_text("first child message", window, cx));
++        root.update_in(cx, |root, window, cx| {
++            root.eido_set_recipient(Some(child.clone()), cx);
++            assert_eq!(root.message_editor.read(cx).text(cx), "first child message");
++            root.send(window, cx);
++        });
++        cx.run_until_parked();
++        root.read_with(cx, |view, cx| {
++            assert!(view.eido_recipient().is_none());
++            assert!(view.message_editor.read(cx).is_empty(cx));
++            assert_eq!(view.thread.read(cx).status(), ThreadStatus::Idle);
++        });
++        assert!(child.read_with(cx, |view, cx| view.eido_is_generating(cx)));
++        for (message, stop, expected_queue) in [
++            ("queued child message", acp::StopReason::EndTurn, 0),
++            ("paused child message", acp::StopReason::Cancelled, 1),
++        ] {
++            editor.update_in(cx, |editor, window, cx| editor.set_text(message, window, cx));
++            root.update_in(cx, |root, window, cx| {
++                root.eido_set_recipient(Some(child.clone()), cx);
++                root.send(window, cx);
++            });
++            cx.run_until_parked();
++            assert_eq!(child.read_with(cx, |view, _| view.message_queue.len()), 1);
++            cx.update(|_, _| connection.end_turn(child_id.clone(), stop));
++            cx.run_until_parked();
++            assert_eq!(child.read_with(cx, |view, _| view.message_queue.len()), expected_queue);
++        }
++        child.read_with(cx, |view, cx| {
++            let history = view.thread.read(cx).to_markdown(cx);
++            assert!(history.contains("queued child message"));
++            assert!(!history.contains("paused child message"));
++        });
+     }
+ 
+     #[gpui::test]
 diff --git a/crates/agent_ui/src/favorite_models.rs b/crates/agent_ui/src/favorite_models.rs
 --- a/crates/agent_ui/src/favorite_models.rs
 +++ /dev/null
@@ -16527,7 +16903,7 @@ diff --git a/crates/settings_ui/src/page_data.rs b/crates/settings_ui/src/page_d
                          );
                          this.render_sub_page_items(
                              items.iter().enumerate(),
-@@ -8594,639 +8589,25 @@
+@@ -8594,639 +8589,35 @@
      }
  }
  
@@ -16666,10 +17042,12 @@ diff --git a/crates/settings_ui/src/page_data.rs b/crates/settings_ui/src/page_d
                  in_json: false,
                  files: USER,
 -                render: render_llm_providers_page,
--            }),
--            SettingsPageItem::SubPageLink(SubPageLink {
++                render: crate::pi_settings::render_pi_settings_page,
+             }),
+             SettingsPageItem::SubPageLink(SubPageLink {
 -                title: "External Agents".into(),
--                r#type: Default::default(),
++                title: "pi Extension Center".into(),
+                 r#type: Default::default(),
 -                json_path: Some("agent_servers"),
 -                description: Some(
 -                    "View, add, and remove agents connected through the Agent Client Protocol."
@@ -16691,8 +17069,11 @@ diff --git a/crates/settings_ui/src/page_data.rs b/crates/settings_ui/src/page_d
 -                    "junie",
 -                    "opencode",
 -                ],
--                in_json: false,
--                files: USER,
++                json_path: Some("eido.extensions"),
++                description: Some("Search pi plugins and manage installed MCP servers and skills.".into()),
++                search_aliases: &["pi", "plugins", "extensions", "mcp", "skills", "packages"],
+                 in_json: false,
+                 files: USER,
 -                render: render_external_agents_page,
 -            }),
 -            SettingsPageItem::SubPageLink(SubPageLink {
@@ -16706,7 +17087,7 @@ diff --git a/crates/settings_ui/src/page_data.rs b/crates/settings_ui/src/page_d
 -                in_json: false,
 -                files: USER,
 -                render: render_mcp_servers_page,
-+                render: crate::pi_settings::render_pi_settings_page,
++                render: crate::pi_extensions::render_pi_extensions_page,
              }),
          ]
 -    }
@@ -17177,7 +17558,7 @@ diff --git a/crates/settings_ui/src/page_data.rs b/crates/settings_ui/src/page_d
      }
  }
  
-@@ -11133,100 +10514,6 @@
+@@ -11133,100 +10524,6 @@
      )
  }
  
@@ -26654,18 +27035,19 @@ diff --git a/crates/settings_ui/src/pages.rs b/crates/settings_ui/src/pages.rs
 diff --git a/crates/settings_ui/src/settings_ui.rs b/crates/settings_ui/src/settings_ui.rs
 --- a/crates/settings_ui/src/settings_ui.rs
 +++ b/crates/settings_ui/src/settings_ui.rs
-@@ -1,8 +1,8 @@
+@@ -1,8 +1,9 @@
  mod components;
  mod page_data;
  pub mod pages;
 -
 -use agent_skills::SkillIndex;
 +mod pi_settings;
++mod pi_extensions;
 +
  use anyhow::{Context as _, Result};
  use cloud_api_types::OrganizationConfiguration;
  use editor::{Editor, EditorEvent};
-@@ -30,7 +30,6 @@
+@@ -30,7 +31,6 @@
      collections::{HashMap, HashSet},
      num::{NonZero, NonZeroU32},
      ops::Range,
@@ -26673,7 +27055,7 @@ diff --git a/crates/settings_ui/src/settings_ui.rs b/crates/settings_ui/src/sett
      rc::Rc,
      sync::{Arc, LazyLock, RwLock},
      time::Duration,
-@@ -48,19 +47,14 @@
+@@ -48,19 +48,14 @@
      client_side_decorations,
  };
  use zed_actions::{
@@ -26696,7 +27078,7 @@ diff --git a/crates/settings_ui/src/settings_ui.rs b/crates/settings_ui/src/sett
  
  const NAVBAR_CONTAINER_TAB_INDEX: isize = 0;
  const NAVBAR_GROUP_TAB_INDEX: isize = 1;
-@@ -455,20 +449,24 @@
+@@ -455,20 +450,24 @@
      cx.on_action(|_: &OpenSettings, cx| {
          open_settings_editor(None, None, None, cx);
      });
@@ -26729,7 +27111,7 @@ diff --git a/crates/settings_ui/src/settings_ui.rs b/crates/settings_ui/src/sett
                      action.target.as_ref().map(SettingsFileTarget::from),
                      window_handle,
                      cx,
-@@ -489,6 +487,10 @@
+@@ -489,6 +488,10 @@
              })
              .register_action(|workspace, _: &OpenProjectSettings, window, cx| {
                  let window_handle = window.window_handle().downcast::<MultiWorkspace>();
@@ -26740,7 +27122,7 @@ diff --git a/crates/settings_ui/src/settings_ui.rs b/crates/settings_ui/src/sett
                  let target_worktree_id = workspace
                      .project()
                      .read(cx)
-@@ -500,24 +502,7 @@
+@@ -500,24 +503,7 @@
                              .then_some(tree.read(cx).id())
                      });
                  open_settings_editor(None, target_worktree_id, window_handle, cx);
@@ -26766,7 +27148,7 @@ diff --git a/crates/settings_ui/src/settings_ui.rs b/crates/settings_ui/src/sett
      })
      .detach();
  }
-@@ -609,8 +594,6 @@
+@@ -609,8 +595,6 @@
          .add_basic_renderer::<settings::AlternateScroll>(render_dropdown)
          .add_basic_renderer::<settings::TerminalBlink>(render_dropdown)
          .add_basic_renderer::<settings::CursorShapeContent>(render_dropdown)
@@ -26775,7 +27157,7 @@ diff --git a/crates/settings_ui/src/settings_ui.rs b/crates/settings_ui/src/sett
          .add_basic_renderer::<f32>(render_editable_number_field)
          .add_basic_renderer::<settings::AutoCompactThreshold>(render_text_field)
          .add_basic_renderer::<u32>(render_editable_number_field)
-@@ -662,14 +645,12 @@
+@@ -662,14 +646,12 @@
          .add_basic_renderer::<settings::IncludeIgnoredContent>(render_dropdown)
          .add_basic_renderer::<settings::ShowIndentGuides>(render_dropdown)
          .add_basic_renderer::<settings::ShellDiscriminants>(render_dropdown)
@@ -26790,7 +27172,7 @@ diff --git a/crates/settings_ui/src/settings_ui.rs b/crates/settings_ui/src/sett
          .add_basic_renderer::<settings::SemanticTokens>(render_dropdown)
          .add_basic_renderer::<settings::DocumentFoldingRanges>(render_dropdown)
          .add_basic_renderer::<settings::DocumentSymbols>(render_dropdown)
-@@ -717,6 +698,11 @@
+@@ -717,6 +699,11 @@
      window: &mut Window,
      cx: &mut Context<SettingsWindow>,
  ) {
@@ -26802,7 +27184,7 @@ diff --git a/crates/settings_ui/src/settings_ui.rs b/crates/settings_ui/src/sett
      let file_index = settings_window
          .files
          .iter()
-@@ -833,16 +819,6 @@
+@@ -833,16 +820,6 @@
      });
  }
  
@@ -26819,7 +27201,7 @@ diff --git a/crates/settings_ui/src/settings_ui.rs b/crates/settings_ui/src/sett
  fn open_settings_editor_with(
      workspace_handle: Option<WindowHandle<MultiWorkspace>>,
      cx: &mut App,
-@@ -891,7 +867,14 @@
+@@ -891,7 +868,14 @@
          cx.open_window(
              WindowOptions {
                  titlebar: Some(TitlebarOptions {
@@ -26835,15 +27217,16 @@ diff --git a/crates/settings_ui/src/settings_ui.rs b/crates/settings_ui/src/sett
                      appears_transparent: true,
                      traffic_light_position: Some(point(px(12.0), px(12.0))),
                  }),
-@@ -948,6 +931,7 @@
+@@ -948,6 +932,8 @@
  }
  
  pub struct SettingsWindow {
 +    pub(crate) pi_settings: Option<Entity<pi_settings::PiSettingsView>>,
++    pub(crate) pi_extensions: Option<Entity<pi_extensions::PiExtensionsView>>,
      title_bar: Option<Entity<PlatformTitleBar>>,
      original_window: Option<WindowHandle<MultiWorkspace>>,
      files: Vec<(SettingsUiFile, FocusHandle)>,
-@@ -978,37 +962,7 @@
+@@ -978,37 +964,7 @@
      search_index: Option<Arc<SearchIndex>>,
      list_state: ListState,
      shown_errors: HashSet<String>,
@@ -26881,7 +27264,7 @@ diff --git a/crates/settings_ui/src/settings_ui.rs b/crates/settings_ui/src/sett
  }
  
  struct SearchDocument {
-@@ -1666,7 +1620,6 @@
+@@ -1666,7 +1622,6 @@
  #[derive(Clone, PartialEq, Default)]
  enum SubPageType {
      Language,
@@ -26889,7 +27272,7 @@ diff --git a/crates/settings_ui/src/settings_ui.rs b/crates/settings_ui/src/sett
      #[default]
      Other,
  }
-@@ -1838,34 +1791,6 @@
+@@ -1838,34 +1793,6 @@
                  last_is_staff = is_staff;
                  this.rebuild_pages(window, cx);
              }
@@ -26924,7 +27307,7 @@ diff --git a/crates/settings_ui/src/settings_ui.rs b/crates/settings_ui/src/sett
          })
          .detach();
  
-@@ -2016,23 +1941,15 @@
+@@ -2016,23 +1943,18 @@
                  .tab_stop(false),
              search_index: None,
              shown_errors: HashSet::default(),
@@ -26946,14 +27329,17 @@ diff --git a/crates/settings_ui/src/settings_ui.rs b/crates/settings_ui/src/sett
 -            skill_creator_page: None,
 +
 +            pi_settings: None,
++            pi_extensions: None,
          };
  
 +        this.pi_settings = std::env::var_os("EIDO_ROOT")
 +            .map(|_| cx.new(|cx| pi_settings::PiSettingsView::new(window, cx)));
++        this.pi_extensions = std::env::var_os("EIDO_ROOT")
++            .map(|_| cx.new(|cx| pi_extensions::PiExtensionsView::new(window, cx)));
          this.fetch_files(window, cx);
          this.build_ui(window, cx);
          this.build_search_index();
-@@ -2559,6 +2476,19 @@
+@@ -2559,6 +2481,19 @@
      #[track_caller]
      fn fetch_files(&mut self, window: &mut Window, cx: &mut Context<SettingsWindow>) {
          self.worktree_root_dirs.clear();
@@ -26973,7 +27359,7 @@ diff --git a/crates/settings_ui/src/settings_ui.rs b/crates/settings_ui/src/sett
          let prev_files = self.files.clone();
          let settings_store = cx.global::<SettingsStore>();
          let mut ui_files = vec![];
-@@ -2649,7 +2579,6 @@
+@@ -2649,7 +2584,6 @@
      fn open_navbar_entry_page(&mut self, navbar_entry: usize) {
          // Navigating to another page dismisses the transient "copied share
          // link" checkmark shown on a Skills page row.
@@ -26981,7 +27367,7 @@ diff --git a/crates/settings_ui/src/settings_ui.rs b/crates/settings_ui/src/sett
  
          if !self.is_nav_entry_visible(navbar_entry) {
              self.open_first_nav_page();
-@@ -2775,8 +2704,6 @@
+@@ -2775,8 +2709,6 @@
          if let SettingsUiFile::Project((_, _)) = &self.current_file {
              telemetry::event!("Setting Project Clicked");
          }
@@ -26990,7 +27376,7 @@ diff --git a/crates/settings_ui/src/settings_ui.rs b/crates/settings_ui/src/sett
  
          let sub_page_stack = std::mem::take(&mut self.sub_page_stack);
          self.build_ui(window, cx);
-@@ -2830,6 +2757,24 @@
+@@ -2830,6 +2762,24 @@
          window: &mut Window,
          cx: &mut Context<SettingsWindow>,
      ) -> impl IntoElement {
@@ -27015,7 +27401,7 @@ diff --git a/crates/settings_ui/src/settings_ui.rs b/crates/settings_ui/src/sett
          static OVERFLOW_LIMIT: usize = 1;
  
          let file_button =
-@@ -2961,6 +2906,7 @@
+@@ -2961,6 +2911,7 @@
                          this.open_current_settings_file(window, cx);
                      })),
              )
@@ -27023,7 +27409,7 @@ diff --git a/crates/settings_ui/src/settings_ui.rs b/crates/settings_ui/src/sett
      }
  
      pub(crate) fn display_name(&self, file: &SettingsUiFile) -> Option<String> {
-@@ -3540,8 +3486,10 @@
+@@ -3540,8 +3491,10 @@
              .min_w_0()
              .gap_1()
              .overflow_x_hidden()
@@ -27036,7 +27422,7 @@ diff --git a/crates/settings_ui/src/settings_ui.rs b/crates/settings_ui/src/sett
              .children(
                  itertools::intersperse(
                      std::iter::once(self.current_page().title.into()).chain(
-@@ -3684,20 +3632,6 @@
+@@ -3684,20 +3637,6 @@
          self.render_sub_page_items_in(page_content, items, false, window, cx)
      }
  
@@ -27057,7 +27443,7 @@ diff --git a/crates/settings_ui/src/settings_ui.rs b/crates/settings_ui/src/sett
      fn render_sub_page_items_in<'a, Items>(
          &self,
          page_content: Stateful<Div>,
-@@ -3774,13 +3708,6 @@
+@@ -3774,13 +3713,6 @@
          let page_content;
  
          if let Some(current_sub_page) = self.sub_page_stack.last() {
@@ -27071,7 +27457,7 @@ diff --git a/crates/settings_ui/src/settings_ui.rs b/crates/settings_ui/src/sett
              page_header = h_flex()
                  .w_full()
                  .min_w_0()
-@@ -3817,29 +3744,6 @@
+@@ -3817,29 +3749,6 @@
                                          this.open_current_settings_file(window, cx);
                                      })),
                              )
@@ -27101,7 +27487,7 @@ diff --git a/crates/settings_ui/src/settings_ui.rs b/crates/settings_ui/src/sett
                          }),
                  )
                  .into_any_element();
-@@ -4244,7 +4148,6 @@
+@@ -4244,7 +4153,6 @@
          window: &mut Window,
          cx: &mut Context<SettingsWindow>,
      ) {
@@ -27109,7 +27495,7 @@ diff --git a/crates/settings_ui/src/settings_ui.rs b/crates/settings_ui/src/sett
          self.sub_page_stack
              .push(SubPage::new(sub_page_link, section_header));
          self.content_focus_handle.focus_handle(cx).focus(window, cx);
-@@ -4268,7 +4171,6 @@
+@@ -4268,7 +4176,6 @@
          window: &mut Window,
          cx: &mut Context<SettingsWindow>,
      ) {
@@ -27117,7 +27503,7 @@ diff --git a/crates/settings_ui/src/settings_ui.rs b/crates/settings_ui/src/sett
          let sub_page_link = SubPageLink {
              title: title.into(),
              r#type: SubPageType::default(),
-@@ -4280,102 +4182,6 @@
+@@ -4280,102 +4187,6 @@
              render,
          };
          self.push_sub_page(sub_page_link, section_header.into(), window, cx);
@@ -27220,7 +27606,7 @@ diff --git a/crates/settings_ui/src/settings_ui.rs b/crates/settings_ui/src/sett
      }
  
      /// Navigate to a sub-page by its json_path.
-@@ -4450,21 +4256,10 @@
+@@ -4450,21 +4261,10 @@
      }
  
      pub(crate) fn pop_sub_page(&mut self, window: &mut Window, cx: &mut Context<SettingsWindow>) {
@@ -27244,7 +27630,7 @@ diff --git a/crates/settings_ui/src/settings_ui.rs b/crates/settings_ui/src/sett
      }
  
      fn focus_file_at_index(&mut self, index: usize, window: &mut Window, cx: &mut App) {
-@@ -5374,20 +5169,10 @@
+@@ -5374,20 +5174,11 @@
                  search_index: None,
                  list_state: ListState::new(0, gpui::ListAlignment::Top, px(0.0)),
                  shown_errors: HashSet::default(),
@@ -27265,10 +27651,11 @@ diff --git a/crates/settings_ui/src/settings_ui.rs b/crates/settings_ui/src/sett
 -                skill_creator_page: None,
 +
 +                pi_settings: None,
++            pi_extensions: None,
              }
          }
      }
-@@ -5408,7 +5193,6 @@
+@@ -5408,7 +5199,6 @@
          theme_settings::init(theme::LoadThemes::JustBase, cx);
          editor::init(cx);
          menu::init();
@@ -27276,7 +27663,7 @@ diff --git a/crates/settings_ui/src/settings_ui.rs b/crates/settings_ui/src/sett
      }
  
      fn parse(input: &'static str, window: &mut Window, cx: &mut App) -> SettingsWindow {
-@@ -5513,20 +5297,10 @@
+@@ -5513,20 +5303,11 @@
              search_index: None,
              list_state: ListState::new(0, gpui::ListAlignment::Top, px(0.0)),
              shown_errors: HashSet::default(),
@@ -27297,10 +27684,11 @@ diff --git a/crates/settings_ui/src/settings_ui.rs b/crates/settings_ui/src/sett
 -            skill_creator_page: None,
 +
 +            pi_settings: None,
++            pi_extensions: None,
          };
  
          settings_window.build_filter_table();
-@@ -6145,359 +5919,6 @@
+@@ -6145,359 +5926,6 @@
              );
          });
      }
@@ -27707,7 +28095,7 @@ diff --git a/crates/terminal_view/src/terminal_panel.rs b/crates/terminal_view/s
 diff --git a/crates/title_bar/src/title_bar.rs b/crates/title_bar/src/title_bar.rs
 --- a/crates/title_bar/src/title_bar.rs
 +++ b/crates/title_bar/src/title_bar.rs
-@@ -304,6 +304,47 @@
+@@ -304,6 +304,45 @@
                      project_name = Some(SharedString::from(name));
                  }
              }
@@ -27724,10 +28112,8 @@ diff --git a/crates/title_bar/src/title_bar.rs b/crates/title_bar/src/title_bar.
 +                .pl_2()
 +                .flex_none()
 +                .child(
-+                    gpui::svg()
-+                        .path("images/eido-mark.svg")
-+                        .size(px(20.))
-+                        .text_color(cx.theme().colors().text_accent),
++                    gpui::img("images/eido-logo.png")
++                        .size(px(24.)),
 +                )
 +                .child(self.render_project_name(project_name, window, cx))
 +                .when_some(repository.filter(|_| is_git_enabled), |this, repository| {
@@ -27816,7 +28202,7 @@ diff --git a/crates/workspace/src/pane.rs b/crates/workspace/src/pane.rs
 +                                                gpui::svg()
 +                                                    .path("images/eido-mark.svg")
 +                                                    .size(px(112.))
-+                                                    .text_color(cx.theme().colors().text)
++                                                    .text_color(gpui::rgb(0x4b6df3))
 +                                                    .opacity(0.08),
 +                                            )
 +                                            .child(
