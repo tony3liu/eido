@@ -230,7 +230,11 @@ export function createSubagents(agentDir: string, sessionDir: string) {
         }} : ctx);
         mcpServers.set(ctx.params.sessionId, ctx.params.mcpServers);
         const restored = sessions.get(ctx.params.sessionId);
-        if (relation && restored?.host) {restored.host.enqueue({sessionUpdate: "session_info_update", title: restored.pi.sessionManager.getSessionName() || relation.title}); await restored.host.drain();}
+        const restoredTitle = restored?.pi.sessionManager.getSessionName() || relation?.title;
+        if (restored?.host && restoredTitle) {
+          restored.host.enqueue({sessionUpdate: "session_info_update", title: restoredTitle});
+          await restored.host.drain();
+        }
         return result;
       };
       const prompt = server.agent.prompt.bind(server.agent);

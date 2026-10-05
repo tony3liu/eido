@@ -116,3 +116,13 @@ for (const [before, after] of [
   if (source.includes(before)) await writeFile(translatePath, source.replace(before, after));
   else if (!source.includes(after)) throw new Error("Review Eido event translation patch.");
 }
+
+await patchSource(sessionPath,
+  '    async replay(entries) {',
+  '    historyUpdates(entries) { return entries.flatMap(entry => replayEntry(entry)); }\n    async replay(entries) {');
+
+// session/new notifications can arrive before the native client knows the ID.
+// Include the discovered commands in the response so initial state is not lost.
+await patchSource(agentPath,
+  '({ sessionId: session.sessionId, configOptions: session.configOptions(), modes: null }))',
+  '({ sessionId: session.sessionId, configOptions: session.configOptions(), modes: null, _meta: {eidoCommands: session.pi[Symbol.for("eido.pi.commands")]?.commands ?? []} }))');

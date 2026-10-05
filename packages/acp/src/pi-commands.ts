@@ -1,11 +1,13 @@
 import { methods, type AgentContext, type AvailableCommand, type SessionConfigOption, type SessionUpdate } from "@agentclientprotocol/sdk";
-import { resolveModelScopeWithDiagnostics, type AgentSession } from "@earendil-works/pi-coding-agent";
+import { resolveModelScopeWithDiagnostics, type AgentSession, type SessionEntry } from "@earendil-works/pi-coding-agent";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import { createPiUI } from "./pi-ui.ts";
 import { exportPiSession, piChangelog } from "./pi-command-files.ts";
 import { manageAgentRoles } from "./agent-roles.ts";
 import { nativeUiAction } from "./native-ui.ts";
 import { createPiSettings } from "../../../scripts/pi-settings.mjs";
+import { shareCommand, bugCommand } from "./pi-sharing.ts";
+import { sessionCommand, treeCommand } from "./pi-session-commands.ts";
 import { loginPiProvider } from "./pi-auth.ts";
 
 // The audited adapter hook runs inside its existing turn boundary. Commands
@@ -23,11 +25,20 @@ export const piCommands: AvailableCommand[] = [
   { name: "export", description: "Export this pi session to HTML or JSONL", input: {hint: "[path.html | path.jsonl]"} },
   { name: "changelog", description: "Show release notes from the bundled pi version" },
   { name: "agents", description: "List, create or edit global agent roles", input: {hint: "[list | new | agent-name]"} },
+  { name: "share", description: "Share a reviewed conversation export" },
+  { name: "bug", description: "Prepare a report for pi developers", input:{hint:"[description]"} },
   { name: "logout", description: "Remove a provider's global pi credentials", input: {hint: "[provider]"} },
   { name: "login", description: "Sign in using pi provider authentication", input: {hint: "[provider] [api_key | oauth]"} },
   { name: "trust", description: "Choose global Agent Access for all tasks", input: {hint: "[ask | full]"} },
 ];
 const nativeCommands: AvailableCommand[] = [
+  {name:"quit", description:"Quit Eido through its normal save and shutdown flow"},
+  {name:"tree", description:"Navigate the pi conversation tree", input:{hint:"[entry ID]"}},
+  {name:"new", description:"Start a new task"},
+  {name:"resume", description:"Resume a pi task", input:{hint:"[session ID]"}},
+  {name:"fork", description:"Fork before a previous user message", input:{hint:"[message ID]"}},
+  {name:"clone", description:"Clone the current conversation branch"},
+  {name:"import", description:"Import a pi JSONL session as a new task", input:{hint:"<path.jsonl>"}},
   {name: "settings", description: "Open global pi settings"},
   {name: "hotkeys", description: "Open Eido keyboard shortcuts"},
   {name: "copy", description: "Copy the last pi assistant response to the clipboard"},
@@ -35,6 +46,8 @@ const nativeCommands: AvailableCommand[] = [
 
 interface CommandContext {
   enqueue(update: SessionUpdate): void;
+  drain(): Promise<void>;
+  historyUpdates(entries: readonly SessionEntry[]): SessionUpdate[];
   configOptions(): SessionConfigOption[];
   applyConfigAtBoundary(id: string, value: string): Promise<SessionConfigOption[]>;
   publishAvailableModels(models: readonly Model<Api>[]): Promise<void>;
@@ -114,6 +127,28 @@ export function installPiCommands(pi: AgentSession, client: AgentContext, suppor
         }
         let output: string;
         switch (name) {
+          case "share": output = await shareCommand(pi, ui, agentDir, argument, signal); break;
+          case "bug": output = await bugCommand(pi, ui, agentDir, argument, signal); break;
+          case "quit":
+            if (argument) throw new Error("Usage: /quit (no arguments).");
+            record("Closing Eido…", "completed");
+            await context.drain();
+            await nativeUiAction(client, pi.sessionId, "quit", {}, signal);
+            return true;
+          case "tree": {
+            const navigation = await treeCommand(pi, ui, argument, signal);
+            record(navigation.output, "completed");
+            if (navigation.changed) {
+              await context.drain();
+              await nativeUiAction(client, pi.sessionId, "replace_transcript", {
+                updates: context.historyUpdates(pi.sessionManager.getBranch()), draft: navigation.draft,
+              }, signal);
+            }
+            return true;
+          }
+          case "new": case "resume": case "fork": case "clone": case "import":
+            output = await sessionCommand(pi, client, ui, name, argument, signal);
+            break;
           case "settings":
           case "hotkeys":
           case "copy": {

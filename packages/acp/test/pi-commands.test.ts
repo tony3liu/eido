@@ -512,3 +512,258 @@ test("cancelling OAuth dismisses the native request and releases the pi turn", {
     assert.equal(h.requests(),0);
   } finally {await h.dispose();}
 });
+
+test("clone and fork create independent pi journals and preserve source history", async () => {
+  const actions: {sessionId:string;action:string;data:Record<string,unknown>}[]=[];
+  const h=await harness([()=> 'First response.',()=> 'Second response.'],{
+    native:async request=>{actions.push(request);return {handled:true};},
+  });
+  try {
+    const task=await h.newTask();
+    await h.prompt(task.sessionId,'First user marker');
+    await h.prompt(task.sessionId,'Second user marker');
+    const sourcePath=(await h.connection.agent.request(methods.agent.session.list,{cwd:h.cwd})).sessions.find(s=>s.sessionId===task.sessionId);
+    assert.ok(sourcePath);
+    const sourceEntries=await h.entries();
+    const user=sourceEntries.find(entry=>entry.type==='message' && entry.message?.role==='user' && JSON.stringify(entry.message.content).includes('Second user marker'));
+    await h.prompt(task.sessionId,`/fork ${user.id}`);
+    const fork=actions.at(-1)!;
+    assert.equal(fork.action,'open_session');
+    assert.equal(fork.sessionId,task.sessionId);
+    assert.equal(fork.data.draft,'Second user marker');
+    assert.notEqual(fork.data.id,task.sessionId);
+    await h.connection.agent.request(methods.agent.session.load,{sessionId:fork.data.id as string,cwd:h.cwd,mcpServers:[]});
+    assert.match(h.text(fork.data.id as string),/First response/);
+    assert.doesNotMatch(h.text(fork.data.id as string),/Second response/);
+    await h.prompt(task.sessionId,'/clone');
+    const clone=actions.at(-1)!;
+    assert.notEqual(clone.data.id,fork.data.id);
+    await h.connection.agent.request(methods.agent.session.load,{sessionId:clone.data.id as string,cwd:h.cwd,mcpServers:[]});
+    assert.match(h.text(clone.data.id as string),/Second response/);
+    assert.ok(h.updates.some(event => event.sessionId === clone.data.id && event.update.sessionUpdate === 'session_info_update' && event.update.title === clone.data.title));
+    const files=await readdir(join(h.cwd,'sessions'));
+    assert.ok(files.every(file=>!file.startsWith('.session-copy-')));
+    assert.equal(h.requests(),2);
+  } finally {await h.dispose();}
+});
+
+test("native new/resume retains IDs and extension hooks can cancel a transition", async () => {
+  const actions: {sessionId:string;action:string;data:Record<string,unknown>}[]=[];
+  const h=await harness([],{
+    setup:async cwd=>{
+      await mkdir(join(cwd,'extensions'));
+      await writeFile(join(cwd,'extensions/cancel-switch.js'),`export default pi => pi.on('session_before_switch', event => event.reason === 'new' ? {cancel:true} : undefined);`);
+    },
+    native:async request=>{actions.push(request);return {handled:true};},
+  });
+  try {
+    const a=await h.newTask(), b=await h.newTask();
+    await h.prompt(a.sessionId,'/name First task');
+    await h.prompt(b.sessionId,'/name Second task');
+    await h.prompt(a.sessionId,'/new');
+    assert.match(h.text(a.sessionId),/cancelled by extension/);
+    assert.equal(actions.length,0);
+    await h.prompt(a.sessionId,`/resume ${b.sessionId}`);
+    assert.equal(actions.at(-1)?.data.id,b.sessionId);
+    assert.equal(actions.at(-1)?.sessionId,a.sessionId);
+    await h.prompt(a.sessionId,`/resume ${a.sessionId}`);
+    assert.equal(actions.length,1);
+    assert.match(h.text(a.sessionId),/already open/);
+    await h.prompt(a.sessionId,'/resume missing');
+    assert.equal(actions.length,1);
+    assert.equal(h.requests(),0);
+  } finally {await h.dispose();}
+});
+
+test("import validates JSONL, removes live child ownership and preserves the original file", async () => {
+  let accepted=true;
+  const actions: {sessionId:string;action:string;data:Record<string,unknown>}[]=[];
+  const h=await harness([], {form:async()=>({action:accepted?'accept':'cancel'}),native:async request=>{actions.push(request);return {handled:true};}});
+  try {
+    const task=await h.newTask();
+    const path=join(h.cwd,'import.jsonl');
+    const data=[
+      {type:'session',version:3,id:'00000000-0000-4000-8000-000000000001',cwd:h.cwd,timestamp:new Date().toISOString()},
+      {type:'custom',id:'child123',parentId:null,timestamp:new Date().toISOString(),customType:'eido.subagent.v1',data:{kind:'child',childSessionId:'old-child',parentSessionId:'old-parent',title:'Original scout'}},
+      {type:'custom',id:'entry123',parentId:'child123',timestamp:new Date().toISOString(),customType:'eido.command.v1',data:{command:'/session',output:'Imported session marker',status:'completed'}},
+    ].map(e=>JSON.stringify(e)).join('\n')+'\n';
+    await writeFile(path,data);
+    accepted=false;
+    await h.prompt(task.sessionId,`/import "${path}"`);
+    assert.equal(actions.length,0);
+    accepted=true;
+    await h.prompt(task.sessionId,`/import "${path}"`);
+    const id=actions.at(-1)?.data.id as string;
+    assert.ok(id && id!==task.sessionId);
+    assert.equal(await readFile(path,'utf8'),data);
+    await h.connection.agent.request(methods.agent.session.load,{sessionId:id,cwd:h.cwd,mcpServers:[]});
+    assert.match(h.text(id),/Imported session marker/);
+    assert.match(h.text(id),/Historical agent: Original scout/);
+    const imported=(await readdir(join(h.cwd,'sessions'))).find(path=>path.includes(id))!;
+    assert.doesNotMatch(await readFile(join(h.cwd,'sessions',imported),'utf8'),/eido\.subagent\.v1/);
+    await writeFile(path,data+'invalid-json');
+    await h.prompt(task.sessionId,`/import "${path}"`);
+    assert.equal(actions.length,1);
+    assert.match(h.text(task.sessionId),/malformed record/);
+    for (const bad of [
+      data.replace('"parentId":null', '"parentId":"child123"'),
+      data.replace('"id":"entry123"', '"id":"child123"'),
+      data.replace('"parentId":"child123"', '"parentId":"missing"'),
+    ]) {
+      await writeFile(path,bad);
+      await h.prompt(task.sessionId,`/import "${path}"`);
+      assert.equal(actions.length,1);
+    }
+    assert.match(h.text(task.sessionId),/invalid parent reference/);
+    assert.match(h.text(task.sessionId),/duplicate entry IDs/);
+    assert.equal(h.requests(),0);
+  } finally {await h.dispose();}
+});
+
+test("tree navigation replays the selected branch in the same ACP task without repeating actions", async () => {
+  const actions:{sessionId:string;action:string;data:Record<string,unknown>}[]=[];
+  const h=await harness([()=> 'Earlier branch response.',()=> 'Later branch response.',context=>{
+    assert.doesNotMatch(JSON.stringify(context),/Later branch response/);
+    return 'New branch response.';
+  }],{
+    form:async()=>({action:'accept',content:{value:'No summary'}}),
+    native:async request=>{actions.push(request);return {handled:true};},
+  });
+  try {
+    const task=await h.newTask();
+    await h.prompt(task.sessionId,'First question');
+    await h.prompt(task.sessionId,'Later question');
+    const earlier=(await h.entries()).find(e=>e.type==='message' && e.message?.role==='assistant' && JSON.stringify(e.message.content).includes('Earlier branch response'));
+    await h.prompt(task.sessionId,`/tree ${earlier.id}`);
+    const replace=actions.at(-1)!;
+    assert.equal(replace.action,'replace_transcript');
+    assert.equal(replace.sessionId,task.sessionId);
+    assert.match(JSON.stringify(replace.data.updates),/Earlier branch response/);
+    assert.doesNotMatch(JSON.stringify(replace.data.updates),/Later branch response/);
+    await h.prompt(task.sessionId,'Continue new branch');
+    assert.equal(h.requests(),3);
+    assert.match(h.text(task.sessionId),/New branch response/);
+    // The abandoned branch is still in pi's append-only journal.
+    assert.match(JSON.stringify(await h.entries()),/Later branch response/);
+    const count=actions.length;
+    await h.connection.agent.request(methods.agent.session.close,{sessionId:task.sessionId});
+    h.updates.length=0;
+    await h.connection.agent.request(methods.agent.session.load,{sessionId:task.sessionId,cwd:h.cwd,mcpServers:[]});
+    assert.equal(actions.length,count);
+    assert.match(h.text(task.sessionId),/New branch response/);
+    assert.doesNotMatch(h.text(task.sessionId),/Later branch response/);
+  } finally {await h.dispose();}
+});
+
+test("all bundled pi commands are discoverable and native quit follows command journaling", async () => {
+  const actions:string[]=[];
+  const h=await harness([], {native:async request=>{actions.push(request.action);return {handled:true};}});
+  try {
+    const task=await h.newTask();
+    const expected=['settings','model','tree','thinking','scoped-models','export','import','share','bug','copy','name','session','changelog','hotkeys','fork','clone','trust','login','logout','new','compact','resume','reload','quit'];
+    const initial=(task._meta?.eidoCommands as {name:string}[] | undefined)?.map(c=>c.name) ?? [];
+    for(const name of expected) assert.ok(initial.includes(name),`Initial state: ${name}`);
+    const catalogue=h.updates.flatMap(({update})=>update.sessionUpdate==='available_commands_update'?update.availableCommands.map(c=>c.name):[]);
+    for(const name of expected) assert.ok(catalogue.includes(name),name);
+    await h.prompt(task.sessionId,'/quit');
+    assert.deepEqual(actions,['quit']);
+    assert.ok((await h.entries()).some(e=>e.type==='custom' && e.data?.command==='/quit' && e.data.status==='completed'));
+    assert.equal(h.requests(),0);
+  } finally {await h.dispose();}
+});
+
+test("sharing prepares a local artifact and cancellation never publishes", async () => {
+  let selection='Export locally';
+  let confirmations=0;
+  const h=await harness([()=> 'Share fixture response'],{form:async params=>{
+    if(params.message==='Share this conversation') return {action:'accept',content:{value:selection}};
+    confirmations++;
+    return {action:'cancel'};
+  }});
+  try {
+    const task=await h.newTask();
+    await h.prompt(task.sessionId,'Share fixture question');
+    await h.prompt(task.sessionId,'/share');
+    const files=await readdir(join(h.cwd,'exports'));
+    assert.equal(files.length,1);
+    const exported=await readFile(join(h.cwd,'exports',files[0]!),'utf8');
+    const encoded=/<script id="session-data" type="application\/json">([^<]+)<\/script>/.exec(exported)?.[1];
+    assert.ok(encoded);
+    assert.match(Buffer.from(encoded,'base64').toString('utf8'),/Share fixture response/);
+    selection='Secret GitHub gist';
+    await h.prompt(task.sessionId,'/share');
+    assert.equal(confirmations,1);
+    assert.match(h.text(task.sessionId),/Share cancelled/);
+    assert.equal(h.requests(),1);
+  } finally {await h.dispose();}
+});
+
+test("bug reports use pi's local ZIP format and exclude transcript by default", async () => {
+  const h=await harness([()=> 'Transcript must stay private marker'],{form:async params=>{
+    if(params.message.startsWith('Report a bug')) return {action:'accept',content:{value:'Fixture reproduction steps'}};
+    if(params.message.startsWith('Include conversation')) return {action:'accept',content:{value:'Diagnostics only'}};
+    return {action:'accept',content:{value:'Keep local ZIP'}};
+  }});
+  try {
+    const task=await h.newTask();
+    await h.prompt(task.sessionId,'Fixture message');
+    await h.prompt(task.sessionId,'/bug');
+    const files=await readdir(join(h.cwd,'reports'));
+    assert.equal(files.length,1);
+    const archive=await readFile(join(h.cwd,'reports',files[0]!));
+    assert.equal(archive.readUInt32LE(0),0x04034b50);
+    const {execFile}=await import('node:child_process');
+    const {promisify}=await import('node:util');
+    const {stdout}=await promisify(execFile)('unzip',['-p',join(h.cwd,'reports',files[0]!)]);
+    assert.match(stdout,/Fixture reproduction steps/);
+    assert.doesNotMatch(stdout,/Transcript must stay private marker|fixture-never-sent/);
+    assert.match(h.text(task.sessionId),/Report saved locally/);
+    assert.equal(h.requests(),1);
+  } finally {await h.dispose();}
+});
+
+test("Radius sharing and bug upload require confirmation and use pi payloads", async t => {
+  let allow=false, confirmations=0;
+  const uploads:{url:string;body:unknown}[]=[];
+  t.mock.method(globalThis,'fetch',async (input: string|URL|Request, init?:RequestInit) => {
+    const url=String(input);
+    assert.ok(allow, 'No upload before confirmation');
+    assert.ok(init?.signal, 'Uploads are cancellable and time bounded');
+    uploads.push({url,body:init?.body});
+    if(url.includes('/v1/artifacts')) {
+      assert.equal(new Headers(init?.headers).get('authorization'),'Bearer radius-fixture-only');
+      return Response.json({artifact:{canonical_url:'https://radius.example/artifacts/fixture'}});
+    }
+    assert.match(url,/\/v1\/bug-reports$/);
+    assert.ok(init?.body instanceof FormData);
+    return Response.json({ok:true,bug_report:{id:'report-fixture'}});
+  });
+  const h=await harness([],{
+    setup:async cwd=>writeFile(join(cwd,'fixture-auth.json'),JSON.stringify({radius:{type:'api_key',key:'radius-fixture-only'}})),
+    form:async params=>{
+      if(params.message==='Share this conversation') return {action:'accept',content:{value:'Radius organization'}};
+      if(params.message.startsWith('Report a bug')) return {action:'accept',content:{value:'Upload fixture'}};
+      if(params.message.startsWith('Include conversation')) return {action:'accept',content:{value:'Diagnostics only'}};
+      if(params.message.startsWith('Report prepared')) return {action:'accept',content:{value:'Upload to pi developers'}};
+      confirmations++;
+      return {action:allow?'accept':'cancel'};
+    },
+  });
+  try {
+    const task=await h.newTask();
+    await h.prompt(task.sessionId,'/name Sharing fixture');
+    await h.prompt(task.sessionId,'/share');
+    await h.prompt(task.sessionId,'/bug');
+    assert.equal(uploads.length,0);
+    allow=true;
+    await h.prompt(task.sessionId,'/share');
+    await h.prompt(task.sessionId,'/bug');
+    assert.equal(confirmations,4,h.text(task.sessionId));
+    assert.equal(uploads.length,2);
+    assert.equal(typeof uploads[0]!.body,'string');
+    assert.match(String(uploads[0]!.body),/"type":"session"/);
+    assert.match(h.text(task.sessionId),/https:\/\/radius.example\/artifacts\/fixture/);
+    assert.match(h.text(task.sessionId),/Report ID: report-fixture/);
+    assert.equal(h.requests(),0);
+  } finally {await h.dispose();}
+});
