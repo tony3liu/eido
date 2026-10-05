@@ -16,7 +16,7 @@ test("pi package lifecycle preserves filters, queues changes while loaded, and m
   const center = createExtensionCenter(agent);
   try {
     let state = await center.execute({operation:"install",source:pkg});
-    assert.equal(state.packages.length, 1); assert.equal(state.packages[0].version, "1.0.0");
+    assert.equal(state.packages.length, 1); assert.equal(state.packages[0].version, "1.0.0"); assert.equal(state.packages[0].name, "pi-fixture");
     const source = state.packages[0].source;
     const skill = state.skills.find(s => s.name === "fixture-skill"); assert.equal(skill.enabled, true);
     state = await center.execute({operation:"toggle-resource",kind:"skills",path:skill.path,enabled:false});

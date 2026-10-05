@@ -16164,6 +16164,469 @@ diff --git a/crates/agent_ui/src/ui.rs b/crates/agent_ui/src/ui.rs
 +        ..Default::default()
 +    }
 +}
+diff --git a/crates/extensions_ui/Cargo.toml b/crates/extensions_ui/Cargo.toml
+--- a/crates/extensions_ui/Cargo.toml
++++ b/crates/extensions_ui/Cargo.toml
+@@ -36,6 +36,7 @@
+ semver.workspace = true
+ schemars.workspace = true
+ serde.workspace = true
++serde_json.workspace = true
+ settings.workspace = true
+ strum.workspace = true
+ telemetry.workspace = true
+diff --git a/crates/extensions_ui/src/components/extension_card.rs b/crates/extensions_ui/src/components/extension_card.rs
+--- a/crates/extensions_ui/src/components/extension_card.rs
++++ b/crates/extensions_ui/src/components/extension_card.rs
+@@ -75,6 +75,7 @@
+ 
+ #[derive(Clone)]
+ enum ExtensionCardSource {
++    Managed,
+     Dev,
+     Remote {
+         status: ExtensionStatus,
+@@ -96,7 +97,7 @@
+     fn download_count(&self) -> Option<u64> {
+         match self {
+             Self::Remote { download_count, .. } => Some(*download_count),
+-            Self::Dev => None,
++            Self::Dev | Self::Managed => None,
+         }
+     }
+ 
+@@ -123,6 +124,27 @@
+ }
+ 
+ impl ExtensionCard {
++    /// Uses the existing extension card presentation for resources managed by pi.
++    pub(crate) fn for_pi_resource(
++        id: String,
++        name: String,
++        version: String,
++        description: String,
++        status: String,
++        feature: &'static str,
++        actions: [Option<Button>; 3],
++    ) -> Self {
++        Self {
++            details: ExtensionCardDetails {
++                id: id.into(), name: name.into(), version: version.into(),
++                description: Some(description.into()), authors: status.into(),
++                repository_url: None, repository_icon: IconName::Link,
++                provided_features: vec![feature], source: ExtensionCardSource::Managed,
++            },
++            actions,
++            context_menu: None,
++        }
++    }
+     pub fn for_dev(extension: Arc<ExtensionManifest>, cx: &App) -> Self {
+         let extension_store = ExtensionStore::global(cx).read(cx);
+         let status = extension_status(&extension.id, extension_store);
+@@ -616,6 +638,7 @@
+         let installed_version = source.installed_version(&version);
+         let download_count = source.download_count();
+         let is_dev = source.is_dev();
++        let is_managed = matches!(source, ExtensionCardSource::Managed);
+         let is_overridden = source.is_overridden();
+         let repository_button_id = SharedString::from(format!("repository-{id}"));
+         let context_menu_button_id = SharedString::from(format!("more-{id}"));
+@@ -645,7 +668,7 @@
+                                 .whitespace_nowrap()
+                                 .gap_2()
+                                 .child(Headline::new(name).size(HeadlineSize::Small))
+-                                .child(
++                                .when(!version.is_empty(), |row| row.child(
+                                     Headline::new(if is_dev {
+                                         format!("v{version} (dev)")
+                                     } else {
+@@ -653,7 +676,7 @@
+                                     })
+                                     .size(HeadlineSize::XSmall)
+                                     .color(Color::Muted),
+-                                )
++                                ))
+                                 .children(installed_version.map(|installed_version| {
+                                     Headline::new(format!("(v{installed_version} installed)"))
+                                         .size(HeadlineSize::XSmall)
+@@ -701,7 +724,7 @@
+                                 .min_w_0()
+                                 .gap_1()
+                                 .child(
+-                                    Icon::new(IconName::Person)
++                                    Icon::new(if is_managed { IconName::Settings } else { IconName::Person })
+                                         .size(IconSize::XSmall)
+                                         .color(Color::Muted),
+                                 )
+diff --git a/crates/extensions_ui/src/extensions_ui.rs b/crates/extensions_ui/src/extensions_ui.rs
+--- a/crates/extensions_ui/src/extensions_ui.rs
++++ b/crates/extensions_ui/src/extensions_ui.rs
+@@ -1,4 +1,5 @@
+ mod components;
++mod pi_extensions;
+ mod extension_suggest;
+ mod extension_version_selector;
+ 
+@@ -42,6 +43,8 @@
+ };
+ use zed_actions::ExtensionCategoryFilter;
+ 
++use crate::pi_extensions::{ExtensionSource, PiExtensionsState};
++
+ use crate::components::{ExtensionCard, extension_provides_label, remote_extension_status};
+ use crate::extension_version_selector::{
+     ExtensionVersionSelector, ExtensionVersionSelectorDelegate,
+@@ -118,7 +121,8 @@
+         workspace
+             .register_action(
+                 move |workspace, action: &zed_actions::Extensions, window, cx| {
+-                    let provides_filter = action.category_filter.map(|category| match category {
++                    let requested_source = if matches!(action.category_filter, Some(ExtensionCategoryFilter::ContextServers)) { ExtensionSource::Mcp } else { ExtensionSource::Editor };
++                    let provides_filter = action.category_filter.filter(|_| requested_source == ExtensionSource::Editor).map(|category| match category {
+                         ExtensionCategoryFilter::Themes => ExtensionProvides::Themes,
+                         ExtensionCategoryFilter::IconThemes => ExtensionProvides::IconThemes,
+                         ExtensionCategoryFilter::Languages => ExtensionProvides::Languages,
+@@ -133,14 +137,13 @@
+                         ExtensionCategoryFilter::DebugAdapters => ExtensionProvides::DebugAdapters,
+                     });
+ 
+-                    let existing = workspace
+-                        .active_pane()
+-                        .read(cx)
+-                        .items()
+-                        .find_map(|item| item.downcast::<ExtensionsPage>());
++                    let existing = workspace.item_of_type::<ExtensionsPage>(cx);
+ 
+                     if let Some(existing) = existing {
+                         existing.update(cx, |extensions_page, cx| {
++                            if action.category_filter.is_some() || action.id.is_some() {
++                                extensions_page.change_source(requested_source, window, cx);
++                            }
+                             if provides_filter.is_some() {
+                                 extensions_page.change_provides_filter(provides_filter, cx);
+                             }
+@@ -158,6 +161,9 @@
+                             window,
+                             cx,
+                         );
++                        if requested_source != ExtensionSource::Editor {
++                            extensions_page.update(cx, |page, cx| page.change_source(requested_source, window, cx));
++                        }
+                         workspace.add_item_to_active_pane(
+                             Box::new(extensions_page),
+                             None,
+@@ -372,6 +378,8 @@
+ }
+ 
+ pub struct ExtensionsPage {
++    source: ExtensionSource,
++    pi: PiExtensionsState,
+     workspace: WeakEntity<Workspace>,
+     provider_registry: Arc<GitHostingProviderRegistry>,
+     list: UniformListScrollHandle,
+@@ -436,6 +444,8 @@
+             let provider_registry = GitHostingProviderRegistry::default_global(cx);
+ 
+             let mut this = Self {
++                source: ExtensionSource::Editor,
++                pi: PiExtensionsState::new(window, cx),
+                 workspace: workspace.weak_handle(),
+                 provider_registry,
+                 list: scroll_handle,
+@@ -521,6 +531,7 @@
+             self.remote_extension_entries
+                 .iter()
+                 .enumerate()
++                .filter(|(_, extension)| extension.manifest.provides.iter().any(|p| editor_extension_provides(*p)))
+                 .filter(|(_, extension)| {
+                     if self.filter == ExtensionFilter::All {
+                         return true;
+@@ -545,6 +556,7 @@
+             self.dev_extension_entries
+                 .iter()
+                 .enumerate()
++                .filter(|(_, manifest)| manifest.provides().into_iter().any(editor_extension_provides))
+                 .filter(|(_, manifest)| match self.provides_filter {
+                     Some(provides) => manifest.provides().contains(&provides),
+                     None => true,
+@@ -779,7 +791,7 @@
+         h_flex()
+             .key_context(key_context)
+             .h_8()
+-            .min_w(rems_from_px(384_f32))
++            .min_w(rems_from_px(180_f32))
+             .flex_1()
+             .pl_1p5()
+             .pr_2()
+@@ -788,7 +800,7 @@
+             .border_color(editor_border)
+             .rounded_md()
+             .child(Icon::new(IconName::MagnifyingGlass).color(Color::Muted))
+-            .child(self.render_text_input(&self.query_editor, cx))
++            .child(div().flex_1().min_w_0().child(self.render_text_input(&self.query_editor, cx)))
+     }
+ 
+     fn render_text_input(
+@@ -836,6 +848,10 @@
+     }
+ 
+     fn refresh_search(&mut self, cx: &mut Context<Self>) {
++        if self.source != ExtensionSource::Editor {
++            self.search_pi_debounced(cx);
++            return;
++        }
+         self.fetch_extensions_debounced(
+             Some(Box::new(|this, cx| {
+                 this.scroll_to_top(cx);
+@@ -866,6 +882,7 @@
+         on_complete: Option<Box<dyn FnOnce(&mut Self, &mut Context<Self>) + Send>>,
+         cx: &mut Context<ExtensionsPage>,
+     ) {
++        if self.source != ExtensionSource::Editor { return; }
+         self.extension_fetch_task = Some(cx.spawn(async move |this, cx| {
+             let search = this
+                 .update(cx, |this, cx| this.search_query(cx))
+@@ -885,6 +902,7 @@
+             };
+ 
+             this.update(cx, |this, cx| {
++                if this.source != ExtensionSource::Editor { return; }
+                 this.fetch_extensions(
+                     search,
+                     Some(BTreeSet::from_iter(this.provides_filter)),
+@@ -1377,151 +1395,71 @@
+ 
+ impl Render for ExtensionsPage {
+     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+-        v_flex()
+-            .size_full()
+-            .bg(cx.theme().colors().editor_background)
+-            .child(
+-                v_flex()
+-                    .gap_4()
+-                    .pt_4()
+-                    .px_4()
+-                    .bg(cx.theme().colors().editor_background)
+-                    .child(
+-                        h_flex()
+-                            .w_full()
+-                            .gap_1p5()
+-                            .justify_between()
+-                            .child(Headline::new("Extensions").size(HeadlineSize::Large))
+-                            .child(
+-                                Button::new("install-dev-extension", "Install Dev Extension")
+-                                    .style(ButtonStyle::Outlined)
+-                                    .size(ButtonSize::Medium)
+-                                    .on_click(|_event, window, cx| {
+-                                        window.dispatch_action(Box::new(InstallDevExtension), cx)
+-                                    }),
+-                            ),
+-                    )
+-                    .child(
+-                        h_flex()
+-                            .w_full()
+-                            .flex_wrap()
+-                            .gap_2()
+-                            .child(self.render_search(cx))
+-                            .child(
+-                                div().child(
+-                                    ToggleButtonGroup::single_row(
+-                                        "filter-buttons",
+-                                        [
+-                                            ToggleButtonSimple::new(
+-                                                "All",
+-                                                cx.listener(|this, _event, _, cx| {
+-                                                    this.filter = ExtensionFilter::All;
+-                                                    this.filter_extension_entries(cx);
+-                                                    this.scroll_to_top(cx);
+-                                                }),
+-                                            ),
+-                                            ToggleButtonSimple::new(
+-                                                "Installed",
+-                                                cx.listener(|this, _event, _, cx| {
+-                                                    this.filter = ExtensionFilter::Installed;
+-                                                    this.filter_extension_entries(cx);
+-                                                    this.scroll_to_top(cx);
+-                                                }),
+-                                            ),
+-                                            ToggleButtonSimple::new(
+-                                                "Not Installed",
+-                                                cx.listener(|this, _event, _, cx| {
+-                                                    this.filter = ExtensionFilter::NotInstalled;
+-                                                    this.filter_extension_entries(cx);
+-                                                    this.scroll_to_top(cx);
+-                                                }),
+-                                            ),
+-                                        ],
+-                                    )
+-                                    .style(ToggleButtonGroupStyle::Outlined)
+-                                    .size(ToggleButtonGroupSize::Custom(rems_from_px(30_f32))) // Perfectly matches the input
+-                                    .label_size(LabelSize::Default)
+-                                    .auto_width()
+-                                    .selected_index(match self.filter {
+-                                        ExtensionFilter::All => 0,
+-                                        ExtensionFilter::Installed => 1,
+-                                        ExtensionFilter::NotInstalled => 2,
+-                                    })
+-                                    .into_any_element(),
+-                                ),
+-                            ),
+-                    ),
+-            )
+-            .child(
+-                h_flex()
+-                    .id("filter-row")
+-                    .gap_2()
+-                    .py_2p5()
+-                    .px_4()
+-                    .border_b_1()
+-                    .border_color(cx.theme().colors().border_variant)
+-                    .overflow_x_scroll()
+-                    .child(
+-                        Button::new("filter-all-categories", "All")
+-                            .when(self.provides_filter.is_none(), |button| {
+-                                button.style(ButtonStyle::Filled)
+-                            })
+-                            .when(self.provides_filter.is_some(), |button| {
+-                                button.style(ButtonStyle::Subtle)
+-                            })
+-                            .toggle_state(self.provides_filter.is_none())
+-                            .on_click(cx.listener(|this, _event, _, cx| {
+-                                this.change_provides_filter(None, cx);
++        let editor_source = self.source == ExtensionSource::Editor;
++        let searchable = self.source.searchable();
++        v_flex().track_focus(&self.pi.management_focus).size_full().bg(cx.theme().colors().editor_background)
++            .child(v_flex().gap_3().pt_4().px_4()
++                .child(h_flex().w_full().gap_2().justify_between()
++                    .child(Headline::new("Extensions").size(HeadlineSize::Large))
++                    .child(self.render_source_actions(cx)))
++                .child(h_flex().id("extension-sources").gap_1().flex_wrap()
++                    .children(ExtensionSource::ALL.into_iter().map(|source| {
++                        Button::new(source.label(), source.label())
++                            .toggle_state(self.source == source)
++                            .style(if self.source == source { ButtonStyle::Filled } else { ButtonStyle::Subtle })
++                            .on_click(cx.listener(move |this, _, window, cx| this.change_source(source, window, cx)))
++                    })))
++                .when(searchable, |header| header.child(
++                    h_flex().w_full().flex_wrap().gap_2()
++                        .child(self.render_search(cx))
++                        .child(ToggleButtonGroup::single_row("filter-buttons", [
++                            ToggleButtonSimple::new("All", cx.listener(|this, _, _, cx| {
++                                this.filter = ExtensionFilter::All; this.filter_extension_entries(cx); this.scroll_to_top(cx); if this.source == ExtensionSource::Pi { this.search_pi_debounced(cx); }
+                             })),
+-                    )
+-                    .children(
+-                        ExtensionProvides::iter()
+-                            .filter(|provides| match provides {
+-                                ExtensionProvides::AgentServers
+-                                | ExtensionProvides::Grammars // grammars do not add anything of value to users currently
+-                                | ExtensionProvides::IndexedDocsProviders
+-                                | ExtensionProvides::SlashCommands => false,
+-                                _ => true,
+-                            })
+-                            .map(|provides| {
+-                                let label = extension_provides_label(provides);
+-                                let button_id =
+-                                    SharedString::from(format!("filter-category-{}", label));
+-
+-                                Button::new(button_id, label)
+-                                    .style(if self.provides_filter == Some(provides) {
+-                                        ButtonStyle::Filled
+-                                    } else {
+-                                        ButtonStyle::Subtle
+-                                    })
+-                                    .toggle_state(self.provides_filter == Some(provides))
+-                                    .on_click({
+-                                        cx.listener(move |this, _event, _, cx| {
+-                                            this.change_provides_filter(Some(provides), cx);
+-                                        })
+-                                    })
+-                            }),
+-                    ),
+-            )
+-            .child(self.render_feature_upsells(cx))
+-            .child(v_flex().px_4().size_full().overflow_y_hidden().map(|this| {
+-                let mut count = self.filtered_remote_extension_indices.len();
+-                if self.filter.include_dev_extensions() {
+-                    count += self.filtered_dev_extension_indices.len();
+-                }
+-
++                            ToggleButtonSimple::new("Installed", cx.listener(|this, _, _, cx| {
++                                this.filter = ExtensionFilter::Installed; this.filter_extension_entries(cx); this.scroll_to_top(cx); if this.source == ExtensionSource::Pi { this.search_pi_debounced(cx); }
++                            })),
++                            ToggleButtonSimple::new("Not Installed", cx.listener(|this, _, _, cx| {
++                                this.filter = ExtensionFilter::NotInstalled; this.filter_extension_entries(cx); this.scroll_to_top(cx); if this.source == ExtensionSource::Pi { this.search_pi_debounced(cx); }
++                            })),
++                        ]).style(ToggleButtonGroupStyle::Outlined)
++                          .size(ToggleButtonGroupSize::Custom(rems_from_px(30_f32)))
++                          .label_size(LabelSize::Default).auto_width()
++                          .selected_index(match self.filter { ExtensionFilter::All => 0, ExtensionFilter::Installed => 1, ExtensionFilter::NotInstalled => 2 }))))
++                .when(!searchable, |header| header.child(
++                    Label::new("Manage installed resources used by pi. Changes apply to new tasks.").size(LabelSize::Small).color(Color::Muted))))
++            .when(editor_source, |page| page.child(
++                h_flex().id("filter-row").gap_2().py_2p5().px_4()
++                    .border_b_1().border_color(cx.theme().colors().border_variant).overflow_x_scroll()
++                    .child(Button::new("filter-all-categories", "All")
++                        .style(if self.provides_filter.is_none() { ButtonStyle::Filled } else { ButtonStyle::Subtle })
++                        .toggle_state(self.provides_filter.is_none())
++                        .on_click(cx.listener(|this, _, _, cx| this.change_provides_filter(None, cx))))
++                    .children(ExtensionProvides::iter()
++                        .filter(|provides| matches!(provides,
++                            ExtensionProvides::Themes | ExtensionProvides::IconThemes |
++                            ExtensionProvides::Languages | ExtensionProvides::LanguageServers |
++                            ExtensionProvides::Snippets | ExtensionProvides::DebugAdapters))
++                        .map(|provides| {
++                            let label = extension_provides_label(provides);
++                            Button::new(SharedString::from(format!("filter-category-{label}")), label)
++                                .style(if self.provides_filter == Some(provides) { ButtonStyle::Filled } else { ButtonStyle::Subtle })
++                                .toggle_state(self.provides_filter == Some(provides))
++                                .on_click(cx.listener(move |this, _, _, cx| this.change_provides_filter(Some(provides), cx)))
++                        })))
++                .child(self.render_feature_upsells(cx)))
++            .when(!editor_source, |page| page.child(self.render_pi_status(cx)))
++            .child(v_flex().px_4().size_full().overflow_y_hidden().map(|body| {
++                let count = if editor_source {
++                    self.filtered_remote_extension_indices.len() + if self.filter.include_dev_extensions() { self.filtered_dev_extension_indices.len() } else { 0 }
++                } else { self.pi_rows(cx).len() };
+                 if count == 0 {
+-                    this.child(self.render_empty_state(cx)).into_any_element()
++                    if editor_source { body.child(self.render_empty_state(cx)).into_any_element() }
++                    else { body.child(self.render_pi_empty(cx)).into_any_element() }
+                 } else {
+-                    let scroll_handle = &self.list;
+-                    this.child(
+-                        uniform_list("entries", count, cx.processor(Self::render_extensions))
+-                            .flex_grow_1()
+-                            .pb_4()
+-                            .track_scroll(scroll_handle),
+-                    )
+-                    .vertical_scrollbar_for(scroll_handle, window, cx)
+-                    .into_any_element()
++                    let list = uniform_list("entries", count, cx.processor(Self::render_source_entries))
++                        .flex_grow_1().pb_4().track_scroll(&self.list);
++                    body.child(list).vertical_scrollbar_for(&self.list, window, cx).into_any_element()
+                 }
+             }))
+     }
+@@ -1531,7 +1469,7 @@
+ 
+ impl Focusable for ExtensionsPage {
+     fn focus_handle(&self, cx: &App) -> gpui::FocusHandle {
+-        self.query_editor.read(cx).focus_handle(cx)
++        if self.source.searchable() { self.query_editor.read(cx).focus_handle(cx) } else { self.pi.management_focus.clone() }
+     }
+ }
+ 
+@@ -1554,3 +1492,9 @@
+         f(*event)
+     }
+ }
++
++fn editor_extension_provides(provides: ExtensionProvides) -> bool {
++    matches!(provides, ExtensionProvides::Themes | ExtensionProvides::IconThemes |
++        ExtensionProvides::Languages | ExtensionProvides::Grammars | ExtensionProvides::LanguageServers |
++        ExtensionProvides::Snippets | ExtensionProvides::DebugAdapters)
++}
 diff --git a/crates/git_ui/src/git_panel.rs b/crates/git_ui/src/git_panel.rs
 --- a/crates/git_ui/src/git_panel.rs
 +++ b/crates/git_ui/src/git_panel.rs
@@ -16903,7 +17366,7 @@ diff --git a/crates/settings_ui/src/page_data.rs b/crates/settings_ui/src/page_d
                          );
                          this.render_sub_page_items(
                              items.iter().enumerate(),
-@@ -8594,639 +8589,35 @@
+@@ -8594,639 +8589,25 @@
      }
  }
  
@@ -17042,12 +17505,10 @@ diff --git a/crates/settings_ui/src/page_data.rs b/crates/settings_ui/src/page_d
                  in_json: false,
                  files: USER,
 -                render: render_llm_providers_page,
-+                render: crate::pi_settings::render_pi_settings_page,
-             }),
-             SettingsPageItem::SubPageLink(SubPageLink {
+-            }),
+-            SettingsPageItem::SubPageLink(SubPageLink {
 -                title: "External Agents".into(),
-+                title: "pi Extension Center".into(),
-                 r#type: Default::default(),
+-                r#type: Default::default(),
 -                json_path: Some("agent_servers"),
 -                description: Some(
 -                    "View, add, and remove agents connected through the Agent Client Protocol."
@@ -17069,11 +17530,8 @@ diff --git a/crates/settings_ui/src/page_data.rs b/crates/settings_ui/src/page_d
 -                    "junie",
 -                    "opencode",
 -                ],
-+                json_path: Some("eido.extensions"),
-+                description: Some("Search pi plugins and manage installed MCP servers and skills.".into()),
-+                search_aliases: &["pi", "plugins", "extensions", "mcp", "skills", "packages"],
-                 in_json: false,
-                 files: USER,
+-                in_json: false,
+-                files: USER,
 -                render: render_external_agents_page,
 -            }),
 -            SettingsPageItem::SubPageLink(SubPageLink {
@@ -17087,7 +17545,7 @@ diff --git a/crates/settings_ui/src/page_data.rs b/crates/settings_ui/src/page_d
 -                in_json: false,
 -                files: USER,
 -                render: render_mcp_servers_page,
-+                render: crate::pi_extensions::render_pi_extensions_page,
++                render: crate::pi_settings::render_pi_settings_page,
              }),
          ]
 -    }
@@ -17558,7 +18016,7 @@ diff --git a/crates/settings_ui/src/page_data.rs b/crates/settings_ui/src/page_d
      }
  }
  
-@@ -11133,100 +10524,6 @@
+@@ -11133,100 +10514,6 @@
      )
  }
  
@@ -27035,19 +27493,18 @@ diff --git a/crates/settings_ui/src/pages.rs b/crates/settings_ui/src/pages.rs
 diff --git a/crates/settings_ui/src/settings_ui.rs b/crates/settings_ui/src/settings_ui.rs
 --- a/crates/settings_ui/src/settings_ui.rs
 +++ b/crates/settings_ui/src/settings_ui.rs
-@@ -1,8 +1,9 @@
+@@ -1,8 +1,8 @@
  mod components;
  mod page_data;
  pub mod pages;
 -
 -use agent_skills::SkillIndex;
 +mod pi_settings;
-+mod pi_extensions;
 +
  use anyhow::{Context as _, Result};
  use cloud_api_types::OrganizationConfiguration;
  use editor::{Editor, EditorEvent};
-@@ -30,7 +31,6 @@
+@@ -30,7 +30,6 @@
      collections::{HashMap, HashSet},
      num::{NonZero, NonZeroU32},
      ops::Range,
@@ -27055,7 +27512,7 @@ diff --git a/crates/settings_ui/src/settings_ui.rs b/crates/settings_ui/src/sett
      rc::Rc,
      sync::{Arc, LazyLock, RwLock},
      time::Duration,
-@@ -48,19 +48,14 @@
+@@ -48,19 +47,14 @@
      client_side_decorations,
  };
  use zed_actions::{
@@ -27078,7 +27535,7 @@ diff --git a/crates/settings_ui/src/settings_ui.rs b/crates/settings_ui/src/sett
  
  const NAVBAR_CONTAINER_TAB_INDEX: isize = 0;
  const NAVBAR_GROUP_TAB_INDEX: isize = 1;
-@@ -455,20 +450,24 @@
+@@ -455,20 +449,24 @@
      cx.on_action(|_: &OpenSettings, cx| {
          open_settings_editor(None, None, None, cx);
      });
@@ -27111,7 +27568,7 @@ diff --git a/crates/settings_ui/src/settings_ui.rs b/crates/settings_ui/src/sett
                      action.target.as_ref().map(SettingsFileTarget::from),
                      window_handle,
                      cx,
-@@ -489,6 +488,10 @@
+@@ -489,6 +487,10 @@
              })
              .register_action(|workspace, _: &OpenProjectSettings, window, cx| {
                  let window_handle = window.window_handle().downcast::<MultiWorkspace>();
@@ -27122,7 +27579,7 @@ diff --git a/crates/settings_ui/src/settings_ui.rs b/crates/settings_ui/src/sett
                  let target_worktree_id = workspace
                      .project()
                      .read(cx)
-@@ -500,24 +503,7 @@
+@@ -500,24 +502,7 @@
                              .then_some(tree.read(cx).id())
                      });
                  open_settings_editor(None, target_worktree_id, window_handle, cx);
@@ -27148,7 +27605,7 @@ diff --git a/crates/settings_ui/src/settings_ui.rs b/crates/settings_ui/src/sett
      })
      .detach();
  }
-@@ -609,8 +595,6 @@
+@@ -609,8 +594,6 @@
          .add_basic_renderer::<settings::AlternateScroll>(render_dropdown)
          .add_basic_renderer::<settings::TerminalBlink>(render_dropdown)
          .add_basic_renderer::<settings::CursorShapeContent>(render_dropdown)
@@ -27157,7 +27614,7 @@ diff --git a/crates/settings_ui/src/settings_ui.rs b/crates/settings_ui/src/sett
          .add_basic_renderer::<f32>(render_editable_number_field)
          .add_basic_renderer::<settings::AutoCompactThreshold>(render_text_field)
          .add_basic_renderer::<u32>(render_editable_number_field)
-@@ -662,14 +646,12 @@
+@@ -662,14 +645,12 @@
          .add_basic_renderer::<settings::IncludeIgnoredContent>(render_dropdown)
          .add_basic_renderer::<settings::ShowIndentGuides>(render_dropdown)
          .add_basic_renderer::<settings::ShellDiscriminants>(render_dropdown)
@@ -27172,7 +27629,7 @@ diff --git a/crates/settings_ui/src/settings_ui.rs b/crates/settings_ui/src/sett
          .add_basic_renderer::<settings::SemanticTokens>(render_dropdown)
          .add_basic_renderer::<settings::DocumentFoldingRanges>(render_dropdown)
          .add_basic_renderer::<settings::DocumentSymbols>(render_dropdown)
-@@ -717,6 +699,11 @@
+@@ -717,6 +698,11 @@
      window: &mut Window,
      cx: &mut Context<SettingsWindow>,
  ) {
@@ -27184,7 +27641,7 @@ diff --git a/crates/settings_ui/src/settings_ui.rs b/crates/settings_ui/src/sett
      let file_index = settings_window
          .files
          .iter()
-@@ -833,16 +820,6 @@
+@@ -833,16 +819,6 @@
      });
  }
  
@@ -27201,7 +27658,7 @@ diff --git a/crates/settings_ui/src/settings_ui.rs b/crates/settings_ui/src/sett
  fn open_settings_editor_with(
      workspace_handle: Option<WindowHandle<MultiWorkspace>>,
      cx: &mut App,
-@@ -891,7 +868,14 @@
+@@ -891,7 +867,14 @@
          cx.open_window(
              WindowOptions {
                  titlebar: Some(TitlebarOptions {
@@ -27217,16 +27674,15 @@ diff --git a/crates/settings_ui/src/settings_ui.rs b/crates/settings_ui/src/sett
                      appears_transparent: true,
                      traffic_light_position: Some(point(px(12.0), px(12.0))),
                  }),
-@@ -948,6 +932,8 @@
+@@ -948,6 +931,7 @@
  }
  
  pub struct SettingsWindow {
 +    pub(crate) pi_settings: Option<Entity<pi_settings::PiSettingsView>>,
-+    pub(crate) pi_extensions: Option<Entity<pi_extensions::PiExtensionsView>>,
      title_bar: Option<Entity<PlatformTitleBar>>,
      original_window: Option<WindowHandle<MultiWorkspace>>,
      files: Vec<(SettingsUiFile, FocusHandle)>,
-@@ -978,37 +964,7 @@
+@@ -978,37 +962,7 @@
      search_index: Option<Arc<SearchIndex>>,
      list_state: ListState,
      shown_errors: HashSet<String>,
@@ -27264,7 +27720,7 @@ diff --git a/crates/settings_ui/src/settings_ui.rs b/crates/settings_ui/src/sett
  }
  
  struct SearchDocument {
-@@ -1666,7 +1622,6 @@
+@@ -1666,7 +1620,6 @@
  #[derive(Clone, PartialEq, Default)]
  enum SubPageType {
      Language,
@@ -27272,7 +27728,7 @@ diff --git a/crates/settings_ui/src/settings_ui.rs b/crates/settings_ui/src/sett
      #[default]
      Other,
  }
-@@ -1838,34 +1793,6 @@
+@@ -1838,34 +1791,6 @@
                  last_is_staff = is_staff;
                  this.rebuild_pages(window, cx);
              }
@@ -27307,7 +27763,7 @@ diff --git a/crates/settings_ui/src/settings_ui.rs b/crates/settings_ui/src/sett
          })
          .detach();
  
-@@ -2016,23 +1943,18 @@
+@@ -2016,23 +1941,15 @@
                  .tab_stop(false),
              search_index: None,
              shown_errors: HashSet::default(),
@@ -27329,17 +27785,14 @@ diff --git a/crates/settings_ui/src/settings_ui.rs b/crates/settings_ui/src/sett
 -            skill_creator_page: None,
 +
 +            pi_settings: None,
-+            pi_extensions: None,
          };
  
 +        this.pi_settings = std::env::var_os("EIDO_ROOT")
 +            .map(|_| cx.new(|cx| pi_settings::PiSettingsView::new(window, cx)));
-+        this.pi_extensions = std::env::var_os("EIDO_ROOT")
-+            .map(|_| cx.new(|cx| pi_extensions::PiExtensionsView::new(window, cx)));
          this.fetch_files(window, cx);
          this.build_ui(window, cx);
          this.build_search_index();
-@@ -2559,6 +2481,19 @@
+@@ -2559,6 +2476,19 @@
      #[track_caller]
      fn fetch_files(&mut self, window: &mut Window, cx: &mut Context<SettingsWindow>) {
          self.worktree_root_dirs.clear();
@@ -27359,7 +27812,7 @@ diff --git a/crates/settings_ui/src/settings_ui.rs b/crates/settings_ui/src/sett
          let prev_files = self.files.clone();
          let settings_store = cx.global::<SettingsStore>();
          let mut ui_files = vec![];
-@@ -2649,7 +2584,6 @@
+@@ -2649,7 +2579,6 @@
      fn open_navbar_entry_page(&mut self, navbar_entry: usize) {
          // Navigating to another page dismisses the transient "copied share
          // link" checkmark shown on a Skills page row.
@@ -27367,7 +27820,7 @@ diff --git a/crates/settings_ui/src/settings_ui.rs b/crates/settings_ui/src/sett
  
          if !self.is_nav_entry_visible(navbar_entry) {
              self.open_first_nav_page();
-@@ -2775,8 +2709,6 @@
+@@ -2775,8 +2704,6 @@
          if let SettingsUiFile::Project((_, _)) = &self.current_file {
              telemetry::event!("Setting Project Clicked");
          }
@@ -27376,7 +27829,7 @@ diff --git a/crates/settings_ui/src/settings_ui.rs b/crates/settings_ui/src/sett
  
          let sub_page_stack = std::mem::take(&mut self.sub_page_stack);
          self.build_ui(window, cx);
-@@ -2830,6 +2762,24 @@
+@@ -2830,6 +2757,24 @@
          window: &mut Window,
          cx: &mut Context<SettingsWindow>,
      ) -> impl IntoElement {
@@ -27401,7 +27854,7 @@ diff --git a/crates/settings_ui/src/settings_ui.rs b/crates/settings_ui/src/sett
          static OVERFLOW_LIMIT: usize = 1;
  
          let file_button =
-@@ -2961,6 +2911,7 @@
+@@ -2961,6 +2906,7 @@
                          this.open_current_settings_file(window, cx);
                      })),
              )
@@ -27409,7 +27862,7 @@ diff --git a/crates/settings_ui/src/settings_ui.rs b/crates/settings_ui/src/sett
      }
  
      pub(crate) fn display_name(&self, file: &SettingsUiFile) -> Option<String> {
-@@ -3540,8 +3491,10 @@
+@@ -3540,8 +3486,10 @@
              .min_w_0()
              .gap_1()
              .overflow_x_hidden()
@@ -27422,7 +27875,7 @@ diff --git a/crates/settings_ui/src/settings_ui.rs b/crates/settings_ui/src/sett
              .children(
                  itertools::intersperse(
                      std::iter::once(self.current_page().title.into()).chain(
-@@ -3684,20 +3637,6 @@
+@@ -3684,20 +3632,6 @@
          self.render_sub_page_items_in(page_content, items, false, window, cx)
      }
  
@@ -27443,7 +27896,7 @@ diff --git a/crates/settings_ui/src/settings_ui.rs b/crates/settings_ui/src/sett
      fn render_sub_page_items_in<'a, Items>(
          &self,
          page_content: Stateful<Div>,
-@@ -3774,13 +3713,6 @@
+@@ -3774,13 +3708,6 @@
          let page_content;
  
          if let Some(current_sub_page) = self.sub_page_stack.last() {
@@ -27457,7 +27910,7 @@ diff --git a/crates/settings_ui/src/settings_ui.rs b/crates/settings_ui/src/sett
              page_header = h_flex()
                  .w_full()
                  .min_w_0()
-@@ -3817,29 +3749,6 @@
+@@ -3817,29 +3744,6 @@
                                          this.open_current_settings_file(window, cx);
                                      })),
                              )
@@ -27487,7 +27940,7 @@ diff --git a/crates/settings_ui/src/settings_ui.rs b/crates/settings_ui/src/sett
                          }),
                  )
                  .into_any_element();
-@@ -4244,7 +4153,6 @@
+@@ -4244,7 +4148,6 @@
          window: &mut Window,
          cx: &mut Context<SettingsWindow>,
      ) {
@@ -27495,7 +27948,7 @@ diff --git a/crates/settings_ui/src/settings_ui.rs b/crates/settings_ui/src/sett
          self.sub_page_stack
              .push(SubPage::new(sub_page_link, section_header));
          self.content_focus_handle.focus_handle(cx).focus(window, cx);
-@@ -4268,7 +4176,6 @@
+@@ -4268,7 +4171,6 @@
          window: &mut Window,
          cx: &mut Context<SettingsWindow>,
      ) {
@@ -27503,7 +27956,7 @@ diff --git a/crates/settings_ui/src/settings_ui.rs b/crates/settings_ui/src/sett
          let sub_page_link = SubPageLink {
              title: title.into(),
              r#type: SubPageType::default(),
-@@ -4280,102 +4187,6 @@
+@@ -4280,102 +4182,6 @@
              render,
          };
          self.push_sub_page(sub_page_link, section_header.into(), window, cx);
@@ -27606,7 +28059,7 @@ diff --git a/crates/settings_ui/src/settings_ui.rs b/crates/settings_ui/src/sett
      }
  
      /// Navigate to a sub-page by its json_path.
-@@ -4450,21 +4261,10 @@
+@@ -4450,21 +4256,10 @@
      }
  
      pub(crate) fn pop_sub_page(&mut self, window: &mut Window, cx: &mut Context<SettingsWindow>) {
@@ -27630,7 +28083,7 @@ diff --git a/crates/settings_ui/src/settings_ui.rs b/crates/settings_ui/src/sett
      }
  
      fn focus_file_at_index(&mut self, index: usize, window: &mut Window, cx: &mut App) {
-@@ -5374,20 +5174,11 @@
+@@ -5374,20 +5169,10 @@
                  search_index: None,
                  list_state: ListState::new(0, gpui::ListAlignment::Top, px(0.0)),
                  shown_errors: HashSet::default(),
@@ -27651,11 +28104,10 @@ diff --git a/crates/settings_ui/src/settings_ui.rs b/crates/settings_ui/src/sett
 -                skill_creator_page: None,
 +
 +                pi_settings: None,
-+            pi_extensions: None,
              }
          }
      }
-@@ -5408,7 +5199,6 @@
+@@ -5408,7 +5193,6 @@
          theme_settings::init(theme::LoadThemes::JustBase, cx);
          editor::init(cx);
          menu::init();
@@ -27663,7 +28115,7 @@ diff --git a/crates/settings_ui/src/settings_ui.rs b/crates/settings_ui/src/sett
      }
  
      fn parse(input: &'static str, window: &mut Window, cx: &mut App) -> SettingsWindow {
-@@ -5513,20 +5303,11 @@
+@@ -5513,20 +5297,10 @@
              search_index: None,
              list_state: ListState::new(0, gpui::ListAlignment::Top, px(0.0)),
              shown_errors: HashSet::default(),
@@ -27684,11 +28136,10 @@ diff --git a/crates/settings_ui/src/settings_ui.rs b/crates/settings_ui/src/sett
 -            skill_creator_page: None,
 +
 +            pi_settings: None,
-+            pi_extensions: None,
          };
  
          settings_window.build_filter_table();
-@@ -6145,359 +5926,6 @@
+@@ -6145,359 +5919,6 @@
              );
          });
      }

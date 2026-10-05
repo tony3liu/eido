@@ -92,7 +92,7 @@ export function createExtensionCenter(directory = join(root, ".local/eido"), fet
       return {source, name: source.replace(/^npm:/, ""), enabled: !(source in disabled), installed: !!installedPath, path: installedPath ?? ""};
     });
     for (const pkg of packages) {
-      if (pkg.path) {const manifest = await readJson(join(pkg.path, "package.json"), {}); pkg.version = manifest.version ?? "local"; pkg.description = manifest.description ?? "";}
+      if (pkg.path) {const manifest = await readJson(join(pkg.path, "package.json"), {}); pkg.name = manifest.name ?? pkg.name; pkg.version = manifest.version ?? "local"; pkg.description = manifest.description ?? "";}
     }
     const resources = async kind => Promise.all(paths[kind].filter(p => p.metadata.scope === "user").map(async p => {
       let name = basename(p.path), description = "";
