@@ -7,9 +7,9 @@ import {join} from 'node:path';
 import {client, methods} from '@agentclientprotocol/sdk';
 import {startEidoAgent} from '../src/server.ts';
 import {call, declaredTools, fixtureModel, lastToolText} from './fixture-model.ts';
-import {createExtensionCenter} from '../../../scripts/pi-extensions.mjs';
+import {createExtensionCenter} from '../../runtime/src/pi/extensions.mjs';
 import {mcpHarness, policyRemote} from './fixture-mcp-policy.ts';
-import {readMcpStatus} from '../../../scripts/pi-mcp-status.mjs';
+import {readMcpStatus} from '../../runtime/src/mcp/status.mjs';
 
 async function remoteFixture(type: 'http'|'sse') {
   const streams = new Set<ServerResponse>();
@@ -71,8 +71,8 @@ for(const type of ['http','sse'] as const) test(`configured ${type} MCP uses the
   } finally {await active?.agent.dispose();connection?.close();active?.connection.close();await remote.close();await rm(dir,{recursive:true,force:true});}
 });
 
-import {signIn,credentials,authenticatedMcpFetch} from '../../../scripts/pi-mcp.mjs';
-import {configuredMcp} from '../../../scripts/pi-extensions.mjs';
+import {signIn,credentials,authenticatedMcpFetch} from '../../runtime/src/mcp/config.mjs';
+import {configuredMcp} from '../../runtime/src/pi/extensions.mjs';
 import {oauthFixture} from './fixture-mcp.ts';
 import {readFile} from 'node:fs/promises';
 
@@ -156,7 +156,7 @@ test('Extensions sign-in helper exits on owner EOF and releases the callback lis
   let child:ReturnType<typeof spawn>|undefined;
   try {
     await createExtensionCenter(dir).execute({operation:'mcp-save',text:JSON.stringify({mcpServers:{remote:{url:remote.url,exposure:'direct'}}})});
-    child=spawn(process.execPath,['scripts/pi-mcp-auth.mjs','remote'],{cwd:process.cwd(),env:{...process.env,EIDO_PI_CONFIG_DIR:dir},stdio:['pipe','pipe','pipe']});
+    child=spawn(process.execPath,['packages/runtime/bin/mcp-auth.mjs','remote'],{cwd:process.cwd(),env:{...process.env,EIDO_PI_CONFIG_DIR:dir},stdio:['pipe','pipe','pipe']});
     const exited=new Promise(resolve=>child!.once('exit',resolve));
     const lines=createInterface({input:child.stdout!});
     let callback='',sawEnd=false;

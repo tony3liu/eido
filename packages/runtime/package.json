@@ -1,0 +1,11 @@
+{
+  "name": "@eido/runtime",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "Shared pi configuration, extension lifecycle, MCP authentication and browser launch support for Eido native and ACP clients.",
+  "files": ["src", "bin"],
+  "scripts": {
+    "test": "node --test test/*.test.mjs test/pi/*.test.mjs"
+  }
+}

@@ -1,4 +1,4 @@
-import type {McpServer} from '@agentclientprotocol/sdk';
+import type {McpServer} from '../../../acp/node_modules/@agentclientprotocol/sdk/dist/acp.js';
 export const MCP_STATUS: unique symbol;
 export type McpConnectionState = 'connecting'|'connected'|'unavailable'|'needs-auth'|'disconnected'|'degraded';
 export function mcpRevision(config: unknown, autoEnableCodemode?: boolean): string;

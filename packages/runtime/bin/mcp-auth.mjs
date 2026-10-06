@@ -1,13 +1,11 @@
-import {dirname, resolve, join} from 'node:path';
-import {fileURLToPath} from 'node:url';
-import {signIn} from './pi-mcp.mjs';
-import {takeOverStdout, writeRawStdout, flushRawStdout} from '../packages/acp/node_modules/@earendil-works/pi-coding-agent/dist/core/output-guard.js';
+import {piDirectory} from '../src/paths.mjs';
+import {signIn} from '../src/mcp/config.mjs';
+import {takeOverStdout, writeRawStdout, flushRawStdout} from '../../acp/node_modules/@earendil-works/pi-coding-agent/dist/core/output-guard.js';
 
 // Owned by the Extensions page. EOF cancels if the page/window/app disappears.
 takeOverStdout();
 const send = value => writeRawStdout(JSON.stringify(value)+'\n');
-const root = resolve(dirname(fileURLToPath(import.meta.url)),'..');
-const directory = process.env.EIDO_PI_CONFIG_DIR || join(root,'.local/eido');
+const directory = piDirectory();
 const stop = new AbortController();
 let emergency;
 const cancel = () => {

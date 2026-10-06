@@ -5,7 +5,7 @@ import {join} from 'node:path';
 import {client, methods} from '@agentclientprotocol/sdk';
 import {startEidoAgent} from '../src/server.ts';
 import {fixtureModel, type FixtureStep} from './fixture-model.ts';
-import {createExtensionCenter} from '../../../scripts/pi-extensions.mjs';
+import {createExtensionCenter} from '../../runtime/src/pi/extensions.mjs';
 
 /** Real HTTP transport; scripted responses never leave the loopback interface. */
 export async function policyRemote() {

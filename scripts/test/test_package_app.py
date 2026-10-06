@@ -10,6 +10,29 @@ spec.loader.exec_module(package)
 
 
 class ProductionPackageTests(unittest.TestCase):
+    def test_runtime_modules_are_complete_and_development_scripts_are_excluded(self):
+        expected = set()
+        for root in package.RUNTIME_MODULE_ROOTS:
+            expected.update(str(path.relative_to(package.ROOT))
+                            for path in (package.ROOT / root).rglob('*.mjs')
+                            if 'test' not in path.parts)
+        expected.add('packages/runtime/package.json')
+        self.assertEqual(set(package.RUNTIME_FILES), expected)
+        with tempfile.TemporaryDirectory() as directory:
+            bundle = Path(directory) / 'Eido.app'
+            runtime = bundle / 'Contents/Resources/runtime'
+            for name in package.RUNTIME_FILES:
+                package.copy_file(package.ROOT / name, runtime / name)
+            self.assertEqual(len(package.audit(bundle)), len(expected))
+            for name, error in [('scripts/setup/acp.mjs', 'Development script'),
+                                ('packages/runtime/src/accidental.mjs', 'Unlisted runtime module')]:
+                file = runtime / name
+                file.parent.mkdir(parents=True, exist_ok=True)
+                file.write_text('export {};')
+                with self.assertRaisesRegex(RuntimeError, error):
+                    package.audit(bundle)
+                file.unlink()
+
     def test_runtime_manifest_and_licenses_survive_without_test_sources(self):
         self.assertTrue(package.dependency_filter(Path('node_modules/@earendil-works/pi-ai/dist/providers/data/.manifest.json')))
         self.assertTrue(package.dependency_filter(Path('node_modules/library/LICENSE.md')))

@@ -7,7 +7,7 @@ import { createPiUI } from "./pi-ui.ts";
 import { exportPiSession, piChangelog } from "./pi-command-files.ts";
 import { manageAgentRoles } from "./agent-roles.ts";
 import { nativeUiAction } from "./native-ui.ts";
-import { createPiSettings } from "../../../scripts/pi-settings.mjs";
+import { createPiSettings } from "../../runtime/src/pi/settings.mjs";
 import { shareCommand, bugCommand } from "./pi-sharing.ts";
 import { sessionCommand, treeCommand } from "./pi-session-commands.ts";
 import { loginPiProvider } from "./pi-auth.ts";

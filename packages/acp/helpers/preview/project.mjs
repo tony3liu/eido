@@ -7,7 +7,7 @@ import { delimiter, dirname, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
 import {fileURLToPath} from "node:url";
-const commandScript = fileURLToPath(new URL("./project-command.mjs", import.meta.url));
+const commandScript = fileURLToPath(new URL("./command.mjs", import.meta.url));
 
 const exec = promisify(execFile);
 const [directory, owner] = process.argv.slice(2);

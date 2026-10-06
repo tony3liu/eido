@@ -1,7 +1,7 @@
 import {SettingsManager} from '@earendil-works/pi-coding-agent';
 import {applyHttpProxySettings, configureHttpDispatcher} from '../node_modules/@earendil-works/pi-coding-agent/dist/core/http-dispatcher.js';
 import {getGlobalDispatcher} from '../node_modules/@earendil-works/pi-coding-agent/node_modules/undici/index.js';
-import {normalizeHttpProxy} from '../../../scripts/pi-http-settings.mjs';
+import {normalizeHttpProxy} from '../../runtime/src/pi/http-settings.mjs';
 
 let configuredTimeout: number | undefined;
 

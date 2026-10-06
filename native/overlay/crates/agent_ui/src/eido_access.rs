@@ -25,7 +25,7 @@ fn request(full_access: Option<bool>, cx: &mut App) {
             return Ok(enabled);
         };
         let node = node.ok_or_else(|| "Eido Node.js runtime is unavailable.".to_string())?;
-        let mut child = Command::new(node).arg(root.join("scripts/pi-settings.mjs"))
+        let mut child = Command::new(node).arg(root.join("packages/runtime/bin/pi-settings.mjs"))
             .current_dir(root).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null())
             .spawn().map_err(|_| "Unable to update Agent Access.".to_string())?;
         if let Some(mut stdin) = child.stdin.take() {

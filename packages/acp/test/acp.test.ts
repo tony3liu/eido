@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { client, methods } from "@agentclientprotocol/sdk";
 import { startEidoAgent } from "../src/server.ts";
 import { fixtureModel, call, lastToolText } from "./fixture-model.ts";
-import { createExtensionCenter } from "../../../scripts/pi-extensions.mjs";
+import { createExtensionCenter } from "../../runtime/src/pi/extensions.mjs";
 
 test("globally configured MCP tools join the existing ACP bridge and disappear when disabled", {timeout:30_000}, async () => {
   const dir = await realpath(await mkdtemp(join(tmpdir(), "eido-configured-mcp-")));

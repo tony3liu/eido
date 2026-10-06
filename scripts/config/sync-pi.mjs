@@ -1,6 +1,6 @@
 import { homedir } from "node:os";
 import { resolve, join } from "node:path";
-import { createPiSettings } from "./pi-settings.mjs";
+import { createPiSettings } from "../../packages/runtime/src/pi/settings.mjs";
 
 const source = resolve(process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi/agent"));
 try {

@@ -1,16 +1,15 @@
-import {piDirectory} from './runtime-paths.mjs';
+import {piDirectory, runtimeRoot as root, bundledPiEntry} from '../paths.mjs';
 import { readFile, writeFile, mkdir, chmod, rename, mkdtemp, rm, access } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { homedir } from "node:os";
-import { fileURLToPath, pathToFileURL } from "node:url";
-import { browserCredentialId, browserDecisionSettings } from "./browser-config.mjs";
-import {runtimeSettings, mergeRuntimeSettings, modelSettings, mergeModelSettings, PiRuntimeSettingsError} from './pi-runtime-settings.mjs';
-import {httpProxyStatus, mergeHttpProxy, PiHttpSettingsError} from './pi-http-settings.mjs';
+import { pathToFileURL } from "node:url";
+import { browserCredentialId, browserDecisionSettings } from "../browser/config.mjs";
+import {runtimeSettings, mergeRuntimeSettings, modelSettings, mergeModelSettings, PiRuntimeSettingsError} from './runtime-settings.mjs';
+import {httpProxyStatus, mergeHttpProxy, PiHttpSettingsError} from './http-settings.mjs';
 
-class PiConfigError extends Error {}
+export class PiConfigError extends Error {}
 
-const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const piEntry = pathToFileURL(join(root, "packages/acp/node_modules/@earendil-works/pi-coding-agent/dist/index.js"));
+const piEntry = bundledPiEntry;
 const { ModelRuntime, SettingsManager, readStoredCredential } = await import(piEntry.href);
 // Use pi's own locked credential store and models.json validator. These internal
 // APIs are audited against the exact bundled version, not reimplemented here.
@@ -272,20 +271,5 @@ export async function checkPiUpdate(fetcher = fetch) {
       current: bundledVersion, latest: data.version, checkedAt };
   } catch {
     return { status: "error", current: bundledVersion, checkedAt, message: "Unable to reach the update service. Try again later." };
-  }
-}
-
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  let input = "";
-  try {
-    for await (const chunk of process.stdin) { input += chunk; if (input.length > 65536) throw new PiConfigError("The request is too large."); }
-    const result = await createPiSettings().execute(input.trim() ? JSON.parse(input) : {});
-    process.stdout.write(JSON.stringify({ ok: true, data: result }));
-  } catch (error) {
-    // Never include raw SDK/parser diagnostics: those can contain credential values.
-    const message = error instanceof PiConfigError
-      ? error.message : "Unable to update pi settings. Check file formats and permissions.";
-    process.stdout.write(JSON.stringify({ ok: false, error: message }));
-    process.exitCode = 1;
   }
 }

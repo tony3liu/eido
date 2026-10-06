@@ -4,7 +4,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const require = createRequire(import.meta.url);
-const cache = fileURLToPath(new URL("../.local/browsers", import.meta.url));
+const cache = fileURLToPath(new URL("../../.local/browsers", import.meta.url));
 const cli = join(dirname(require.resolve("playwright/package.json")), "cli.js");
 const child = spawn(process.execPath, [cli, "install", "chromium"], {
   stdio: "inherit", env: { ...process.env, PLAYWRIGHT_BROWSERS_PATH: process.env.PLAYWRIGHT_BROWSERS_PATH ?? cache },

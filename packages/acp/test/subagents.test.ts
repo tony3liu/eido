@@ -7,7 +7,7 @@ import { client, methods, type ClientConnection, type SessionNotification } from
 import { startEidoAgent } from "../src/server.ts";
 import { SUBAGENT_RUN } from "../src/subagents.ts";
 import { call, declaredTools, fixtureModel, lastToolText, type FixtureStep } from "./fixture-model.ts";
-import { createExtensionCenter } from "../../../scripts/pi-extensions.mjs";
+import { createExtensionCenter } from "../../runtime/src/pi/extensions.mjs";
 import {policyRemote} from './fixture-mcp-policy.ts';
 
 type Run = {childSessionId: string; parentSessionId: string; task: string; toolCallId: string};

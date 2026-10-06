@@ -92,7 +92,7 @@ fn run_pi_request(request: Value) -> Result<Value, String> {
     let root = std::env::var_os("EIDO_ROOT").ok_or("Eido runtime directory is unavailable.")?;
     let node = std::env::var_os("EIDO_NODE").ok_or("Eido Node.js runtime is unavailable.")?;
     let root = std::path::PathBuf::from(root);
-    let mut child = Command::new(node).arg(root.join("scripts/pi-extensions.mjs")).current_dir(root)
+    let mut child = Command::new(node).arg(root.join("packages/runtime/bin/pi-extensions.mjs")).current_dir(root)
         .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn()
         .map_err(|_| "Unable to manage pi extensions.".to_owned())?;
     if let Some(mut stdin) = child.stdin.take() {
@@ -111,7 +111,7 @@ fn run_mcp_sign_in(name: String, events: mpsc::Sender<AuthEvent>) {
         let root = std::env::var_os("EIDO_ROOT").ok_or("Eido runtime directory is unavailable.")?;
         let node = std::env::var_os("EIDO_NODE").ok_or("Eido Node.js runtime is unavailable.")?;
         let root = std::path::PathBuf::from(root);
-        let mut child = Command::new(node).arg(root.join("scripts/pi-mcp-auth.mjs")).arg(name).current_dir(root)
+        let mut child = Command::new(node).arg(root.join("packages/runtime/bin/mcp-auth.mjs")).arg(name).current_dir(root)
             .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn()
             .map_err(|_| "Unable to start MCP sign-in.".to_owned())?;
         // Dropping the pipe cancels in pi and closes its callback listener.

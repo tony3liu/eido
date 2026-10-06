@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { mkdtemp, mkdir, writeFile, readFile, rm, utimes } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { createExtensionCenter, configuredMcp } from "../pi-extensions.mjs";
+import { createExtensionCenter, configuredMcp } from "../../src/pi/extensions.mjs";
 
 test("pi package lifecycle preserves filters, queues changes while loaded, and manages individual skills", async () => {
   const dir = await mkdtemp(join(tmpdir(), "eido-extension-center-"));

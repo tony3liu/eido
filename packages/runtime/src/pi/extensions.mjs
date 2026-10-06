@@ -1,15 +1,13 @@
-import {piDirectory} from './runtime-paths.mjs';
-import {validateMcp, credentials, usesOAuth} from './pi-mcp.mjs';
-import {readMcpStatus, mcpRevision} from './pi-mcp-status.mjs';
-export {validateMcp, configuredMcp} from './pi-mcp.mjs';
+import {piDirectory, runtimeRoot as root, bundledPiEntry} from '../paths.mjs';
+import {validateMcp, credentials, usesOAuth} from '../mcp/config.mjs';
+import {readMcpStatus, mcpRevision} from '../mcp/status.mjs';
+export {validateMcp, configuredMcp} from '../mcp/config.mjs';
 import { mkdir, readFile, writeFile, rename, rm, readdir } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { createHash } from "node:crypto";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
 
-const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const entry = pathToFileURL(join(root, "packages/acp/node_modules/@earendil-works/pi-coding-agent/dist/index.js"));
+const entry = bundledPiEntry;
 const { DefaultPackageManager, SettingsManager, parseFrontmatter } = await import(entry.href);
 const { FileSettingsStorage } = await import(new URL("core/settings-manager.js", entry).href);
 const lockfile = createRequire(entry)("proper-lockfile");
@@ -208,15 +206,4 @@ export function createExtensionCenter(directory = piDirectory(root), fetcher = f
       return async () => {await rm(path, {force:true}); await rm(join(leases, `${process.pid}.mcp.json`), {force:true});};
     }, true);
   }};
-}
-
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const {takeOverStdout, writeRawStdout, flushRawStdout} = await import(new URL("core/output-guard.js", entry).href);
-  takeOverStdout();
-  try {
-    let text = ""; for await (const part of process.stdin) {text += part; if (text.length > 1_000_000) throw new Error("Request is too large.");}
-    const data = await createExtensionCenter().execute(text ? JSON.parse(text) : {});
-    writeRawStdout(JSON.stringify({ok: true, data}));
-  } catch (error) {writeRawStdout(JSON.stringify({ok: false, error: error.message})); process.exitCode = 1;}
-  await flushRawStdout();
 }

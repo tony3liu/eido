@@ -83,7 +83,7 @@ impl PiSettingsView {
             let root = root.ok_or_else(|| "Eido runtime directory is unavailable.".to_string())?;
             let node = node.ok_or_else(|| "Eido Node.js runtime is unavailable.".to_string())?;
             let mut child = Command::new(node)
-                .arg(root.join("scripts/pi-settings.mjs"))
+                .arg(root.join("packages/runtime/bin/pi-settings.mjs"))
                 .current_dir(&root)
                 .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null())
                 .spawn().map_err(|_| "Unable to start pi settings.".to_string())?;

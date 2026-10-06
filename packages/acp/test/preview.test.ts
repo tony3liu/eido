@@ -99,7 +99,7 @@ async function harness(steps: FixtureStep[], options: {
     .connect({ readable: toClient.readable, writable: toAgent.writable });
   await connection.agent.request(methods.agent.initialize, { protocolVersion: 1, clientCapabilities: { fs: { readTextFile: true, writeTextFile: true }, terminal: true } });
   const newTask = () => connection.agent.request(methods.agent.session.new, { cwd, mcpServers: options.browser ? [{ name: "eido_browser", command: process.execPath,
-    args: [fileURLToPath(new URL("../../../scripts/browser-server.mjs", import.meta.url))], env: [{ name: "JEV_BROWSER_HEADED", value: "0" }],
+    args: [fileURLToPath(new URL("../../runtime/bin/browser-server.mjs", import.meta.url))], env: [{ name: "JEV_BROWSER_HEADED", value: "0" }],
   }] : [] });
   return { cwd, buffers, terminals, updates, newTask, requests: fixture.requests,
     prompt: (sessionId: string) => connection.agent.request(methods.agent.session.prompt, { sessionId, prompt: [{ type: "text", text: "Run the preview verification fixture." }] }),

@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { ReadOnlyAuthStorage } from "../packages/acp/node_modules/@earendil-works/pi-coding-agent/dist/core/auth-storage.js";
+import { ReadOnlyAuthStorage } from "../../../acp/node_modules/@earendil-works/pi-coding-agent/dist/core/auth-storage.js";
 
 export const browserCredentialId = "eido-jev";
 export const browserDefaults = {apiUrl: "https://api.typesafe.ai/v1/systemone", model: "jev-latest"};

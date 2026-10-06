@@ -1,7 +1,7 @@
 import {connectDefaultMcpClient} from '../adapter/src/mcp-bridge.js';
 import {realSleep, type PiAcpDeps} from '../adapter/src/deps.js';
-import {authenticatedMcpFetch, MCP_FETCH, MCP_OPTIONS, registeredMcp} from '../../../scripts/pi-mcp.mjs';
-import {createMcpStatus, MCP_STATUS} from '../../../scripts/pi-mcp-status.mjs';
+import {authenticatedMcpFetch, MCP_FETCH, MCP_OPTIONS, registeredMcp} from '../../runtime/src/mcp/config.mjs';
+import {createMcpStatus, MCP_STATUS} from '../../runtime/src/mcp/status.mjs';
 
 export const connectMcp: PiAcpDeps['connectMcpClient'] = async (server, signal, binding) => {
   const options = (server as unknown as {[MCP_OPTIONS]?: {timeoutMs:number; unresolved?:boolean}})[MCP_OPTIONS];

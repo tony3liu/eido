@@ -4575,7 +4575,7 @@ fn mcp_servers_for_project(project: &Entity<Project>, cx: &App) -> Vec<acp::McpS
         return vec![acp::McpServer::Stdio(
             acp::McpServerStdio::new("eido_browser", std::path::PathBuf::from(node)).args(vec![
                 std::path::PathBuf::from(root)
-                    .join("scripts/browser-server.mjs")
+                    .join("packages/runtime/bin/browser-server.mjs")
                     .to_string_lossy()
                     .into_owned(),
             ]),

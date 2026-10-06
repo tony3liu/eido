@@ -11,10 +11,10 @@ const agentDir = resolve(process.env.EIDO_PI_CONFIG_DIR || resolve(root, ".local
 const sessionDir = resolve(agentDir, "acp-sessions");
 process.env.PI_CODING_AGENT_DIR = agentDir;
 await mkdir(sessionDir, { recursive: true, mode: 0o700 });
-const {claimBundledRuntime}=await import('../../../scripts/bundled-runtime.mjs');
+const {claimBundledRuntime}=await import('../../runtime/src/lifecycle.mjs');
 const releaseBundle=process.env.EIDO_INSTALLED_RUNTIME==='1'?async()=>{}:await claimBundledRuntime(root);
 process.once('exit',()=>{void releaseBundle();});
-const { createExtensionCenter } = await import("../../../scripts/pi-extensions.mjs");
+const { createExtensionCenter } = await import("../../runtime/src/pi/extensions.mjs");
 const { takeOverStdout, restoreStdout } = await import("../node_modules/@earendil-works/pi-coding-agent/dist/core/output-guard.js");
 takeOverStdout();
 const releaseRuntime = await createExtensionCenter(agentDir).acquireRuntime();

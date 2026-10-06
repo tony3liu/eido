@@ -13,7 +13,7 @@ import { workspacePath } from "./workspace-path.ts";
 const observationKey = "eido.dev/observeBuffer";
 const hash = (value: string | Buffer) => createHash("sha256").update(value).digest("hex");
 const text = (value: unknown) => ({ type: "text" as const, text: JSON.stringify(value, null, 2) });
-const projectScript = fileURLToPath(new URL("../../../scripts/project-preview.mjs", import.meta.url));
+const projectScript = fileURLToPath(new URL("../helpers/preview/project.mjs", import.meta.url));
 const commandSchema = Type.Object({
   command: Type.String({ minLength: 1, maxLength: 4096 }),
   args: Type.Optional(Type.Array(Type.String({ maxLength: 16384 }), { maxItems: 128 })),
@@ -21,7 +21,7 @@ const commandSchema = Type.Object({
 });
 type Command = { command: string; args?: string[]; timeoutSeconds?: number };
 type ProjectResult = { runId: string; stage: string; checks: unknown[]; url?: string; error?: string };
-const serverScript = fileURLToPath(new URL("../../../scripts/preview-server.mjs", import.meta.url));
+const serverScript = fileURLToPath(new URL("../helpers/preview/server.mjs", import.meta.url));
 type Input = { path: string; hash: string; differsFromDisk: boolean };
 type Run = {
   runId: string; cwd: string; toolCallId: string; fingerprint: string; entry?: string; files: Input[]; capturedAt: string;

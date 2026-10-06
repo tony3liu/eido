@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { mkdtemp, mkdir, writeFile, readFile, rm, stat, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createPiSettings, checkPiUpdate, bundledVersion } from "../pi-settings.mjs";
+import { createPiSettings, checkPiUpdate, bundledVersion } from "../../src/pi/settings.mjs";
 
 async function fixture(t) {
   const root = await mkdtemp(join(tmpdir(), "eido-pi-settings-"));
@@ -231,7 +231,7 @@ test("Full Access persists globally, validates booleans and survives model setti
 
 test("Jev configuration uses global settings and pi credentials without exposing keys", async t => {
   const f = await fixture(t);
-  const {browserDecisionEnvironment} = await import('../browser-config.mjs');
+  const {browserDecisionEnvironment} = await import('../../src/browser/config.mjs');
   const result = await f.bridge.execute({operation: 'browser-decision', apiUrl: 'http://127.0.0.1:19001/v1/systemone', model: 'jev-fixture', key: 'fixture-jev-secret'});
   assert.equal(result.browserDecision.credential, 'configured');
   assert.ok(!JSON.stringify(result).includes('fixture-jev-secret'));

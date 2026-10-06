@@ -2,7 +2,7 @@ import { existsSync, constants, accessSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { browserDecisionSettings } from "../../../scripts/browser-config.mjs";
+import { browserDecisionSettings } from "../../runtime/src/browser/config.mjs";
 
 const require = createRequire(import.meta.url);
 export const browserCachePath = process.env.PLAYWRIGHT_BROWSERS_PATH
@@ -46,7 +46,7 @@ export function browserAdapter(cwd: string, headed = false): Adapter {
   return {
     id: "jev-browser", surface: "browser", version: pkg.version,
     command: process.execPath,
-    args: [fileURLToPath(new URL("../../../scripts/browser-server.mjs", import.meta.url))], cwd,
+    args: [fileURLToPath(new URL("../../runtime/bin/browser-server.mjs", import.meta.url))], cwd,
     env: {
       JEV_BROWSER_HEADED: headed ? "1" : "0",
       JEV_BROWSER_LOG: "0",

@@ -16,7 +16,7 @@ export interface PiComponentHost {
   input?(data:string):string|undefined;
 }
 
-const helper = fileURLToPath(new URL('../../../scripts/pi-component-terminal.mjs', import.meta.url));
+const helper = fileURLToPath(new URL('../bin/component-terminal.mjs', import.meta.url));
 
 /** Run the plugin's real TUI in Zed's existing terminal, without starting another harness. */
 export async function showPiComponent<T>(pi: AgentSession, client: AgentContext, theme: Theme, agentDir: string,

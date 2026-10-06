@@ -17,13 +17,20 @@ import subprocess
 import sys
 
 ROOT = Path(__file__).resolve().parent.parent
-SCRIPT_NAMES = (
-    'bundled-runtime.mjs', 'browser-config.mjs', 'browser-server.mjs', 'pi-component-terminal.mjs',
-    'pi-extensions.mjs', 'pi-http-settings.mjs', 'pi-mcp-auth.mjs',
-    'pi-mcp-status.mjs', 'pi-mcp.mjs', 'pi-runtime-settings.mjs',
-    'pi-settings.mjs', 'preview-server.mjs', 'project-command.mjs',
-    'project-preview.mjs', 'runtime-paths.mjs',
+RUNTIME_FILES = (
+    'packages/runtime/package.json',
+    'packages/runtime/src/lifecycle.mjs', 'packages/runtime/src/paths.mjs',
+    'packages/runtime/src/browser/config.mjs',
+    'packages/runtime/src/pi/settings.mjs', 'packages/runtime/src/pi/extensions.mjs',
+    'packages/runtime/src/pi/http-settings.mjs', 'packages/runtime/src/pi/runtime-settings.mjs',
+    'packages/runtime/src/mcp/config.mjs', 'packages/runtime/src/mcp/status.mjs',
+    'packages/runtime/bin/pi-settings.mjs', 'packages/runtime/bin/pi-extensions.mjs',
+    'packages/runtime/bin/mcp-auth.mjs', 'packages/runtime/bin/browser-server.mjs',
+    'packages/acp/bin/component-terminal.mjs',
+    'packages/acp/helpers/preview/server.mjs', 'packages/acp/helpers/preview/command.mjs',
+    'packages/acp/helpers/preview/project.mjs',
 )
+RUNTIME_MODULE_ROOTS = ('packages/runtime', 'packages/acp/bin', 'packages/acp/helpers')
 EXCLUDED = {'test', 'tests', '__tests__', '__mocks__', 'fixtures', '__fixtures__',
             'examples', 'example', 'bench', 'benchmark', 'benchmarks', 'coverage',
             '.git', '.github', '.local', 'local-docs', 'test-results'}
@@ -133,8 +140,11 @@ def audit(bundle):
             continue
         if file.suffix in {'.ts', '.mts', '.cts', '.map', '.py', '.rs'}:
             raise RuntimeError(f'Development source in application: {local}')
-        if file.is_relative_to(runtime / 'scripts') and file.name not in SCRIPT_NAMES:
-            raise RuntimeError(f'Unlisted runtime script: {local}')
+        if file.is_relative_to(runtime / 'scripts'):
+            raise RuntimeError(f'Development script in application: {local}')
+        if any(file.is_relative_to(runtime / root) for root in RUNTIME_MODULE_ROOTS):
+            if str(file.relative_to(runtime)) not in RUNTIME_FILES:
+                raise RuntimeError(f'Unlisted runtime module: {local}')
         if file.is_relative_to(runtime) and file.suffix in {'.js', '.mjs', '.cjs'}:
             text = file.read_text(errors='replace')
             if str(ROOT) in text:
@@ -171,8 +181,8 @@ def build():
     copy_tree(ROOT / 'packages/acp/adapter', runtime / 'packages/acp/adapter',
               lambda path: path.suffix == '.js' or path.name in {'package.json', 'LICENSE'})
     (runtime / 'package.json').write_text(json.dumps({'name': 'eido-runtime', 'private': True, 'type': 'module'}))
-    for name in SCRIPT_NAMES:
-        copy_file(ROOT / 'scripts' / name, runtime / 'scripts' / name)
+    for name in RUNTIME_FILES:
+        copy_file(ROOT / name, runtime / name)
     count = copy_dependencies(ROOT, runtime) + copy_dependencies(ROOT / 'packages/acp', runtime / 'packages/acp')
     copy_file(ROOT / 'native/appearance.json', runtime / 'native/appearance.json')
     copy_file(node, contents / 'Helpers/node')

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {mkdtemp,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {claimBundledRuntime,withRuntimeInstall} from '../bundled-runtime.mjs';
+import {claimBundledRuntime,withRuntimeInstall} from '../src/lifecycle.mjs';
 
 test('dependency replacement excludes live runtimes and blocks startup until installation settles',async()=>{
   const root=await mkdtemp(join(tmpdir(),'eido-runtime-lock-'));

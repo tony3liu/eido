@@ -81,7 +81,7 @@ test("pi ACP browser verifies real interaction, errors, isolation, images and ca
     .onNotification(methods.client.session.update, ({ params }) => { updates.push(params.update); })
     .connect({ readable: toClient.readable, writable: toAgent.writable });
   const mcpServers: McpServer[] = [{ name: "eido_browser", command: process.execPath,
-    args: [fileURLToPath(new URL("../../../scripts/browser-server.mjs", import.meta.url))],
+    args: [fileURLToPath(new URL("../../runtime/bin/browser-server.mjs", import.meta.url))],
     env: [{ name: "JEV_BROWSER_HEADED", value: "0" }],
   }];
   const prompt = (sessionId: string, text: string) => connection.agent.request(methods.agent.session.prompt, { sessionId, prompt: [{ type: "text", text }] });
@@ -170,7 +170,7 @@ test("test browsers close automatically on completion, model failure and cancell
     .onNotification(methods.client.session.update, () => {})
     .connect({ readable: toClient.readable, writable: toAgent.writable });
   const newTask = () => connection.agent.request(methods.agent.session.new, { cwd, mcpServers: [{ name: "eido_browser", command: process.execPath,
-    args: [fileURLToPath(new URL("../../../scripts/browser-server.mjs", import.meta.url))], env: [{ name: "JEV_BROWSER_HEADED", value: "0" }],
+    args: [fileURLToPath(new URL("../../runtime/bin/browser-server.mjs", import.meta.url))], env: [{ name: "JEV_BROWSER_HEADED", value: "0" }],
   }] });
   const prompt = (sessionId: string) => connection.agent.request(methods.agent.session.prompt, { sessionId, prompt: [{ type: "text", text: "Verify the local browser lifecycle fixture." }] });
   try {

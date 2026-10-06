@@ -17,8 +17,8 @@ import { accessPolicy } from "./access-policy.ts";
 import { installPiCommands } from "./pi-commands.ts";
 import { createSubagents } from "./subagents.ts";
 import { installAgentToolPolicy } from "./agent-tools.ts";
-import { configuredMcp } from "../../../scripts/pi-extensions.mjs";
-import { browserDecisionEnvironment } from "../../../scripts/browser-config.mjs";
+import { configuredMcp } from "../../runtime/src/pi/extensions.mjs";
+import { browserDecisionEnvironment } from "../../runtime/src/browser/config.mjs";
 
 export async function startEidoAgent(agentDir: string, sessionDir: string, stream?: Stream, modelRuntime?: ModelRuntime) {
   const runtime = modelRuntime ?? await ModelRuntime.create({

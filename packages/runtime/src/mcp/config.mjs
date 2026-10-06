@@ -1,11 +1,11 @@
 import {readFile} from 'node:fs/promises';
 import {join, resolve} from 'node:path';
 import {homedir} from 'node:os';
-import {FileAuthStorageBackend} from '../packages/acp/node_modules/@earendil-works/pi-coding-agent/dist/core/auth-storage.js';
-import {validateMcpServerConfig} from '../packages/acp/node_modules/@earendil-works/pi-coding-agent/dist/core/mcp-servers.js';
-import {resolveConfigValueOrThrow, resolveHeadersOrThrow} from '../packages/acp/node_modules/@earendil-works/pi-coding-agent/dist/core/resolve-config-value.js';
-import {McpOAuthCredentialStore, createMcpAuthProvider, signInMcpServer} from '../packages/acp/node_modules/@earendil-works/pi-coding-agent/dist/extensions/mcp/oauth.js';
-import {parseWwwAuthenticate} from '../packages/acp/node_modules/@earendil-works/pi-mcp/dist/oauth/index.js';
+import {FileAuthStorageBackend} from '../../../acp/node_modules/@earendil-works/pi-coding-agent/dist/core/auth-storage.js';
+import {validateMcpServerConfig} from '../../../acp/node_modules/@earendil-works/pi-coding-agent/dist/core/mcp-servers.js';
+import {resolveConfigValueOrThrow, resolveHeadersOrThrow} from '../../../acp/node_modules/@earendil-works/pi-coding-agent/dist/core/resolve-config-value.js';
+import {McpOAuthCredentialStore, createMcpAuthProvider, signInMcpServer} from '../../../acp/node_modules/@earendil-works/pi-coding-agent/dist/extensions/mcp/oauth.js';
+import {parseWwwAuthenticate} from '../../../acp/node_modules/@earendil-works/pi-mcp/dist/oauth/index.js';
 
 export const MCP_OPTIONS = Symbol.for('eido.pi.mcp.options');
 export const MCP_FETCH = Symbol.for('eido.pi.mcp.fetch');
