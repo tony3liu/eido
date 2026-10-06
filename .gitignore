@@ -13,6 +13,9 @@
 *.[Dd][Oo][Cc][Xx]
 *.[Dd][Oo][Cc][Mm]
 
+# Public product introduction; all private development documents remain local.
+!/README.md
+
 # Required upstream license/attribution documents are not development notes.
 !**/[Ll][Ii][Cc][Ee][Nn][Ss][Ee].[Mm][Dd]
 !**/[Ll][Ii][Cc][Ee][Nn][Cc][Ee].[Mm][Dd]

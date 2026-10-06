@@ -10,6 +10,7 @@ from pathlib import PurePosixPath
 PRIVATE_DIRECTORIES = {"local-docs", ".local", "private-docs", "internal-docs"}
 DOCUMENT_EXTENSIONS = {".md", ".markdown", ".mdx", ".doc", ".docx", ".docm"}
 LEGAL_NOTICES = {"license.md", "licence.md", "copying.md", "notice.md", "copyright.md"}
+PUBLIC_PRODUCT_DOCUMENTS = {"README.md"}
 
 
 def git(*args):
@@ -20,6 +21,8 @@ def private_document(path):
     normalized = PurePosixPath(path.casefold())
     if PRIVATE_DIRECTORIES.intersection(normalized.parts[:-1]):
         return True
+    if path in PUBLIC_PRODUCT_DOCUMENTS:
+        return False
     if normalized.name in LEGAL_NOTICES:
         return False
     return normalized.suffix in DOCUMENT_EXTENSIONS
