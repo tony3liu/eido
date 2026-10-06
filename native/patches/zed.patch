@@ -5730,7 +5730,14 @@ diff --git a/crates/agent_ui/src/agent_panel.rs b/crates/agent_ui/src/agent_pane
          let Agent::Custom { id } = agent else {
              return true;
          };
-@@ -1708,12 +1657,12 @@
+@@ -1702,18 +1651,19 @@
+         window: &mut Window,
+         cx: &mut Context<Self>,
+     ) {
++        if self.eido_route_task(None, Some(&session_id), focus, cx) { return; }
+         let thread = self.create_agent_thread_with_server_for_external_session(
+             agent, None, session_id, work_dirs, title, None, source, window, cx,
+         );
          self.set_base_view(thread.into(), focus, window, cx);
      }
  
@@ -5747,7 +5754,15 @@ diff --git a/crates/agent_ui/src/agent_panel.rs b/crates/agent_ui/src/agent_pane
  
          workspace_read
              .panel::<AgentPanel>(cx)
-@@ -1922,6 +1871,13 @@
+@@ -1853,6 +1803,7 @@
+             return;
+         }
+ 
++        if self.eido_route_task(Some(thread_id), None, false, cx) { return; }
+         let active_matching = match &self.base_view {
+             BaseView::AgentThread { conversation_view }
+                 if conversation_view.read(cx).thread_id == thread_id =>
+@@ -1922,6 +1873,13 @@
      }
  
      fn set_selected_agent_and_persist(&mut self, agent: Agent, cx: &mut Context<Self>) {
@@ -5761,7 +5776,7 @@ diff --git a/crates/agent_ui/src/agent_panel.rs b/crates/agent_ui/src/agent_pane
          if self.selected_agent != agent {
              self.selected_agent = agent.clone();
              self.serialize(cx);
-@@ -1940,6 +1896,13 @@
+@@ -1940,6 +1898,13 @@
      /// right away, if the panel is already showing the empty new-thread
      /// draft).
      pub fn select_agent(&mut self, agent: Agent, window: &mut Window, cx: &mut Context<Self>) {
@@ -5775,7 +5790,7 @@ diff --git a/crates/agent_ui/src/agent_panel.rs b/crates/agent_ui/src/agent_pane
          if self.project.read(cx).is_via_collab() && !agent.is_native() {
              return;
          }
-@@ -1995,10 +1958,16 @@
+@@ -1995,10 +1960,16 @@
      }
  
      pub fn supports_terminal(&self, cx: &App) -> bool {
@@ -5792,7 +5807,7 @@ diff --git a/crates/agent_ui/src/agent_panel.rs b/crates/agent_ui/src/agent_pane
          self.last_created_entry_kind == AgentPanelEntryKind::Terminal
              && self.project.read(cx).supports_terminal(cx)
      }
-@@ -2036,6 +2005,9 @@
+@@ -2036,6 +2007,9 @@
          window: &mut Window,
          cx: &mut Context<Self>,
      ) {
@@ -5802,10 +5817,20 @@ diff --git a/crates/agent_ui/src/agent_panel.rs b/crates/agent_ui/src/agent_pane
          // The spawn is async, so the panel keeps its current base view until
          // the terminal lands. Marking the spawn as pending stops
          // `ensure_thread_initialized` from treating a still-uninitialized panel
-@@ -3531,21 +3503,6 @@
-         self.set_base_view(thread.into(), focus, window, cx);
-     }
+@@ -3515,6 +3489,7 @@
+             return;
+         }
  
++        if self.eido_route_task(resume_thread_id, None, focus, cx) { return; }
+         let agent = agent_choice.unwrap_or_else(|| self.selected_agent(cx));
+         let thread = self.create_agent_thread_with_server(
+             agent,
+@@ -3529,21 +3504,6 @@
+             cx,
+         );
+         self.set_base_view(thread.into(), focus, window, cx);
+-    }
+-
 -    fn manage_skills(
 -        &mut self,
 -        _action: &ManageSkills,
@@ -5819,12 +5844,10 @@ diff --git a/crates/agent_ui/src/agent_panel.rs b/crates/agent_ui/src/agent_pane
 -            }),
 -            cx,
 -        );
--    }
--
+     }
+ 
      /// Refresh the native agent's view of available skills
-     pub fn refresh_skills(&mut self, cx: &mut Context<Self>) {
-         if !self.has_open_project(cx) {
-@@ -3609,6 +3566,10 @@
+@@ -3609,6 +3569,10 @@
              return;
          }
  
@@ -5835,7 +5858,7 @@ diff --git a/crates/agent_ui/src/agent_panel.rs b/crates/agent_ui/src/agent_pane
          self.new_thread_menu_handle.toggle(window, cx);
      }
  
-@@ -3706,6 +3667,16 @@
+@@ -3706,6 +3670,16 @@
      }
  
      pub(crate) fn open_configuration(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -5852,7 +5875,7 @@ diff --git a/crates/agent_ui/src/agent_panel.rs b/crates/agent_ui/src/agent_pane
          window.dispatch_action(
              Box::new(zed_actions::OpenSettingsPage {
                  page: "AI".to_string(),
-@@ -4001,6 +3972,54 @@
+@@ -4001,6 +3975,55 @@
  
      pub fn retained_threads(&self) -> &HashMap<ThreadId, Entity<ConversationView>> {
          &self.retained_threads
@@ -5877,6 +5900,7 @@ diff --git a/crates/agent_ui/src/agent_panel.rs b/crates/agent_ui/src/agent_pane
 +    }
 +
 +    pub(crate) fn eido_open_session(&mut self, session_id: acp::SessionId, title: Option<SharedString>, draft: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
++        if self.eido_route_task(None, Some(&session_id), true, cx) { return; }
 +        let agent = Agent::Custom { id: "eido-pi".into() };
 +        let existing = ThreadMetadataStore::try_global(cx).and_then(|store| store.read(cx).entry_by_session(&session_id).map(|entry| entry.thread_id));
 +        if let Some(thread_id) = existing {
@@ -5907,7 +5931,7 @@ diff --git a/crates/agent_ui/src/agent_panel.rs b/crates/agent_ui/src/agent_pane
      }
  
      pub fn active_conversation_view(&self) -> Option<&Entity<ConversationView>> {
-@@ -4276,6 +4295,7 @@
+@@ -4276,6 +4299,7 @@
              self.activation_focus_handle(cx).focus(window, cx);
          }
          cx.emit(AgentPanelEvent::ActiveViewChanged);
@@ -5915,7 +5939,67 @@ diff --git a/crates/agent_ui/src/agent_panel.rs b/crates/agent_ui/src/agent_pane
      }
  
      fn refresh_base_view_subscriptions(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-@@ -5474,7 +5494,11 @@
+@@ -4408,6 +4432,39 @@
+         );
+     }
+ 
++    pub(crate) fn eido_route_task(
++        &self, thread_id: Option<ThreadId>, session_id: Option<&acp::SessionId>,
++        focus: bool, cx: &mut Context<Self>,
++    ) -> bool {
++        let session_id = session_id.cloned().or_else(|| thread_id.and_then(|id|
++            ThreadMetadataStore::try_global(cx).and_then(|store| store.read(cx).entry(id).and_then(|m| m.session_id.clone()))));
++        let Some((owner, conversation)) = crate::eido_task_windows::find(&cx.weak_entity(), thread_id, session_id.as_ref(), cx) else { return false; };
++        if focus {
++            Self::show_deferred_toast(&self.workspace, "Task is open in another window. Switched to its workspace.", cx);
++            cx.defer(move |cx| {
++                let Some(handle) = owner.window.downcast::<MultiWorkspace>() else { return; };
++                handle.update(cx, |multi, window, cx| {
++                    let Some(panel) = owner.panel.upgrade() else { return; };
++                    if let Some(workspace) = owner.workspace.upgrade() {
++                        multi.activate(workspace, None, window, cx);
++                    }
++                    window.activate_window();
++                    cx.activate(true);
++                    panel.update(cx, |panel, cx| {
++                        let id = conversation.read(cx).thread_id;
++                        panel.retained_threads.remove(&id);
++                        panel.set_base_view(BaseView::AgentThread { conversation_view: conversation.clone() }, true, window, cx);
++                        if let Some(session_id) = session_id {
++                            conversation.update(cx, |view, cx| view.navigate_to_thread(session_id, window, cx));
++                        }
++                        panel.eido_focus_composer(window, cx);
++                    });
++                }).log_err();
++            });
++        }
++        true
++    }
++
+     pub fn load_agent_thread(
+         &mut self,
+         agent: Agent,
+@@ -4419,6 +4476,7 @@
+         window: &mut Window,
+         cx: &mut Context<Self>,
+     ) {
++        if self.eido_route_task(Some(thread_id), None, focus, cx) { return; }
+         if let Some(store) = ThreadMetadataStore::try_global(cx) {
+             store.update(cx, |store, cx| {
+                 store.unarchive(thread_id, cx);
+@@ -4603,6 +4661,11 @@
+                 cx,
+             )
+         });
++
++        crate::eido_task_windows::register(crate::eido_task_windows::Owner {
++            panel: cx.weak_entity(), workspace: self.workspace.clone(),
++            window: window.window_handle(), conversation: conversation_view.downgrade(),
++        }, cx);
+ 
+         cx.observe_in(
+             &conversation_view,
+@@ -5474,7 +5537,11 @@
              VisibleSurface::Uninitialized => Label::new("Agent").truncate().into_any_element(),
          };
  
@@ -5928,7 +6012,7 @@ diff --git a/crates/agent_ui/src/agent_panel.rs b/crates/agent_ui/src/agent_pane
          let gradient_overlay = GradientFade::new(toolbar_bg, toolbar_bg, toolbar_bg)
              .width(px(64.0))
              .right(px(0.0))
-@@ -5501,7 +5525,7 @@
+@@ -5501,7 +5568,7 @@
                              .absolute()
                              .right_0()
                              .h_full()
@@ -5937,7 +6021,7 @@ diff --git a/crates/agent_ui/src/agent_panel.rs b/crates/agent_ui/src/agent_pane
                              .child(
                                  IconButton::new("edit_tile", IconName::Pencil)
                                      .icon_size(IconSize::Small)
-@@ -5554,7 +5578,7 @@
+@@ -5554,7 +5621,7 @@
      ) -> impl IntoElement {
          let focus_handle = self.focus_handle(cx);
          // Resolve menu shortcuts at the thread root; the active editor can
@@ -5946,7 +6030,7 @@ diff --git a/crates/agent_ui/src/agent_panel.rs b/crates/agent_ui/src/agent_pane
          let menu_action_context = match &self.base_view {
              BaseView::AgentThread { conversation_view } => conversation_view
                  .read(cx)
-@@ -5563,7 +5587,6 @@
+@@ -5563,7 +5630,6 @@
                  .unwrap_or_else(|| focus_handle.clone()),
              _ => focus_handle.clone(),
          };
@@ -5954,7 +6038,7 @@ diff --git a/crates/agent_ui/src/agent_panel.rs b/crates/agent_ui/src/agent_pane
  
          let conversation_view = match &self.base_view {
              BaseView::AgentThread { conversation_view } => Some(conversation_view.clone()),
-@@ -5592,12 +5615,6 @@
+@@ -5592,12 +5658,6 @@
          let supports_logout = self
              .active_conversation_view()
              .is_some_and(|conversation_view| conversation_view.read(cx).supports_logout());
@@ -5967,7 +6051,7 @@ diff --git a/crates/agent_ui/src/agent_panel.rs b/crates/agent_ui/src/agent_pane
  
          let workspace = self.workspace.clone();
  
-@@ -5662,87 +5679,6 @@
+@@ -5662,87 +5722,6 @@
                              }
                          }
  
@@ -6055,7 +6139,7 @@ diff --git a/crates/agent_ui/src/agent_panel.rs b/crates/agent_ui/src/agent_pane
                          menu = menu
                              .action("Settings", Box::new(OpenSettings))
                              .separator()
-@@ -5791,6 +5727,34 @@
+@@ -5791,6 +5770,34 @@
              telemetry::event!("Agent Panel Clone Repo Clicked");
              window.dispatch_action(git::Clone.boxed_clone(), cx);
          })
@@ -6090,7 +6174,7 @@ diff --git a/crates/agent_ui/src/agent_panel.rs b/crates/agent_ui/src/agent_pane
      }
  
      fn render_toolbar(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-@@ -6482,7 +6446,6 @@
+@@ -6482,7 +6489,6 @@
                  this.open_configuration(window, cx);
              }))
              .on_action(cx.listener(Self::open_active_thread_as_markdown))
@@ -6098,7 +6182,7 @@ diff --git a/crates/agent_ui/src/agent_panel.rs b/crates/agent_ui/src/agent_pane
              .on_action(cx.listener(Self::toggle_options_menu))
              .on_action(cx.listener(Self::increase_font_size))
              .on_action(cx.listener(Self::decrease_font_size))
-@@ -6503,7 +6466,14 @@
+@@ -6503,7 +6509,14 @@
                      })
                  }
              }))
@@ -6114,7 +6198,15 @@ diff --git a/crates/agent_ui/src/agent_panel.rs b/crates/agent_ui/src/agent_pane
              .children(self.render_new_user_onboarding(window, cx))
              .map(|parent| match self.visible_surface() {
                  VisibleSurface::Uninitialized if !self.has_open_project(cx) => {
-@@ -9670,60 +9640,6 @@
+@@ -6624,6 +6637,7 @@
+         window: &mut Window,
+         cx: &mut Context<Self>,
+     ) {
++        if self.eido_route_task(None, Some(&resume_session_id), true, cx) { return; }
+         let ext_agent = Agent::Custom {
+             id: server.agent_id(),
+         };
+@@ -9670,60 +9684,6 @@
      }
  
      #[gpui::test]
@@ -6175,7 +6267,7 @@ diff --git a/crates/agent_ui/src/agent_panel.rs b/crates/agent_ui/src/agent_pane
      async fn test_terminal_title_omits_placeholder_title(cx: &mut TestAppContext) {
          let (panel, mut cx) = setup_panel(cx).await;
          let terminal_id = panel
-@@ -12559,6 +12475,62 @@
+@@ -12559,6 +12519,62 @@
                  "parked draft should remain in `retained_threads`"
              );
          });
@@ -6238,6 +6330,72 @@ diff --git a/crates/agent_ui/src/agent_panel.rs b/crates/agent_ui/src/agent_pane
      }
  
      /// When viewing a parked draft (agent A) and selecting a different
+@@ -14137,4 +14153,65 @@
+             );
+         });
+     }
++    #[gpui::test]
++    async fn test_eido_two_windows_route_to_one_conversation_and_preserve_queue(cx: &mut TestAppContext) {
++        let (_first_workspace, first, mut first_cx) = setup_workspace_panel(cx).await;
++        first_cx.update(|_, cx| cx.set_global(crate::eido_task_windows::TaskWindows::default()));
++        let connection = StubAgentConnection::new();
++        open_thread_with_connection(&first, connection.clone(), &mut first_cx);
++        send_message(&first, &mut first_cx);
++        let original = first.read_with(&first_cx, |panel, _| panel.active_conversation_view().unwrap().clone());
++        let id = original.read_with(&first_cx, |view, _| view.thread_id);
++        let session_id = active_session_id(&first, &first_cx);
++        let view = first.read_with(&first_cx, |panel, cx| panel.active_thread_view(cx).unwrap());
++        let queued = view.update_in(&mut first_cx, |view, window, cx| {
++            view.message_queue.pause();
++            view.add_to_queue(vec!["Keep this queued exactly once".into()], vec![], window, cx);
++            view.message_editor.update(cx, |editor, cx| editor.set_text("Unsent draft", window, cx));
++            serde_json::to_value(view.message_queue.snapshot()).unwrap()
++        });
++        // Keep the original conversation retained behind a different task.
++        open_thread_with_connection(&first, connection.clone(), &mut first_cx);
++        let fs = first.read_with(&first_cx, |panel, _| panel.fs.clone());
++        let project = Project::test(fs, [Path::new("/project")], cx).await;
++        let second_window = cx.add_window(|window, cx| MultiWorkspace::test_new(project, window, cx));
++        let second_workspace = second_window.read_with(cx, |multi, _| multi.workspace().clone()).unwrap();
++        let mut second_cx = VisualTestContext::from_window(second_window.into(), cx);
++        let second = second_workspace.update_in(&mut second_cx, |workspace, window, cx| {
++            let panel = cx.new(|cx| AgentPanel::new(workspace, window, cx));
++            workspace.add_panel(panel.clone(), window, cx);
++            panel
++        });
++        open_thread_with_connection(&second, StubAgentConnection::new(), &mut second_cx);
++        let second_original = second.read_with(&second_cx, |panel, _| panel.active_conversation_view().unwrap().entity_id());
++        // Thread-ID opening routes a retained task to its owner, without a second view.
++        second.update_in(&mut second_cx, |panel, window, cx| panel.load_agent_thread(
++            Agent::Stub, id, None, None, true, AgentThreadSource::AgentPanel, window, cx));
++        second_cx.run_until_parked();
++        assert_eq!(first.read_with(&first_cx, |panel, _| panel.active_conversation_view().unwrap().entity_id()), original.entity_id());
++        assert_eq!(second.read_with(&second_cx, |panel, _| panel.active_conversation_view().unwrap().entity_id()), second_original);
++        view.read_with(&first_cx, |view, cx| {
++            assert_eq!(serde_json::to_value(view.message_queue.snapshot()).unwrap(), queued);
++            assert_eq!(view.message_editor.read(cx).text(cx), "Unsent draft");
++        });
++        // Raw-session links and repeated clicks use the same owner too.
++        second.update_in(&mut second_cx, |panel, window, cx| panel.external_thread_by_session(
++            Agent::Stub, session_id.clone(), None, None, true, AgentThreadSource::AgentPanel, window, cx));
++        second_cx.run_until_parked();
++        assert_eq!(second.read_with(&second_cx, |panel, _| panel.active_conversation_view().unwrap().entity_id()), second_original);
++        // Dropping the owner releases its weak reservation. No transfer of Project or buffers.
++        let original_weak = original.downgrade();
++        drop(view); drop(original);
++        first.update(&mut first_cx, |panel, cx| {
++            panel.retained_threads.clear(); panel.draft_thread = None;
++            panel.base_view = BaseView::Uninitialized;
++            cx.notify();
++        });
++        first_cx.run_until_parked();
++        assert!(original_weak.upgrade().is_none());
++        second.read_with(&second_cx, |panel, cx| {
++            assert!(crate::eido_task_windows::find(&panel.workspace.upgrade().unwrap().read(cx).panel::<AgentPanel>(cx).unwrap().downgrade(), Some(id), Some(&session_id), cx).is_none());
++        });
++    }
++
+ }
 diff --git a/crates/agent_ui/src/agent_registry_ui.rs b/crates/agent_ui/src/agent_registry_ui.rs
 --- a/crates/agent_ui/src/agent_registry_ui.rs
 +++ /dev/null
@@ -6963,7 +7121,7 @@ diff --git a/crates/agent_ui/src/agent_registry_ui.rs b/crates/agent_ui/src/agen
 diff --git a/crates/agent_ui/src/agent_ui.rs b/crates/agent_ui/src/agent_ui.rs
 --- a/crates/agent_ui/src/agent_ui.rs
 +++ b/crates/agent_ui/src/agent_ui.rs
-@@ -1,31 +1,25 @@
+@@ -1,31 +1,27 @@
 -mod agent_configuration;
  pub mod agent_connection_store;
  mod agent_diff;
@@ -6982,6 +7140,8 @@ diff --git a/crates/agent_ui/src/agent_ui.rs b/crates/agent_ui/src/agent_ui.rs
 +mod eido_verification;
 +mod eido_queue;
 +mod eido_review_store;
++mod eido_task_windows;
++mod eido_session_store;
  pub mod draft_prompt_store;
  mod entry_view_state;
  mod external_source_prompt;
@@ -7000,7 +7160,7 @@ diff --git a/crates/agent_ui/src/agent_ui.rs b/crates/agent_ui/src/agent_ui.rs
  pub mod terminal_thread_metadata_store;
  #[cfg(any(test, feature = "test-support"))]
  pub mod test_support;
-@@ -45,36 +39,27 @@
+@@ -45,36 +41,27 @@
  use agent_settings::{AgentProfileId, AgentSettings};
  use command_palette_hooks::CommandPaletteFilter;
  use editor::{Editor, SelectionEffects, scroll::Autoscroll};
@@ -7043,7 +7203,7 @@ diff --git a/crates/agent_ui/src/agent_ui.rs b/crates/agent_ui/src/agent_ui.rs
  pub use crate::inline_assistant::InlineAssistant;
  pub use crate::message_editor::MessageEditorEvent;
  pub use crate::thread_metadata_store::ThreadId;
-@@ -184,7 +169,6 @@
+@@ -184,7 +171,6 @@
  }
  
  pub const DEFAULT_THREAD_TITLE: &str = "New Agent Thread";
@@ -7051,7 +7211,7 @@ diff --git a/crates/agent_ui/src/agent_ui.rs b/crates/agent_ui/src/agent_ui.rs
  
  #[derive(Clone, Copy, Debug, Eq, PartialEq)]
  pub enum AgentThreadSource {
-@@ -532,21 +516,6 @@
+@@ -532,21 +518,6 @@
      }
  }
  
@@ -7073,7 +7233,7 @@ diff --git a/crates/agent_ui/src/agent_ui.rs b/crates/agent_ui/src/agent_ui.rs
  pub(crate) fn humanize_token_count(count: u64) -> String {
      match count {
          0..=999 => count.to_string(),
-@@ -577,224 +546,26 @@
+@@ -577,224 +548,26 @@
      }
  }
  
@@ -7306,7 +7466,7 @@ diff --git a/crates/agent_ui/src/agent_ui.rs b/crates/agent_ui/src/agent_ui.rs
      CommandPaletteFilter::update_global(cx, |filter, _| {
          use editor::actions::{
              AcceptEditPrediction, AcceptNextLineEditPrediction, AcceptNextWordEditPrediction,
-@@ -816,474 +587,36 @@
+@@ -816,474 +589,36 @@
              TypeId::of::<zed_actions::assistant::CreateSkillFromUrl>(),
          ];
  
@@ -11557,7 +11717,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
          let thread = &self.thread;
  
          if self.is_loading_contents {
-@@ -2104,6 +2362,76 @@
+@@ -2104,6 +2362,73 @@
          .detach_and_log_err(cx);
      }
  
@@ -11567,13 +11727,10 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
 +        }
 +        let key = crate::eido_queue::key(self.root_thread_id, &self.session_id);
 +        let payload = serde_json::to_string(&self.message_queue.snapshot());
-+        let kvp = db::kvp::KeyValueStore::global(cx);
-+        let previous = self.eido_queue_write.take();
-+        let task = cx.background_spawn(async move {
-+            if let Some(previous) = previous { let _ = previous.await; }
-+            let payload = payload.map_err(|error| error.to_string())?;
-+            kvp.scoped(crate::eido_queue::NAMESPACE).write(key, payload).await.map_err(|error| error.to_string())
-+        }).shared();
++        let task = match payload {
++            Ok(payload) => crate::eido_session_store::write(crate::eido_queue::NAMESPACE, key, payload, cx),
++            Err(error) => Task::ready(Err(error.to_string())).shared(),
++        };
 +        self.eido_queue_write = Some(task.clone());
 +        let observer = task.clone();
 +        cx.spawn(async move |this, cx| {
@@ -11634,7 +11791,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
      pub fn add_to_queue(
          &mut self,
          content: Vec<acp::ContentBlock>,
-@@ -2143,6 +2471,9 @@
+@@ -2143,6 +2468,9 @@
          self.message_queue.enqueue(QueueEntry {
              id,
              content,
@@ -11644,7 +11801,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
              tracked_buffers,
              steer: false,
              editor,
-@@ -2201,6 +2532,7 @@
+@@ -2201,6 +2529,7 @@
                      entry.content = content;
                      entry.tracked_buffers = tracked_buffers;
                  }
@@ -11652,7 +11809,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
                  cx.notify();
              })?;
  
-@@ -2215,6 +2547,7 @@
+@@ -2215,6 +2544,7 @@
          cx: &mut Context<Self>,
      ) -> Option<QueueEntry> {
          let removed = self.message_queue.remove(id);
@@ -11660,7 +11817,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
          if removed.is_some() {
              self.sync_queue_flag_to_native_thread(cx);
          }
-@@ -2227,7 +2560,8 @@
+@@ -2227,7 +2557,8 @@
          cx.notify();
      }
  
@@ -11670,7 +11827,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
          if let Some(native_thread) = self.as_native_thread(cx) {
              // By default queued messages wait for the turn to fully complete.
              // Only a "steering" front message ends the turn at the next boundary.
-@@ -2244,6 +2578,11 @@
+@@ -2244,6 +2575,11 @@
          window: &mut Window,
          cx: &mut Context<Self>,
      ) {
@@ -11682,7 +11839,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
          let is_generating = self.thread.read(cx).status() == acp_thread::ThreadStatus::Generating;
          if let Some(entry) = self.message_queue.send_now(id, is_generating) {
              self.dispatch_queued_entry(entry, window, cx);
-@@ -2259,14 +2598,18 @@
+@@ -2259,14 +2595,18 @@
          window: &mut Window,
          cx: &mut Context<Self>,
      ) {
@@ -11703,7 +11860,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
  
          // A queued message can itself be a built-in command (e.g. the user typed
          // `/compact` while a turn was generating). Detect that so we run it as a
-@@ -2289,6 +2632,7 @@
+@@ -2289,6 +2629,7 @@
  
          let should_be_following = self.should_be_following;
          let contents_task = cx.spawn_in(window, async move |_this, cx| {
@@ -11711,7 +11868,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
              cancelled.await;
              if should_be_following {
                  workspace
-@@ -2301,7 +2645,7 @@
+@@ -2301,7 +2642,7 @@
              Ok(Some((content, tracked_buffers)))
          });
  
@@ -11720,7 +11877,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
      }
  
      pub fn move_queued_message_to_main_editor(
-@@ -4350,7 +4694,7 @@
+@@ -4350,7 +4691,7 @@
          )
      }
  
@@ -11729,7 +11886,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
          &mut self,
          window: &mut Window,
          cx: &mut Context<Self>,
-@@ -4370,8 +4714,20 @@
+@@ -4370,8 +4711,20 @@
          };
  
          let max_content_width = AgentSettings::get_global(cx).max_content_width;
@@ -11751,7 +11908,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
  
          h_flex()
              .py_2()
-@@ -4381,8 +4737,9 @@
+@@ -4381,8 +4734,9 @@
              .map(|this| {
                  if has_messages {
                      this.on_action(cx.listener(Self::expand_message_editor))
@@ -11763,7 +11920,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
                          .when(editor_expanded, |this| this.h(vh(0.8, window)))
                  } else {
                      this.flex_1().size_full()
-@@ -4399,6 +4756,9 @@
+@@ -4399,6 +4753,9 @@
                      .flex_grow_0()
                      .justify_between()
                      .gap_2()
@@ -11773,7 +11930,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
                      .child(
                          v_flex()
                              .relative()
-@@ -4407,6 +4767,10 @@
+@@ -4407,6 +4764,10 @@
                              .when(fills_container, |this| this.flex_1())
                              .pt_1()
                              .pr_2p5()
@@ -11784,7 +11941,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
                              .child(self.message_editor.clone())
                              .when(has_messages, |this| {
                                  this.child(
-@@ -4441,6 +4805,9 @@
+@@ -4441,6 +4802,9 @@
                                  )
                              }),
                      )
@@ -11794,7 +11951,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
                      .child(
                          h_flex()
                              .w_full()
-@@ -4464,6 +4831,9 @@
+@@ -4464,6 +4828,9 @@
                                      .flex_wrap()
                                      .gap_1()
                                      .children(self.render_token_usage(cx))
@@ -11804,7 +11961,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
                                      .children(self.profile_selector.clone())
                                      .map(|this| match self.config_options_view.clone() {
                                          Some(config_view) => this.child(config_view),
-@@ -4528,11 +4898,18 @@
+@@ -4528,11 +4895,18 @@
              .id("message_queue_list")
              .max_h_40()
              .overflow_y_scroll()
@@ -11824,7 +11981,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
                      (Color::Accent, "Next in Queue")
                  } else {
                      (Color::Muted, "In Queue")
-@@ -4571,7 +4948,7 @@
+@@ -4571,7 +4945,7 @@
                              .min_w(min_width)
                              .justify_end()
                              .child(
@@ -11833,7 +11990,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
                                      .icon_size(IconSize::Small)
                                      .tooltip(|_window, cx| {
                                          Tooltip::with_meta(
-@@ -4595,6 +4972,7 @@
+@@ -4595,6 +4969,7 @@
                              .child(
                                  Button::new(("send_now_focused", index), "Send Now")
                                      .label_size(LabelSize::Small)
@@ -11841,7 +11998,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
                                      .style(ButtonStyle::Outlined)
                                      .key_binding(
                                          KeyBinding::for_action_in(
-@@ -4615,7 +4993,7 @@
+@@ -4615,7 +4990,7 @@
                              .min_w(min_width)
                              .justify_end()
                              .child(
@@ -11850,7 +12007,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
                                      .icon_size(IconSize::Small)
                                      .tooltip({
                                          let focus_handle = focus_handle.clone();
-@@ -4638,7 +5016,7 @@
+@@ -4638,7 +5013,7 @@
                                      })),
                              )
                              .child(
@@ -11859,7 +12016,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
                                      .icon_size(IconSize::Small)
                                      .tooltip({
                                          let focus_handle = focus_handle.clone();
-@@ -4667,8 +5045,9 @@
+@@ -4667,8 +5042,9 @@
                                  ))
                              })
                              .child(
@@ -11870,7 +12027,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
                                      .when(is_next, |this| this.style(ButtonStyle::Outlined))
                                      .when(is_next && message_editor.is_empty(cx), |this| {
                                          let action: Box<dyn gpui::Action> = if can_fast_track {
-@@ -6261,6 +6640,11 @@
+@@ -6261,6 +6637,11 @@
                                                  s.border_color(focus_border.opacity(0.8))
                                              })
                                      })
@@ -11882,7 +12039,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
                                      .text_xs()
                                      .child(editor.clone().into_any_element())
                              )
-@@ -7278,7 +7662,7 @@
+@@ -7278,7 +7659,7 @@
  
      pub(crate) fn sync_editor_mode(&mut self, cx: &mut Context<Self>) {
          let has_messages = self.list_state.item_count() > 0;
@@ -11891,7 +12048,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
  
          if !has_messages {
              self.editor_expanded = false;
-@@ -7299,7 +7683,11 @@
+@@ -7299,7 +7680,11 @@
          } else {
              EditorMode::AutoHeight {
                  min_lines: AgentSettings::get_global(cx).message_editor_min_lines,
@@ -11904,7 +12061,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
              }
          };
          self.message_editor.update(cx, |editor, cx| {
-@@ -7326,6 +7714,7 @@
+@@ -7326,6 +7711,7 @@
      }
  
      fn render_generating(&self, confirmation: bool, cx: &App) -> impl IntoElement {
@@ -11912,7 +12069,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
          let show_stats = AgentSettings::get_global(cx).show_turn_stats;
          let elapsed_label = show_stats
              .then(|| {
-@@ -7378,15 +7767,23 @@
+@@ -7378,15 +7764,23 @@
                      )
                  } else if is_blocked_on_terminal_command {
                      this
@@ -11942,7 +12099,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
              .when_some(elapsed_label, |this, elapsed| {
                  this.child(
                      Label::new(elapsed)
-@@ -7505,7 +7902,7 @@
+@@ -7505,7 +7899,7 @@
              }
          }
  
@@ -11951,7 +12108,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
  
          v_flex()
              .id(("thinking-block", chunk_ix))
-@@ -7532,7 +7929,7 @@
+@@ -7532,7 +7926,7 @@
                                  div()
                                      .text_size(self.tool_name_font_size())
                                      .text_color(cx.theme().colors().text_muted)
@@ -11960,7 +12117,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
                              ),
                      )
                      .child(
-@@ -7961,6 +8358,14 @@
+@@ -7961,6 +8355,14 @@
              working_dir,
              is_expanded,
          )
@@ -11975,7 +12132,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
          .elapsed(time_elapsed)
          .running(!command_finished && !needs_confirmation)
          .on_toggle_expand(cx.listener({
-@@ -10082,6 +10487,11 @@
+@@ -10082,6 +10484,11 @@
              .into_any_element()
          };
  
@@ -11987,7 +12144,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
          let gradient_overlay = {
              div()
                  .absolute()
-@@ -10089,24 +10499,11 @@
+@@ -10089,24 +10496,11 @@
                  .right_0()
                  .w_12()
                  .h_full()
@@ -12017,7 +12174,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
          };
  
          h_flex()
-@@ -10693,6 +11090,9 @@
+@@ -10693,6 +11087,9 @@
                  let model = thread.model()?;
                  Some(model.name().0)
              });
@@ -12027,7 +12184,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
          let thread_title = thread
              .as_ref()
              .and_then(|t| t.read(cx).title())
-@@ -10775,6 +11175,7 @@
+@@ -10775,6 +11172,7 @@
                  h_flex()
                      .group(&card_header_id)
                      .h_8()
@@ -12035,7 +12192,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
                      .p_1()
                      .w_full()
                      .justify_between()
-@@ -10798,25 +11199,24 @@
+@@ -10798,25 +11196,24 @@
                                      .gap_1p5()
                                      .justify_between()
                                      .child(
@@ -12075,7 +12232,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
                                                          .color(Color::Muted)
                                                          .truncate(),
                                                  )
-@@ -11648,6 +12048,94 @@
+@@ -11648,6 +12045,94 @@
              )
      }
  
@@ -12170,7 +12327,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
      fn render_session_notices(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
          let notices = self.thread.read(cx).notices();
          if notices.is_empty() {
-@@ -12293,6 +12781,31 @@
+@@ -12293,6 +12778,31 @@
                          .size_full()
                          .child(self.render_entries(cx))
                          .vertical_scrollbar_for(&list_state, window, cx)
@@ -12202,7 +12359,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
                          .into_any()
                  } else {
                      this.into_any()
-@@ -12607,9 +13120,15 @@
+@@ -12607,9 +13117,15 @@
                      .flatten(),
                  |this, bar| this.child(bar),
              )
@@ -12218,7 +12375,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
              .when_some(self.render_session_notices(cx), |this, notices| {
                  this.child(notices)
              })
-@@ -12631,7 +13150,9 @@
+@@ -12631,7 +13147,9 @@
              )
              .children(self.render_token_limit_callout(cx))
              .children(self.render_request_elicitations(cx))
@@ -12309,7 +12466,7 @@ diff --git a/crates/agent_ui/src/conversation_view.rs b/crates/agent_ui/src/conv
              ServerState::Loading { .. } => self
                  .loading_status
                  .clone()
-@@ -1615,6 +1639,122 @@
+@@ -1615,6 +1639,135 @@
  
      pub fn is_loading(&self) -> bool {
          matches!(self.server_state, ServerState::Loading { .. })
@@ -12333,6 +12490,19 @@ diff --git a/crates/agent_ui/src/conversation_view.rs b/crates/agent_ui/src/conv
 +            "quit" => window.defer(cx, |window, cx| window.dispatch_action(Box::new(zed_actions::Quit), cx)),
 +            "access_changed" => {
 +                crate::eido_access::refresh(cx);
++            }
++            "focus_session" => {
++                let workspace = self.workspace.upgrade().ok_or("Workspace is unavailable")?;
++                let panel = workspace.read(cx).panel::<AgentPanel>(cx).ok_or("Task panel is unavailable")?;
++                let id = acp::SessionId::new(request.data["id"].as_str().ok_or("Missing session ID")?.to_owned());
++                let focused = crate::eido_task_windows::find(&panel.downgrade(), None, Some(&id), cx).is_some();
++                if focused {
++                    // The current conversation is borrowed by its event handler.
++                    window.defer(cx, move |_, cx| {
++                        panel.update(cx, |panel, cx| { panel.eido_route_task(None, Some(&id), true, cx); });
++                    });
++                }
++                return Ok(serde_json::json!({"focused": focused}));
 +            }
 +            "new_session" | "open_session" => {
 +                let workspace = self.workspace.upgrade().ok_or("Workspace is unavailable")?;
@@ -12432,7 +12602,7 @@ diff --git a/crates/agent_ui/src/conversation_view.rs b/crates/agent_ui/src/conv
      }
  
      fn handle_thread_event(
-@@ -1636,6 +1776,11 @@
+@@ -1636,6 +1789,11 @@
              cx.emit(RootThreadUpdated);
          }
          match event {
@@ -12444,7 +12614,7 @@ diff --git a/crates/agent_ui/src/conversation_view.rs b/crates/agent_ui/src/conv
              AcpThreadEvent::StatusChanged => {
                  if let Some(active) = self.thread_view(&session_id) {
                      active.update(cx, |active, cx| {
-@@ -1645,21 +1790,26 @@
+@@ -1645,21 +1803,26 @@
              }
              AcpThreadEvent::NewEntry => {
                  let len = thread.read(cx).entries().len();
@@ -12480,7 +12650,7 @@ diff --git a/crates/agent_ui/src/conversation_view.rs b/crates/agent_ui/src/conv
                          active.sync_editor_mode(cx);
                          active.sync_generating_indicator(cx);
                      });
-@@ -1715,6 +1865,7 @@
+@@ -1715,6 +1878,7 @@
                          matches!(thread.read(cx).status(), ThreadStatus::Generating);
                      active.update(cx, |active, cx| {
                          if !is_generating {
@@ -12488,7 +12658,7 @@ diff --git a/crates/agent_ui/src/conversation_view.rs b/crates/agent_ui/src/conv
                              active.thread_retry_status.take();
                              active.clear_auto_expand_tracking(cx);
                              if active.list_state.is_following_tail() {
-@@ -1730,11 +1881,28 @@
+@@ -1730,11 +1894,28 @@
                              thread.mark_as_subagent_output(cx);
                          });
                      }
@@ -12517,7 +12687,7 @@ diff --git a/crates/agent_ui/src/conversation_view.rs b/crates/agent_ui/src/conv
                          // Don't auto-send while the user is editing the next message.
                          let is_first_editor_focused = active
                              .message_queue
-@@ -1792,6 +1960,7 @@
+@@ -1792,6 +1973,7 @@
                          matches!(thread.read(cx).status(), ThreadStatus::Generating);
                      active.update(cx, |active, cx| {
                          if !is_generating {
@@ -12525,7 +12695,7 @@ diff --git a/crates/agent_ui/src/conversation_view.rs b/crates/agent_ui/src/conv
                              active.thread_retry_status.take();
                              if active.list_state.is_following_tail() {
                                  active.list_state.scroll_to_end();
-@@ -3431,10 +3600,43 @@
+@@ -3431,10 +3613,43 @@
  impl Render for ConversationView {
      fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
          self.sync_request_elicitation_states(window, cx);
@@ -12569,7 +12739,7 @@ diff --git a/crates/agent_ui/src/conversation_view.rs b/crates/agent_ui/src/conv
              ServerState::Loading { .. } => {
                  let label_text = self
                      .loading_status
-@@ -3496,7 +3698,7 @@
+@@ -3496,7 +3711,7 @@
          v_flex()
              .track_focus(&self.focus_handle)
              .size_full()
@@ -12578,7 +12748,7 @@ diff --git a/crates/agent_ui/src/conversation_view.rs b/crates/agent_ui/src/conv
              .child(v_flex().flex_1().min_h_0().child(content))
              .when(!active_thread_renders_request_elicitations, |this| {
                  this.children(request_elicitation_connection.as_ref().map_or_else(
-@@ -3752,6 +3954,155 @@
+@@ -3752,6 +3967,155 @@
  
      use super::*;
  
@@ -12734,7 +12904,7 @@ diff --git a/crates/agent_ui/src/conversation_view.rs b/crates/agent_ui/src/conv
      #[test]
      fn test_data_retention_error_maps_from_provider_error() {
          // The agent wraps the provider error in a fresh `anyhow::Error`, so
-@@ -4250,6 +4601,213 @@
+@@ -4250,6 +4614,213 @@
              0,
              "No notification should fire when a queued message will be auto-sent on Stopped"
          );

@@ -51,6 +51,8 @@ async function patchSource(url, before, after) {
   await writeFile(url, source.replace(before, after));
 }
 const sessionPath = new URL("dist/session.js", directory);
+const {patchSessionOwner} = await import('./patch-acp-session-owner.mjs');
+await patchSessionOwner(agentPath, patchSource);
 await patchSource(sessionPath,
   '            const result = await applyConfig(this.pi, this.deps.modelRuntime, this.availableModels, configId, value, this.settingsManager.getEnabledModels());\n            this.availableModels = result.availableModels;\n            this.modelPreferences = result.preferences;\n            return result.configOptions;',
   '            return await this.applyConfigAtBoundary(configId, value);');

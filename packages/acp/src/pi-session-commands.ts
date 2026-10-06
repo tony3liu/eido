@@ -64,7 +64,10 @@ export async function sessionCommand(pi: AgentSession, client: AgentContext, ui:
     return 'Opening a new task.';
   }
   if (name === 'resume') {
-    const candidates = await SessionManager.list(cwd, directory, undefined, signal);
+    // A concrete task ID may belong to another open workspace. Let the native
+    // owner focus it; never load that journal against this workspace's Project.
+    const candidates = argument ? await SessionManager.listAll(directory, undefined, signal)
+      : await SessionManager.list(cwd, directory, undefined, signal);
     const roots = candidates.filter(item => !SessionManager.open(item.path, directory).getEntries().some(entry =>
       entry.type === 'custom' && entry.customType === 'eido.subagent.v1' && (entry.data as {kind?:string})?.kind === 'child'));
     const label = (item: typeof roots[number]) => `${item.name || item.firstMessage.slice(0,80) || 'Untitled'} · ${item.id}`;
@@ -74,6 +77,11 @@ export async function sessionCommand(pi: AgentSession, client: AgentContext, ui:
     if (!target) throw new Error('Task not found in this workspace. Use /resume to select one.');
     if (target.id === pi.sessionId) return 'This task is already open.';
     if ((await pi.extensionRunner.emit({type:'session_before_switch',reason:'resume',targetSessionFile:target.path}))?.cancel) return 'Resume cancelled by extension.';
+    if (resolve(target.cwd) !== resolve(cwd)) {
+      const result = await nativeUiAction(client, pi.sessionId, 'focus_session', {id:target.id}, signal);
+      if (result.focused !== true) throw new Error(`Open this task's workspace (${target.cwd}) before resuming it.`);
+      return `Switched to task ${target.name || target.id} in its workspace.`;
+    }
     await open(target.id, target.name);
     return `Opening task ${target.name || target.id}.`;
   }

@@ -2,8 +2,9 @@ use acp_thread::AcpThread;
 use action_log::{ActionLog, EditSource, ReviewCheckpoint};
 use agent_client_protocol::schema::v1 as acp;
 use anyhow::{Context as _, Result};
+#[cfg(test)]
 use db::kvp::KeyValueStore;
-use futures::{StreamExt, channel::{mpsc, oneshot}};
+use futures::{StreamExt, channel::mpsc};
 use gpui::{App, AppContext as _, AsyncApp, Context, Entity, WeakEntity};
 use serde::{Deserialize, Serialize};
 use std::{cell::RefCell, collections::HashMap, path::PathBuf, rc::Rc, time::Duration};
@@ -55,9 +56,22 @@ struct State {
     last_files: Vec<SavedFile>,
 }
 
-enum Write {
-    Snapshot(String),
-    Flush(oneshot::Sender<()>),
+#[derive(Clone)]
+struct Writer {
+    key: String,
+    errors: mpsc::UnboundedSender<String>,
+}
+impl Writer {
+    fn snapshot(&self, payload: String, cx: &mut App) {
+        let save = crate::eido_session_store::write(NAMESPACE, self.key.clone(), payload, cx);
+        let errors = self.errors.clone();
+        cx.background_spawn(async move {
+            if let Err(error) = save.await {
+                log::error!("Pending review could not be saved: {error}");
+                let _ = errors.unbounded_send(error);
+            }
+        }).detach();
+    }
 }
 
 fn capture_resolutions(thread: &AcpThread, state: &Rc<RefCell<State>>) -> bool {
@@ -78,7 +92,7 @@ fn notify(thread: &WeakEntity<AcpThread>, message: String, cx: &mut AsyncApp) {
     }).log_err();
 }
 
-fn capture(log: &Entity<ActionLog>, state: &Rc<RefCell<State>>, sender: &mpsc::UnboundedSender<Write>, cx: &App) -> bool {
+fn capture(log: &Entity<ActionLog>, state: &Rc<RefCell<State>>, sender: &Writer, cx: &mut App) -> bool {
     let mut state = state.borrow_mut();
     if state.restoring { return false; }
     let (files, pending) = log.read(cx).review_checkpoint_parts(cx);
@@ -89,7 +103,7 @@ fn capture(log: &Entity<ActionLog>, state: &Rc<RefCell<State>>, sender: &mpsc::U
     state.last_files = files.clone();
     let Some(payload) = serde_json::to_string(&SavedReview { parent: state.parent.clone(), files, archived: state.archived.clone() }).log_err() else { return false; };
     if state.last_payload.as_ref() != Some(&payload) {
-        if sender.unbounded_send(Write::Snapshot(payload.clone())).is_err() { return false; }
+        sender.snapshot(payload.clone(), cx);
         state.last_payload = Some(payload);
     }
     pending.is_empty()
@@ -124,29 +138,10 @@ fn attach_with_owners(thread: &mut AcpThread, key: String, owners: Owners, cx: &
     thread.set_review_write_error(Some("Pending reviews are still being restored. Retry after restoration finishes.".into()));
     let log = thread.action_log().clone();
     let state = Rc::new(RefCell::new(State { restoring: true, parent: thread.parent_session_id().map(ToString::to_string), ..State::default() }));
-    let (sender, mut receiver) = mpsc::unbounded();
-    let db = KeyValueStore::global(cx);
-    let saved = db.scoped(NAMESPACE).read(&key)
+    let saved = crate::eido_session_store::read(NAMESPACE, &key, cx)
         .and_then(|raw| raw.map(|raw| serde_json::from_str::<SavedReview>(&raw).map_err(Into::into)).transpose());
-    // Shutdown stops foreground dispatch. Keep database work independent from
-    // the UI; failures are reported back while the app is running.
     let (errors, mut failures) = mpsc::unbounded();
-    cx.background_spawn({
-        let key = key.clone();
-        async move {
-            while let Some(message) = receiver.next().await {
-                match message {
-                    Write::Snapshot(payload) => {
-                        if let Err(error) = db.scoped(NAMESPACE).write(key.clone(), payload).await {
-                            log::error!("Pending review could not be saved: {error}");
-                            let _ = errors.unbounded_send(error.to_string());
-                        }
-                    }
-                    Write::Flush(done) => { let _ = done.send(()); }
-                }
-            }
-        }
-    }).detach();
+    let sender = Writer {key: key.clone(), errors};
     cx.spawn({
         let state = state.clone();
         async move |thread, cx| {
@@ -183,9 +178,8 @@ fn attach_with_owners(thread: &mut AcpThread, key: String, owners: Owners, cx: &
         move |thread, cx| {
             capture_resolutions(thread, &state);
             if let Some(log) = log.upgrade() { capture(&log, &state, &sender, cx); }
-            let (done, wait) = oneshot::channel();
-            let _ = sender.unbounded_send(Write::Flush(done));
-            async move { let _ = wait.await; }
+            let save = crate::eido_session_store::flush(NAMESPACE, &sender.key, cx);
+            async move { let _ = save.await; }
         }
     });
     thread.retain_review_subscription(quit);
@@ -247,7 +241,7 @@ async fn ancestor_review(parent: &str, roots: &[PathBuf], owners: &Owners, cx: &
         }
         anyhow::ensure!(live.upgrade().is_none(), "Parent review is still loading or has unresolved changes");
     }
-    let raw = cx.update(|cx| KeyValueStore::global(cx).scoped(NAMESPACE).read(&key))?
+    let raw = cx.update(|cx| crate::eido_session_store::read(NAMESPACE, &key, cx))?
         .context("Parent review checkpoint is unavailable")?;
     Ok(serde_json::from_str(&raw)?)
 }

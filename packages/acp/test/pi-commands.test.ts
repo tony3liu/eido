@@ -669,6 +669,32 @@ test("native new/resume retains IDs and extension hooks can cancel a transition"
   } finally {await h.dispose();}
 });
 
+test('explicit resume focuses a foreign workspace owner without loading into the wrong project', async () => {
+  const actions: {sessionId:string;action:string;data:Record<string,unknown>}[]=[];
+  let focused=true;
+  const h=await harness([], {
+    setup:async cwd=>{
+      await mkdir(join(cwd,'extensions'));
+      await writeFile(join(cwd,'extensions/cancel-switch.js'),`export default pi => pi.on('session_before_switch', event => event.targetSessionFile?.includes('never-match') ? {cancel:true} : undefined);`);
+    },
+    native:async request=>{actions.push(request);return {focused};},
+  });
+  try {
+    const other=join(h.cwd,'other');await mkdir(other);
+    const a=await h.newTask();
+    const b=await h.connection.agent.request(methods.agent.session.new,{cwd:other,mcpServers:[]});
+    await h.prompt(b.sessionId,'/name Foreign workspace');
+    await h.prompt(a.sessionId,`/resume ${b.sessionId}`);
+    assert.deepEqual(actions.at(-1),{sessionId:a.sessionId,action:'focus_session',data:{id:b.sessionId}});
+    assert.match(h.text(a.sessionId),/Switched to task Foreign workspace/);
+    focused=false;
+    await h.prompt(a.sessionId,`/resume ${b.sessionId}`);
+    assert.match(h.text(a.sessionId),/Open this task's workspace/);
+    assert.ok(actions.every(action=>action.action!=='open_session'));
+    assert.equal(h.requests(),0);
+  } finally {await h.dispose();}
+});
+
 test("import validates JSONL, removes live child ownership and preserves the original file", async () => {
   let accepted=true;
   const actions: {sessionId:string;action:string;data:Record<string,unknown>}[]=[];

@@ -1,5 +1,4 @@
 use agent_client_protocol::schema::v1 as acp;
-use db::kvp::KeyValueStore;
 use gpui::App;
 use serde::{Deserialize, Serialize};
 use crate::thread_metadata_store::ThreadId;
@@ -19,6 +18,6 @@ pub fn key(thread: ThreadId, session: &acp::SessionId) -> String {
 }
 
 pub fn read(key: &str, cx: &App) -> anyhow::Result<Vec<SavedMessage>> {
-    let raw = KeyValueStore::global(cx).scoped(NAMESPACE).read(key)?;
+    let raw = crate::eido_session_store::read(NAMESPACE, key, cx)?;
     Ok(match raw { Some(raw) => serde_json::from_str(&raw)?, None => vec![] })
 }

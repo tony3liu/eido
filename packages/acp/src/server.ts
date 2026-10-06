@@ -1,4 +1,5 @@
 import {createMcpConnector} from './mcp.ts';
+import {sessionOwners} from './session-owner.ts';
 import {refreshPiNetwork} from './pi-network.ts';
 import {preparePromptContent} from './prompt-content.ts';
 import {createDeliveryLedger, DELIVERY} from './delivery.ts';
@@ -31,6 +32,7 @@ export async function startEidoAgent(agentDir: string, sessionDir: string, strea
   const server = await runAcp({
     stream,
     deps: {
+      ...{eidoClaimSession: sessionOwners(agentDir)},
       agentDir,
       sessionDir,
       connectMcpClient: createMcpConnector(agentDir),
