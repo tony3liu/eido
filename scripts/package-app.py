@@ -33,9 +33,26 @@ RUNTIME_FILES = (
 RUNTIME_MODULE_ROOTS = ('packages/runtime', 'packages/acp/bin', 'packages/acp/helpers')
 EXCLUDED = {'test', 'tests', '__tests__', '__mocks__', 'fixtures', '__fixtures__',
             'examples', 'example', 'bench', 'benchmark', 'benchmarks', 'coverage',
-            '.git', '.github', '.local', 'local-docs', 'test-results'}
+            '.git', '.github', '.local', 'local-docs', 'test-results',
+            'test-support', 'browser-test', 'system-test'}
 LEGAL = re.compile(r'^(licen[cs]e|copying|copyright|notice|authors|third[-_]?party)', re.I)
-TEST_FILE = re.compile(r'(^|[._-])(test|spec|fixture)([._-]|$)', re.I)
+# "spec" also means dependency specifier and protocol specification in production.
+TEST_FILE = re.compile(r'(^|[._-])(test|fixture)([._-]|$)|\.spec\.[cm]?[jt]sx?$', re.I)
+PRODUCTION_TEST_ENTRYPOINTS = (
+    'npm/lib/commands/test.js', 'npm/lib/commands/install-test.js',
+    'npm/lib/commands/install-ci-test.js',
+    'node_modules/playwright/test.js', 'node_modules/playwright/test.mjs',
+)
+
+
+def is_test_payload(path):
+    if not TEST_FILE.search(path.name):
+        return False
+    name = path.as_posix()
+    # copy_tree(npm, ...) receives paths relative to npm; audit sees the full bundle.
+    if name in {'lib/commands/test.js', 'lib/commands/install-test.js', 'lib/commands/install-ci-test.js'}:
+        return False
+    return not any(name == entry or name.endswith('/' + entry) for entry in PRODUCTION_TEST_ENTRYPOINTS)
 
 
 def run(args, **kwargs):
@@ -56,7 +73,7 @@ def digest(file):
 
 
 def dependency_filter(path):
-    if any(part in EXCLUDED for part in path.parts) or TEST_FILE.search(path.name):
+    if any(part in EXCLUDED for part in path.parts) or is_test_payload(path):
         return False
     if LEGAL.match(path.name):
         return True
@@ -132,7 +149,7 @@ def audit(bundle):
         if file.is_dir():
             continue
         local = file.relative_to(bundle)
-        if any(part in EXCLUDED for part in local.parts) or TEST_FILE.search(file.name):
+        if any(part in EXCLUDED for part in local.parts) or is_test_payload(local):
             raise RuntimeError(f'Non-production file in application: {local}')
         if file.is_symlink():
             if not file.resolve().is_relative_to(bundle.resolve()) or not file.exists():

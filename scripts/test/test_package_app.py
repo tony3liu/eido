@@ -1,6 +1,8 @@
 import importlib.util
 import json
 from pathlib import Path
+import shutil
+import subprocess
 import tempfile
 import unittest
 
@@ -36,8 +38,40 @@ class ProductionPackageTests(unittest.TestCase):
     def test_runtime_manifest_and_licenses_survive_without_test_sources(self):
         self.assertTrue(package.dependency_filter(Path('node_modules/@earendil-works/pi-ai/dist/providers/data/.manifest.json')))
         self.assertTrue(package.dependency_filter(Path('node_modules/library/LICENSE.md')))
-        for path in ('test/run.js', 'dist/client.test.js', 'src/a.ts', 'dist/a.js.map', '.env', 'local-docs/plan.md'):
+        self.assertTrue(package.dependency_filter(Path('node_modules/@npmcli/metavuln-calculator/lib/get-dep-spec.js')))
+        self.assertTrue(package.dependency_filter(Path('node_modules/@npmcli/arborist/lib/spec-from-lock.js')))
+        self.assertTrue(package.dependency_filter(Path('node_modules/@modelcontextprotocol/sdk/dist/esm/spec.types.js')))
+        self.assertTrue(package.dependency_filter(Path('lib/commands/test.js')))
+        self.assertTrue(package.dependency_filter(Path('node_modules/playwright/test.mjs')))
+        for path in ('test/run.js', 'dist/client.test.js', 'dist/client.spec.js', 'src/a.ts', 'dist/a.js.map', '.env', 'local-docs/plan.md',
+                     'node_modules/library/test.js', 'dist/test-support/agent.js', 'dist/browser-test/runner.js',
+                     'node_modules/library/test-core-js.js', 'dist/system-test/test.install.js'):
             self.assertFalse(package.dependency_filter(Path(path)), path)
+
+    def test_filtered_npm_can_install_an_offline_local_package(self):
+        npm = Path(shutil.which('npm')).resolve().parent.parent
+        self.assertEqual(json.loads((npm / 'package.json').read_text())['name'], 'npm')
+        with tempfile.TemporaryDirectory(prefix='eido-package-npm-') as directory:
+            root = Path(directory)
+            package.copy_tree(npm, root / 'npm', package.dependency_filter)
+            fixture = root / 'fixture'
+            fixture.mkdir()
+            (fixture / 'package.json').write_text(json.dumps({'name': 'eido-local-package-check', 'version': '1.0.0'}))
+            (fixture / 'index.js').write_text('module.exports = 42;')
+            project = root / 'project'
+            project.mkdir()
+            (project / 'package.json').write_text('{"private":true}')
+            for name in ('user.npmrc', 'global.npmrc'):
+                (root / name).write_text('')
+            result = subprocess.run([
+                shutil.which('node'), root / 'npm/bin/npm-cli.js', 'install', '--offline',
+                '--ignore-scripts', '--no-audit', '--no-fund', '--package-lock=false', '--install-links',
+                '--cache', str(root / 'cache'), '--userconfig', str(root / 'user.npmrc'),
+                '--globalconfig', str(root / 'global.npmrc'),
+                str(fixture),
+            ], cwd=project, capture_output=True, text=True, timeout=30)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual((project / 'node_modules/eido-local-package-check/index.js').read_text(), 'module.exports = 42;')
 
     def test_lockfile_selects_only_production_packages_and_bins(self):
         with tempfile.TemporaryDirectory() as directory:
