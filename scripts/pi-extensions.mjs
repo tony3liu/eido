@@ -1,4 +1,5 @@
 import {validateMcp, credentials, usesOAuth} from './pi-mcp.mjs';
+import {readMcpStatus, mcpRevision} from './pi-mcp-status.mjs';
 export {validateMcp, configuredMcp} from './pi-mcp.mjs';
 import { mkdir, readFile, writeFile, rename, rm, readdir } from "node:fs/promises";
 import { createRequire } from "node:module";
@@ -75,10 +76,20 @@ export function createExtensionCenter(directory = join(root, ".local/eido"), fet
       return {...p, name, description};
     }));
     const mcp = validateMcp(await readJson(join(directory, "mcp.json"), {mcpServers: {}}));
-    return {packages, extensions: await resources("extensions"), skills: await resources("skills"),
-      mcp: [{name: "eido_browser", enabled: true, builtin: true, detail: "Built-in browser automation"},
-        ...Object.entries(mcp.mcpServers).map(([name, s]) => ({name, enabled: s.enabled !== false, builtin: false, oauth: usesOAuth(s), signedIn: usesOAuth(s) && !!credentials(directory).tokens(name, s.url), detail: s.command ? "Local process" : s.type === "sse" ? "SSE server" : "HTTP server"}))],
-      pending: await readJson(queuePath, []), activeRuntimes: (await activeRuntimes()).length};
+    const active = await activeRuntimes();
+    const running = await readMcpStatus(directory, active);
+    const servers = [{name: "eido_browser", enabled: true, builtin: true, detail: "Built-in browser automation"},
+      ...Object.entries(mcp.mcpServers).map(([name, s]) => ({name, enabled: s.enabled !== false, builtin: false, oauth: usesOAuth(s), signedIn: usesOAuth(s) && !!credentials(directory).tokens(name, s.url), detail: s.command ? "Local process" : s.type === "sse" ? "SSE server" : "HTTP server"}))];
+    for (const state of running) if (!servers.some(server => server.name === state.name)) {
+      servers.push({name:state.name, enabled:true, builtin:false, runtimeOnly:true,
+        detail:state.origin === 'plugin' ? `Registered by pi plugin${state.plugin ? ` · ${state.plugin}` : ''}` : 'Retained by an open task'});
+    }
+    for (const server of servers) server.connections = running.filter(state => state.name === server.name).map(state => ({...state,
+      configurationChanged: server.builtin ? false : Object.hasOwn(mcp.mcpServers, server.name)
+        ? state.origin !== 'global' || state.revision !== mcpRevision(mcp.mcpServers[server.name], mcp.autoEnableCodemode)
+        : state.origin === 'global'}));
+    return {packages, extensions: await resources("extensions"), skills: await resources("skills"), mcp:servers,
+      mcpObservedAt:new Date().toISOString(), pending: await readJson(queuePath, []), activeRuntimes:active.length};
   }
   async function applyPending() {
     if ((await activeRuntimes()).length) return;
@@ -192,8 +203,8 @@ export function createExtensionCenter(directory = join(root, ".local/eido"), fet
   return {execute, async acquireRuntime() {
     return locked(async () => {
       await applyPending(); await mkdir(leases, {recursive: true, mode: 0o700});
-      const path = join(leases, `${process.pid}.json`); await atomic(path, {startedAt: new Date().toISOString()});
-      return () => rm(path, {force: true});
+      const path = join(leases, `${process.pid}.json`); await atomic(path, {id:crypto.randomUUID(), startedAt: new Date().toISOString()});
+      return async () => {await rm(path, {force:true}); await rm(join(leases, `${process.pid}.mcp.json`), {force:true});};
     }, true);
   }};
 }

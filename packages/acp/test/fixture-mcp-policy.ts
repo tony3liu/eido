@@ -5,6 +5,7 @@ import {join} from 'node:path';
 import {client, methods} from '@agentclientprotocol/sdk';
 import {startEidoAgent} from '../src/server.ts';
 import {fixtureModel, type FixtureStep} from './fixture-model.ts';
+import {createExtensionCenter} from '../../../scripts/pi-extensions.mjs';
 
 /** Real HTTP transport; scripted responses never leave the loopback interface. */
 export async function policyRemote() {
@@ -73,6 +74,7 @@ export async function mcpHarness(config: unknown, steps: FixtureStep[], extensio
   await writeFile(join(dir, 'mcp.json'), JSON.stringify(config));
   if (extension) {await mkdir(join(dir, 'extensions')); await writeFile(join(dir, 'extensions/fixture.js'), extension);}
   const model = await fixtureModel(dir, steps);
+  const release = await createExtensionCenter(dir).acquireRuntime();
   const active = await startEidoAgent(dir, join(dir, 'sessions'), {readable:toAgent.readable, writable:toClient.writable}, model.runtime);
   const updates: unknown[] = [], permissions: string[] = [];
   let reject: string|undefined;
@@ -88,6 +90,6 @@ export async function mcpHarness(config: unknown, steps: FixtureStep[], extensio
     reject(name: string|undefined) {reject = name;},
     newTask: () => connection.agent.request(methods.agent.session.new, {cwd:join(dir, 'work'), mcpServers:[]}),
     prompt: (sessionId:string, text = 'Run the policy check.') => connection.agent.request(methods.agent.session.prompt, {sessionId, prompt:[{type:'text', text}]}),
-    async close() {await active.agent.dispose(); connection.close(); active.connection.close(); await rm(dir, {recursive:true, force:true});},
+    async close() {await active.agent.dispose(); connection.close(); active.connection.close(); await release(); await rm(dir, {recursive:true, force:true});},
   };
 }

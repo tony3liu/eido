@@ -64,10 +64,11 @@ export async function registeredMcp(directory, cwd, registrations) {
     entries[name] = validated;
   }
   // Global entries, including disabled ones, take precedence over plugins.
-  return resolveMcp({...global, mcpServers:{...entries,...global.mcpServers}}, directory, cwd);
+  return resolveMcp({...global, mcpServers:{...entries,...global.mcpServers}}, directory, cwd,
+    new Map(registrations.filter(({name}) => !Object.hasOwn(global.mcpServers, name)).map(({name, extensionPath}) => [name, extensionPath])));
 }
 
-function resolveMcp(config, directory, cwd) {
+function resolveMcp(config, directory, cwd, plugins = new Map()) {
   return Object.entries(config.mcpServers).filter(([, s]) => s.enabled !== false).map(([name, s]) => {
     const description = `MCP server "${name}"`;
     let unresolved = false;
@@ -81,7 +82,7 @@ function resolveMcp(config, directory, cwd) {
       unresolved = true;
       server = s.command ? {name, command:s.command, args:[], env:[]} : {name, type:s.type ?? 'http', url:s.url, headers:[]};
     }
-    Object.defineProperty(server, MCP_OPTIONS, {value:{config:s, directory, unresolved, autoEnableCodemode:config.autoEnableCodemode, timeoutMs:Math.min((s.timeout ?? 60) * 1000, 2_147_483_647), cwd:resolve(cwd,expandHome(s.cwd ?? '.'))}});
+    Object.defineProperty(server, MCP_OPTIONS, {value:{config:s, directory, unresolved, origin:plugins.has(name) ? 'plugin' : 'global', extensionPath:plugins.get(name), autoEnableCodemode:config.autoEnableCodemode, timeoutMs:Math.min((s.timeout ?? 60) * 1000, 2_147_483_647), cwd:resolve(cwd,expandHome(s.cwd ?? '.'))}});
     return server;
   });
 }

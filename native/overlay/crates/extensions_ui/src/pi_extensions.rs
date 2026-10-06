@@ -69,6 +69,25 @@ impl PiExtensionsState {
 fn string(value: &Value, key: &str) -> String { value[key].as_str().unwrap_or_default().to_owned() }
 fn array(value: &Value, key: &str) -> Vec<Value> { value[key].as_array().cloned().unwrap_or_default() }
 
+fn mcp_status(data: &Value) -> String {
+    let connections = array(data, "connections");
+    let configured = if data["runtimeOnly"] == true { "Task registration" }
+        else if data["builtin"] == true { "Built-in" }
+        else if data["enabled"] == true { "Enabled" } else { "Disabled" };
+    if connections.is_empty() { return format!("{configured} · Connection not observed"); }
+    let mut parts = vec![configured.to_owned()];
+    for (state, label) in [("connected", "connected"), ("connecting", "connecting"),
+        ("needs-auth", "authentication required"), ("unavailable", "unavailable"),
+        ("disconnected", "disconnected"), ("degraded", "catalog refresh failed")] {
+        let count = connections.iter().filter(|connection| connection["state"] == state).count();
+        if count > 0 { parts.push(format!("{count} {label}")); }
+    }
+    if connections.iter().any(|connection| connection["configurationChanged"] == true) {
+        parts.push("Configuration changed · Reload tasks".into());
+    }
+    parts.join(" · ")
+}
+
 fn run_pi_request(request: Value) -> Result<Value, String> {
     let root = std::env::var_os("EIDO_ROOT").ok_or("Eido runtime directory is unavailable.")?;
     let node = std::env::var_os("EIDO_NODE").ok_or("Eido Node.js runtime is unavailable.")?;
@@ -356,7 +375,10 @@ impl ExtensionsPage {
                 (path.clone(), if row.kind == ResourceKind::Skill {"Skill"} else {"Extension"}, if description.is_empty() {path} else {description})
             }
             ResourceKind::Mcp => {
-                if data["builtin"] != true {
+                if data["runtimeOnly"] == true && array(data, "connections").iter().any(|connection| connection["origin"] == "plugin") {
+                    actions[0] = Some(Button::new(SharedString::from(format!("manage-plugin-{name}")), "Manage Plugin")
+                        .on_click(cx.listener(|this, _, window, cx| this.change_source(ExtensionSource::Pi, window, cx))));
+                } else if data["builtin"] != true && data["runtimeOnly"] != true {
                     actions[0] = Some(self.pi_action(format!("toggle-{name}"), if enabled {"Disable"} else {"Enable"}, json!({"operation":"mcp-toggle","name":name,"enabled":!enabled}), cx));
                     actions[2] = Some(self.pi_action(format!("remove-{name}"), "Remove", json!({"operation":"mcp-remove","name":name}), cx));
                     if data["oauth"] == true {
@@ -372,18 +394,22 @@ impl ExtensionsPage {
                 (name.clone(), "MCP", string(data, "detail"))
             }
         };
-        let status = if array(&self.pi.data, "pending").iter().any(|p| p["source"].as_str() == Some(&id)) {
+        let status = if row.kind == ResourceKind::Mcp { mcp_status(data) }
+        else { (if array(&self.pi.data, "pending").iter().any(|p| p["source"].as_str() == Some(&id)) {
             "Pending · Restart Eido to apply"
         } else if data["builtin"] == true { "Built-in · Enabled" }
         else if !row.configured { "Available from npm" }
         else if data["signedIn"] == true && enabled { "Enabled · Signed in" }
-        else if enabled { "Enabled · Global" } else { "Disabled · Global" };
-        ExtensionCard::for_pi_resource(id, name, string(data, "version"), description, status.into(), feature, actions)
+        else if enabled { "Enabled · Global" } else { "Disabled · Global" }).into() };
+        ExtensionCard::for_pi_resource(id, name, string(data, "version"), description, status, feature, actions)
     }
 
     pub(super) fn render_pi_status(&self, cx: &mut Context<Self>) -> AnyElement {
         let catalog = self.source == ExtensionSource::Pi && self.filter != ExtensionFilter::Installed;
         v_flex().px_4().py_2p5().gap_2().border_b_1().border_color(cx.theme().colors().border_variant)
+            .when(self.source == ExtensionSource::Mcp && self.pi.loaded, |body| body.child(
+                Label::new("Connection snapshot across open tasks · Refresh to update · Reload tasks after configuration changes")
+                    .size(LabelSize::Small).color(Color::Muted)))
             .when(self.pi.auth_name.is_some(), |body| body.child(Button::new("cancel-mcp-auth", "Cancel Sign-In").on_click(cx.listener(|this, _, _, cx| {
                 this.pi.auth_name = None; this.pi.auth_input = None; this.pi.notice = "Cancelling sign-in…".into(); cx.notify();
             }))))
@@ -469,5 +495,15 @@ mod tests {
         assert!(!editor_extension_provides(ExtensionProvides::ContextServers));
         assert!(!editor_extension_provides(ExtensionProvides::AgentServers));
         assert!(editor_extension_provides(ExtensionProvides::Languages));
+    }
+
+    #[test]
+    fn test_eido_mcp_status_keeps_configuration_and_task_connections_distinct() {
+        assert_eq!(mcp_status(&json!({"enabled":true})), "Enabled · Connection not observed");
+        let label = mcp_status(&json!({"enabled":false,"connections":[
+            {"state":"connected","configurationChanged":true}, {"state":"needs-auth"}]}));
+        assert_eq!(label, "Disabled · 1 connected · 1 authentication required · Configuration changed · Reload tasks");
+        assert_eq!(mcp_status(&json!({"runtimeOnly":true,"connections":[{"state":"unavailable"}]})),
+            "Task registration · 1 unavailable");
     }
 }

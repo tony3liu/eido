@@ -192,6 +192,7 @@ await patchSource(mcpBridgePath,
 await (await import('./patch-acp-mcp.mjs')).patchMcpBridge(mcpBridgePath);
 await (await import('./patch-acp-mcp.mjs')).patchMcpExposure(mcpBridgePath);
 await (await import('./patch-acp-mcp-registry.mjs')).patchMcpRegistry(mcpBridgePath, agentPath, patchSource);
+await (await import('./patch-acp-mcp-status.mjs')).patchMcpStatus(mcpBridgePath);
 await (await import('./patch-acp-tools.mjs')).patchPiTools(directory, patchSource);
 
 if (!(await readFile(new URL('dist/server.js', directory), 'utf8')).includes('.onRequest("_eido/ui/shortcut"'))

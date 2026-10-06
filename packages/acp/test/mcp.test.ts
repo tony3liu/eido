@@ -9,6 +9,7 @@ import {startEidoAgent} from '../src/server.ts';
 import {call, declaredTools, fixtureModel, lastToolText} from './fixture-model.ts';
 import {createExtensionCenter} from '../../../scripts/pi-extensions.mjs';
 import {mcpHarness, policyRemote} from './fixture-mcp-policy.ts';
+import {readMcpStatus} from '../../../scripts/pi-mcp-status.mjs';
 
 async function remoteFixture(type: 'http'|'sse') {
   const streams = new Set<ServerResponse>();
@@ -334,6 +335,55 @@ test('global disabled MCP configuration overrides a plugin registration with the
     const task = await h.newTask(); assert.equal((await h.prompt(task.sessionId)).stopReason,'end_turn');
     assert.equal(remote.initialized(),0); assert.equal(h.model.requests(),1);
   } finally {await h.close(); await remote.close();}
+});
+
+test('Extensions reports task MCP connections, plugin origins, configuration changes and cleanup without secrets', {timeout:20_000}, async () => {
+  const remote = await policyRemote(), plugin = await policyRemote();
+  const h = await mcpHarness({mcpServers:{remote:{url:remote.url,headers:{Authorization:'Bearer private-status-fixture'}}}}, [],
+    `export default pi => {
+      pi.registerMcpServer('plugin',{url:${JSON.stringify(plugin.url)}});
+      pi.registerCommand('drop-mcp',{description:'Remove fixture',handler:async()=>pi.unregisterMcpServer('plugin')});
+    };`);
+  const center = createExtensionCenter(h.dir);
+  type Row = {name:string; runtimeOnly?:boolean; enabled:boolean; detail:string; connections:Array<{sessionId:string; state:string; origin:string; configurationChanged:boolean}>};
+  const observe = async (predicate:(rows:Row[])=>boolean) => {
+    for (let i=0; i<100; i++) {
+      const rows = (await center.execute()).mcp as Row[];
+      if (predicate(rows)) return rows;
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    throw new Error('Expected MCP status was not published.');
+  };
+  try {
+    const first = await h.newTask();
+    remote.mode('unauthorized');
+    const second = await h.newTask();
+    let rows = await observe(rows => rows.find(row => row.name === 'remote')?.connections.some(c => c.state === 'needs-auth') === true);
+    const states = rows.find(row => row.name === 'remote')!.connections;
+    assert.deepEqual(states.map(c => [c.sessionId,c.state]).sort(), [[first.sessionId,'connected'],[second.sessionId,'needs-auth']].sort());
+    const dynamic = rows.find(row => row.name === 'plugin')!;
+    assert.equal(dynamic.runtimeOnly,true); assert.match(dynamic.detail,/pi plugin.*fixture.js/);
+    assert.equal(dynamic.connections.length,2); assert.ok(dynamic.connections.every(c => c.origin === 'plugin'));
+    const snapshot = await readFile(join(h.dir,'runtimes',`${process.pid}.mcp.json`),'utf8');
+    assert.doesNotMatch(snapshot,/private-status-fixture|Authorization|https?:|\/extensions\//);
+    await center.execute({operation:'mcp-toggle',name:'remote',enabled:false});
+    rows = await observe(rows => rows.find(row => row.name === 'remote')!.connections.every(c => c.configurationChanged));
+    assert.equal(rows.find(row => row.name === 'remote')!.enabled,false);
+    await h.prompt(first.sessionId,'/reload');
+    await observe(rows => rows.find(row => row.name === 'remote')?.connections.length === 1);
+    await h.prompt(first.sessionId,'/drop-mcp');
+    await observe(rows => rows.find(row => row.name === 'plugin')?.connections.length === 1);
+    await h.connection.agent.request(methods.agent.session.close,{sessionId:second.sessionId});
+    await observe(rows => !rows.some(row => row.name === 'plugin') && rows.find(row => row.name === 'remote')?.connections.length === 0);
+    await h.connection.agent.request(methods.agent.session.close,{sessionId:first.sessionId});
+    assert.deepEqual(await readMcpStatus(h.dir,[process.pid]),[]);
+    assert.equal(h.model.requests(),0,'status and local management commands never invoke a model');
+    const lease = join(h.dir,'runtimes',`${process.pid}.json`);
+    await writeFile(join(h.dir,'runtimes',`${process.pid}.mcp.json`),snapshot);
+    assert.equal((await readMcpStatus(h.dir,[process.pid])).length,4);
+    await writeFile(lease,JSON.stringify({id:'different-runtime',startedAt:'different-runtime'}));
+    assert.deepEqual(await readMcpStatus(h.dir,[process.pid]),[],'a reused PID cannot revive an old snapshot');
+  } finally {await h.close(); await remote.close(); await plugin.close();}
 });
 
 test('a malformed global MCP file leaves other tools usable and a reload recovers after repair', {timeout:15_000}, async () => {
