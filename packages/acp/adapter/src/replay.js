@@ -118,6 +118,10 @@ export function replayEntry(entry) {
             }
             if (entry.customType === "eido.notice.v1" && typeof entry.data?.text === "string")
                 return [{ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "\n\n" + entry.data.text + "\n\n" } }];
+            if (entry.customType === "eido.command.input.v1" && typeof entry.data?.command === "string")
+                return [{sessionUpdate:"user_message_chunk", messageId:entry.id, content:{type:"text",text:entry.data.command}}];
+            if (entry.customType === "eido.command.result.v1" && typeof entry.data?.output === "string")
+                return [{sessionUpdate:"agent_message_chunk", messageId:entry.id, content:{type:"text",text:entry.data.output}}];
             if (entry.customType === "eido.command.v1" && typeof entry.data?.command === "string" && typeof entry.data?.output === "string") {
                 return [
                     { sessionUpdate: "user_message_chunk", content: { type: "text", text: entry.data.command } },

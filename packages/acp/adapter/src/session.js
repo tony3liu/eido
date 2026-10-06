@@ -183,12 +183,18 @@ export class PiSession {
         if (this.pumpFailure !== undefined)
             throw this.pumpFailure;
     }
-    historyUpdates(entries) { return entries.flatMap(entry => replayEntry(entry)); }
+    historyUpdates(entries) {
+        const snapshots = new Map(this.pi.sessionManager.getEntries()
+            .filter(entry => entry.type === 'custom' && entry.customType === 'eido.prompt.v1'
+                && typeof entry.data?.messageId === 'string' && Array.isArray(entry.data?.prompt))
+            .map(entry => [entry.data.messageId, entry.data.prompt]));
+        return entries.flatMap(entry => {
+            const prompt = entry.type === 'message' && entry.message.role === 'user' ? snapshots.get(entry.id) : undefined;
+            return prompt ? prompt.map(content => ({sessionUpdate:'user_message_chunk',messageId:entry.id,content:structuredClone(content)})) : replayEntry(entry);
+        });
+    }
     async replay(entries) {
-        for (const entry of entries) {
-            for (const update of replayEntry(entry))
-                this.enqueue(update);
-        }
+        for (const update of this.historyUpdates(entries)) this.enqueue(update);
         try {
             await this.drain();
         }

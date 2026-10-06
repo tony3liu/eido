@@ -12,13 +12,11 @@ use editor::{
 };
 use futures::{AsyncReadExt as _, FutureExt as _, future::Shared};
 use gpui::{
-    AppContext, Context, Empty, Entity, EntityId, Image, ImageFormat, Img, SharedString, Task,
-    WeakEntity,
+    AppContext, Context, Entity, EntityId, Image, ImageFormat, Img, SharedString, Task, WeakEntity,
 };
 use http_client::{AsyncBody, HttpClientWithUrl};
 use language::Buffer;
 use language_model::{LanguageModelImage, LanguageModelImageExt};
-use multi_buffer::MultiBufferRow;
 use postage::stream::Stream as _;
 use project::{Project, ProjectItem, ProjectPath, Worktree};
 use rope::Point;
@@ -32,7 +30,7 @@ use std::{
     sync::Arc,
 };
 use text::OffsetRangeExt;
-use ui::{Disclosure, Toggleable, prelude::*};
+use ui::prelude::*;
 use util::{ResultExt, debug_panic, rel_path::RelPath};
 use workspace::{Workspace, notifications::NotifyResultExt as _};
 
@@ -45,6 +43,7 @@ pub enum Mention {
     Text {
         content: String,
         tracked_buffers: Vec<Entity<Buffer>>,
+        capture: Option<crate::eido_reference::CaptureMetadata>,
     },
     Image(MentionImage),
     Link,
@@ -117,6 +116,38 @@ impl MentionSet {
         crease_entity: Option<Entity<LoadingContext>>,
         cx: &mut App,
     ) {
+        if std::env::var_os("EIDO_ROOT").is_some() {
+            if let Some(entity) = crease_entity.as_ref() {
+                let entity = entity.downgrade();
+                let resolved = task.clone();
+                cx.spawn(async move |cx| {
+                    if let Ok(Mention::Text {
+                        content,
+                        tracked_buffers,
+                        capture,
+                    }) = resolved.await
+                    {
+                        entity
+                            .update(cx, |entity, cx| {
+                                entity.snapshot = Some(content.into());
+                                entity.snapshot_capture = capture;
+                                if tracked_buffers.len() == 1 {
+                                    let buffer = tracked_buffers[0].clone();
+                                    entity.snapshot_observe =
+                                        Some(cx.observe(&buffer, |entity, _, cx| {
+                                            entity.check_snapshot(cx)
+                                        }));
+                                    entity.snapshot_source = Some(buffer);
+                                    entity.check_snapshot(cx);
+                                }
+                                cx.notify();
+                            })
+                            .ok();
+                    }
+                })
+                .detach();
+            }
+        }
         self.mentions.insert(crease_id, (uri, task));
         if let Some(entity) = crease_entity {
             self.crease_entities.insert(crease_id, entity);
@@ -426,9 +457,16 @@ impl MentionSet {
             )
             .await?;
 
+            let capture = buffer.read_with(cx, |buffer, _| {
+                crate::eido_reference::CaptureMetadata::new(
+                    buffer.is_dirty(),
+                    buffer_content.is_synthetic,
+                )
+            });
             Ok(Mention::Text {
                 content: buffer_content.text,
                 tracked_buffers: vec![buffer],
+                capture: Some(capture),
             })
         })
     }
@@ -444,6 +482,7 @@ impl MentionSet {
             Ok(Mention::Text {
                 content,
                 tracked_buffers: Vec::new(),
+                capture: None,
             })
         })
     }
@@ -475,6 +514,10 @@ impl MentionSet {
                 Mention::Text {
                     content,
                     tracked_buffers: vec![cx.entity()],
+                    capture: Some(crate::eido_reference::CaptureMetadata::new(
+                        buffer.is_dirty(),
+                        false,
+                    )),
                 }
             });
             Ok(mention)
@@ -492,6 +535,7 @@ impl MentionSet {
             return Task::ready(Ok(Mention::Text {
                 content: content.to_string(),
                 tracked_buffers: Vec::new(),
+                capture: None,
             }));
         }
         cx.background_spawn(async move {
@@ -505,6 +549,7 @@ impl MentionSet {
             Ok(Mention::Text {
                 content,
                 tracked_buffers: Vec::new(),
+                capture: None,
             })
         })
     }
@@ -533,10 +578,16 @@ impl MentionSet {
             let range = snapshot.anchor_after(offset + range_to_fold.start)
                 ..snapshot.anchor_after(offset + range_to_fold.end);
 
+            let Some((fold_anchor, _)) = snapshot.anchor_to_buffer_anchor(range.start) else {
+                continue;
+            };
+            let fold_length = range_to_fold.end - range_to_fold.start;
             let abs_path = buffer
                 .read(cx)
                 .project_path(cx)
                 .and_then(|project_path| project.read(cx).absolute_path(&project_path, cx));
+            let capture =
+                crate::eido_reference::CaptureMetadata::new(buffer.read(cx).is_dirty(), false);
             let snapshot = buffer.read(cx).snapshot();
 
             let text = snapshot
@@ -548,34 +599,35 @@ impl MentionSet {
             let uri = MentionUri::Selection {
                 abs_path: abs_path.clone(),
                 line_range: line_range.clone(),
-                column: None,
+                column: Some(point_range.start.column),
             };
-            let crease = crease_for_mention(
+            let Some((crease_id, loaded, entity)) = insert_crease_for_mention(
+                fold_anchor,
+                fold_length,
                 selection_name(abs_path.as_deref(), &line_range).into(),
                 uri.icon_path(cx),
                 uri.tooltip_text(),
                 Some(uri.clone()),
                 Some(workspace.clone()),
-                range,
-                editor.downgrade(),
-            );
-
-            let crease_id = editor.update(cx, |editor, cx| {
-                let crease_ids = editor.insert_creases(vec![crease.clone()], cx);
-                editor.fold_creases(vec![crease], false, window, cx);
-                crease_ids.first().copied().unwrap()
-            });
-
-            self.mentions.insert(
+                None,
+                editor.clone(),
+                window,
+                cx,
+            ) else {
+                continue;
+            };
+            drop(loaded);
+            self.insert_mention(
                 crease_id,
-                (
-                    uri,
-                    Task::ready(Ok(Mention::Text {
-                        content: text,
-                        tracked_buffers: vec![buffer],
-                    }))
-                    .shared(),
-                ),
+                uri,
+                Task::ready(Ok(Mention::Text {
+                    content: text,
+                    capture: Some(capture),
+                    tracked_buffers: vec![buffer],
+                }))
+                .shared(),
+                entity,
+                cx,
             );
         }
 
@@ -627,6 +679,7 @@ impl MentionSet {
             Ok(Mention::Text {
                 content: summary.to_string(),
                 tracked_buffers: Vec::new(),
+                capture: None,
             })
         })
     }
@@ -657,6 +710,7 @@ impl MentionSet {
             Ok(Mention::Text {
                 content,
                 tracked_buffers: Vec::new(),
+                capture: None,
             })
         })
     }
@@ -687,11 +741,13 @@ impl MentionSet {
                 Ok(Mention::Text {
                     content: "No changes found in branch diff.".into(),
                     tracked_buffers: Vec::new(),
+                    capture: None,
                 })
             } else {
                 Ok(Mention::Text {
                     content: diff_text,
                     tracked_buffers: Vec::new(),
+                    capture: None,
                 })
             }
         })
@@ -817,6 +873,7 @@ mod tests {
             Mention::Text {
                 content,
                 tracked_buffers,
+                ..
             } => {
                 assert_eq!(content, "line 2\nline 3\n");
                 assert_eq!(tracked_buffers.len(), 1);
@@ -1086,77 +1143,6 @@ pub(crate) fn insert_crease_for_mention(
     Some((crease_id, tx, Some(crease_entity)))
 }
 
-pub(crate) fn crease_for_mention(
-    label: SharedString,
-    icon_path: SharedString,
-    tooltip: Option<SharedString>,
-    mention_uri: Option<MentionUri>,
-    workspace: Option<WeakEntity<Workspace>>,
-    range: Range<Anchor>,
-    editor_entity: WeakEntity<Editor>,
-) -> Crease<Anchor> {
-    let placeholder = FoldPlaceholder {
-        render: render_fold_icon_button(
-            icon_path.clone(),
-            label.clone(),
-            tooltip,
-            mention_uri,
-            workspace,
-            editor_entity,
-        ),
-        merge_adjacent: false,
-        ..Default::default()
-    };
-
-    let render_trailer = move |_row, _unfold, _window: &mut Window, _cx: &mut App| Empty.into_any();
-
-    Crease::inline(range, placeholder, fold_toggle("mention"), render_trailer)
-        .with_metadata(CreaseMetadata { icon_path, label })
-}
-
-fn render_fold_icon_button(
-    icon_path: SharedString,
-    label: SharedString,
-    tooltip: Option<SharedString>,
-    mention_uri: Option<MentionUri>,
-    workspace: Option<WeakEntity<Workspace>>,
-    editor: WeakEntity<Editor>,
-) -> Arc<dyn Send + Sync + Fn(FoldId, Range<Anchor>, &mut App) -> AnyElement> {
-    Arc::new({
-        move |fold_id, fold_range, cx| {
-            let is_in_text_selection = editor
-                .update(cx, |editor, cx| editor.is_range_selected(&fold_range, cx))
-                .unwrap_or_default();
-
-            MentionCrease::new(fold_id, icon_path.clone(), label.clone())
-                .mention_uri(mention_uri.clone())
-                .workspace(workspace.clone())
-                .is_toggled(is_in_text_selection)
-                .when_some(tooltip.clone(), |this, tooltip_text| {
-                    this.tooltip(tooltip_text)
-                })
-                .into_any_element()
-        }
-    })
-}
-
-fn fold_toggle(
-    name: &'static str,
-) -> impl Fn(
-    MultiBufferRow,
-    bool,
-    Arc<dyn Fn(bool, &mut Window, &mut App) + Send + Sync>,
-    &mut Window,
-    &mut App,
-) -> AnyElement {
-    move |row, is_folded, fold, _window, _cx| {
-        Disclosure::new((name, row.0 as u64), !is_folded)
-            .toggle_state(is_folded)
-            .on_click(move |_e, window, cx| fold(!is_folded, window, cx))
-            .into_any_element()
-    }
-}
-
 fn full_mention_for_directory(
     project: &Entity<Project>,
     abs_path: &Path,
@@ -1249,6 +1235,7 @@ fn full_mention_for_directory(
                 Mention::Text {
                     content: render_directory_contents(contents),
                     tracked_buffers,
+                    capture: None,
                 }
             })
             .await;
@@ -1300,6 +1287,11 @@ fn render_mention_fold_button(
             editor,
             loading: Some(loading),
             image: image_task.clone(),
+            snapshot: None,
+            snapshot_capture: None,
+            snapshot_source: None,
+            snapshot_observe: None,
+            snapshot_warning: None,
         }
     });
     let loading_clone = loading.clone();
@@ -1319,6 +1311,28 @@ pub struct LoadingContext {
     editor: WeakEntity<Editor>,
     loading: Option<Task<()>>,
     image: Option<Shared<Task<Result<Arc<Image>, String>>>>,
+    snapshot: Option<Arc<str>>,
+    snapshot_capture: Option<crate::eido_reference::CaptureMetadata>,
+    snapshot_source: Option<Entity<Buffer>>,
+    snapshot_observe: Option<gpui::Subscription>,
+    snapshot_warning: Option<SharedString>,
+}
+
+impl LoadingContext {
+    fn check_snapshot(&mut self, cx: &mut Context<Self>) {
+        if let (Some(uri), Some(captured), Some(buffer)) =
+            (&self.mention_uri, &self.snapshot, &self.snapshot_source)
+        {
+            self.snapshot_warning = crate::eido_reference::reference_warning(
+                uri,
+                captured,
+                &buffer.read(cx).text(),
+                self.snapshot_capture.as_ref(),
+            )
+            .map(Into::into);
+            cx.notify();
+        }
+    }
 }
 
 impl Render for LoadingContext {
@@ -1335,6 +1349,9 @@ impl Render for LoadingContext {
             .workspace(self.workspace.clone())
             .is_toggled(is_in_text_selection)
             .is_loading(self.loading.is_some())
+            .snapshot(self.snapshot.clone())
+            .snapshot_capture(self.snapshot_capture.clone())
+            .snapshot_warning(self.snapshot_warning.clone())
             .when_some(self.tooltip.clone(), |this, tooltip_text| {
                 this.tooltip(tooltip_text)
             })

@@ -7734,6 +7734,12 @@ impl ThreadView {
     }
 
     fn render_generating(&self, confirmation: bool, cx: &App) -> impl IntoElement {
+        if self.thread.read(cx).is_cancelling() {
+            return h_flex().py_2().px(rems_from_px(22_f32)).gap_2()
+                .child(GeneratingSpinnerElement::new(SpinnerVariant::Dots))
+                .child(Label::new("Stopping · waiting for the current operation").size(LabelSize::Small).color(Color::Muted))
+                .into_any_element();
+        }
         if !confirmation && !self.eido_pi_ui.working_visible { return div().into_any_element(); }
         let show_stats = AgentSettings::get_global(cx).show_turn_stats;
         let elapsed_label = show_stats

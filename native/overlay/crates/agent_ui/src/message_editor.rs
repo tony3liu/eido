@@ -158,8 +158,20 @@ impl PromptCompletionProviderDelegate for MessageEditorCompletionDelegate {
         self.session_capabilities.read().eido_thread.is_some()
     }
 
-    fn eido_completions(&self, text: String, cursor: usize, selection: Option<String>, force: bool, cx: &mut App) -> Option<Task<Result<serde_json::Value>>> {
-        let thread = self.session_capabilities.read().eido_thread.as_ref()?.upgrade()?;
+    fn eido_completions(
+        &self,
+        text: String,
+        cursor: usize,
+        selection: Option<String>,
+        force: bool,
+        cx: &mut App,
+    ) -> Option<Task<Result<serde_json::Value>>> {
+        let thread = self
+            .session_capabilities
+            .read()
+            .eido_thread
+            .as_ref()?
+            .upgrade()?;
         let thread = thread.read(cx);
         let connection = thread.connection().clone();
         let session_id = thread.session_id().clone();
@@ -216,7 +228,11 @@ impl PromptCompletionProviderDelegate for MessageEditorCompletionDelegate {
 }
 
 pub struct MessageEditor {
-    eido_component: Option<(String, Entity<acp_thread::Terminal>, Entity<terminal_view::TerminalView>)>,
+    eido_component: Option<(
+        String,
+        Entity<acp_thread::Terminal>,
+        Entity<terminal_view::TerminalView>,
+    )>,
     mention_set: Entity<MentionSet>,
     editor: Entity<Editor>,
     workspace: WeakEntity<Workspace>,
@@ -637,53 +653,110 @@ impl MessageEditor {
     }
 
     pub(crate) fn eido_component_matches(&self, generation: &str) -> bool {
-        self.eido_component.as_ref().is_some_and(|(current, _, _)| current == generation)
+        self.eido_component
+            .as_ref()
+            .is_some_and(|(current, _, _)| current == generation)
     }
 
-    pub(crate) fn eido_mount_component(&mut self, generation: String, terminal: Entity<acp_thread::Terminal>,
-        project: WeakEntity<Project>, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn eido_mount_component(
+        &mut self,
+        generation: String,
+        terminal: Entity<acp_thread::Terminal>,
+        project: WeakEntity<Project>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let workspace = self.workspace.clone();
         let view = cx.new(|cx| {
-            let mut view = terminal_view::TerminalView::new(terminal.read(cx).inner().clone(), workspace, None, project, window, cx);
+            let mut view = terminal_view::TerminalView::new(
+                terminal.read(cx).inner().clone(),
+                workspace,
+                None,
+                project,
+                window,
+                cx,
+            );
             view.set_embedded_mode(Some(1000), cx);
             view
         });
         let focused = self.focus_handle(cx).contains_focused(window, cx);
         self.eido_component = Some((generation, terminal, view));
-        if focused { self.focus_handle(cx).focus(window, cx); }
+        if focused {
+            self.focus_handle(cx).focus(window, cx);
+        }
         cx.notify();
     }
 
-    pub(crate) fn eido_unmount_component(&mut self, generation: &str, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.eido_component_matches(generation) { return; }
+    pub(crate) fn eido_unmount_component(
+        &mut self,
+        generation: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.eido_component_matches(generation) {
+            return;
+        }
         let focused = self.focus_handle(cx).contains_focused(window, cx);
         self.eido_component = None;
-        if focused { self.editor.focus_handle(cx).focus(window, cx); }
+        if focused {
+            self.editor.focus_handle(cx).focus(window, cx);
+        }
         cx.notify();
     }
 
     pub(crate) fn eido_set_shortcuts(&mut self, value: &serde_json::Value) {
-        self.session_capabilities.write().eido_shortcuts = value.as_array().into_iter().flatten().take(256).filter_map(|item| {
-            let key = item["key"].as_str()?;
-            let generation = item["generation"].as_str()?;
-            let binding = gpui::Keystroke::parse(item["binding"].as_str()?).ok()?;
-            Some((key.to_owned(), generation.to_owned(), gpui::KeybindingKeystroke::from_keystroke(binding)))
-        }).collect();
+        self.session_capabilities.write().eido_shortcuts = value
+            .as_array()
+            .into_iter()
+            .flatten()
+            .take(256)
+            .filter_map(|item| {
+                let key = item["key"].as_str()?;
+                let generation = item["generation"].as_str()?;
+                let binding = gpui::Keystroke::parse(item["binding"].as_str()?).ok()?;
+                Some((
+                    key.to_owned(),
+                    generation.to_owned(),
+                    gpui::KeybindingKeystroke::from_keystroke(binding),
+                ))
+            })
+            .collect();
     }
 
-    fn eido_key_down(&mut self, event: &gpui::KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
+    fn eido_key_down(
+        &mut self,
+        event: &gpui::KeyDownEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let capabilities = self.session_capabilities.read();
-        let Some((key, generation, _)) = capabilities.eido_shortcuts.iter().find(|(_, _, binding)| event.keystroke.should_match(binding)) else { return; };
-        let Some(thread) = capabilities.eido_thread.as_ref().and_then(|thread| thread.upgrade()) else { return; };
+        let Some((key, generation, _)) = capabilities
+            .eido_shortcuts
+            .iter()
+            .find(|(_, _, binding)| event.keystroke.should_match(binding))
+        else {
+            return;
+        };
+        let Some(thread) = capabilities
+            .eido_thread
+            .as_ref()
+            .and_then(|thread| thread.upgrade())
+        else {
+            return;
+        };
         cx.stop_propagation();
-        if event.is_held { return; }
+        if event.is_held {
+            return;
+        }
         let key = key.clone();
         let generation = generation.clone();
         drop(capabilities);
         let thread = thread.read(cx);
         let connection = thread.connection().clone();
         let session_id = thread.session_id().clone();
-        connection.eido_shortcut(session_id, key, generation, cx).detach_and_log_err(cx);
+        connection
+            .eido_shortcut(session_id, key, generation, cx)
+            .detach_and_log_err(cx);
     }
 
     pub fn set_session_capabilities(
@@ -1252,6 +1325,7 @@ impl MessageEditor {
                                     Mention::Text {
                                         content,
                                         tracked_buffers: vec![cx.entity()],
+                                        capture: Some(crate::eido_reference::CaptureMetadata::new(buffer.is_dirty(), false)),
                                     }
                                 }))
                             }
@@ -1822,6 +1896,9 @@ impl MessageEditor {
                         start..end,
                         mention_uri,
                         Mention::Text {
+                            capture: crate::eido_reference::CaptureMetadata::from_meta(
+                                resource.meta.as_ref(),
+                            ),
                             content: resource.text,
                             tracked_buffers: Vec::new(),
                         },
@@ -2065,7 +2142,9 @@ impl MessageEditor {
 
 impl Focusable for MessageEditor {
     fn focus_handle(&self, cx: &App) -> FocusHandle {
-        if let Some((_, _, view)) = &self.eido_component { return view.focus_handle(cx); }
+        if let Some((_, _, view)) = &self.eido_component {
+            return view.focus_handle(cx);
+        }
         self.editor.focus_handle(cx)
     }
 }
@@ -2074,13 +2153,34 @@ impl Render for MessageEditor {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if let Some((_, terminal, view)) = &self.eido_component {
             let terminal = terminal.clone();
-            return v_flex().w_full().gap_1()
-                .child(h_flex().justify_between().pr_6()
-                    .child(Label::new("Extension editor").size(LabelSize::Small).color(Color::Muted))
-                    .child(IconButton::new("close-pi-editor", IconName::Close).icon_size(IconSize::Small)
-                        .tooltip(Tooltip::text("Use Native Editor"))
-                        .on_click(move |_, _, cx| terminal.update(cx, |terminal, cx| terminal.stop_by_user(cx)))))
-                .child(div().w_full().h(px(144.)).bg(cx.theme().colors().terminal_background).child(view.clone()))
+            return v_flex()
+                .w_full()
+                .gap_1()
+                .child(
+                    h_flex()
+                        .justify_between()
+                        .pr_6()
+                        .child(
+                            Label::new("Extension editor")
+                                .size(LabelSize::Small)
+                                .color(Color::Muted),
+                        )
+                        .child(
+                            IconButton::new("close-pi-editor", IconName::Close)
+                                .icon_size(IconSize::Small)
+                                .tooltip(Tooltip::text("Use Native Editor"))
+                                .on_click(move |_, _, cx| {
+                                    terminal.update(cx, |terminal, cx| terminal.stop_by_user(cx))
+                                }),
+                        ),
+                )
+                .child(
+                    div()
+                        .w_full()
+                        .h(px(144.))
+                        .bg(cx.theme().colors().terminal_background)
+                        .child(view.clone()),
+                )
                 .into_any_element();
         }
         div()
@@ -2136,7 +2236,8 @@ impl Render for MessageEditor {
                         ..Default::default()
                     },
                 )
-            }).into_any_element()
+            })
+            .into_any_element()
     }
 }
 
@@ -2242,12 +2343,19 @@ fn mention_to_content_block(
         Some(Mention::Text {
             content,
             tracked_buffers: mention_tracked_buffers,
+            capture,
         }) => {
             tracked_buffers.extend(mention_tracked_buffers.iter().cloned());
             if supports_embedded_context {
                 acp::ContentBlock::Resource(acp::EmbeddedResource::new(
                     acp::EmbeddedResourceResource::TextResourceContents(
-                        acp::TextResourceContents::new(content.clone(), uri.to_uri().to_string()),
+                        acp::TextResourceContents::new(content.clone(), uri.to_uri().to_string())
+                            .meta(capture.as_ref().map(|capture| {
+                                acp::Meta::from_iter([(
+                                    "eidoReference".into(),
+                                    serde_json::to_value(capture).unwrap(),
+                                )])
+                            })),
                     ),
                 ))
             } else {
@@ -2874,38 +2982,98 @@ mod tests {
 
     #[gpui::test]
     async fn test_eido_completion_selects_once_and_preserves_newer_drafts(cx: &mut TestAppContext) {
-        use crate::completion_provider::{PromptCompletionProvider, PromptCompletionProviderDelegate, PromptContextType, AvailableCommand};
+        use crate::completion_provider::{
+            AvailableCommand, PromptCompletionProvider, PromptCompletionProviderDelegate,
+            PromptContextType,
+        };
         use std::sync::atomic::{AtomicUsize, Ordering};
         struct Delegate(Arc<AtomicUsize>);
         impl PromptCompletionProviderDelegate for Delegate {
-            fn supported_modes(&self, _: &App) -> Vec<PromptContextType> { vec![] }
-            fn supports_images(&self, _: &App) -> bool { false }
-            fn available_commands(&self, _: &App) -> Vec<AvailableCommand> { vec![] }
-            fn confirm_command(&self, _: &mut App) { panic!("Completion must not send a prompt"); }
-            fn eido_completions_enabled(&self, _: &App) -> bool { true }
-            fn eido_completions(&self, text: String, _: usize, selection: Option<String>, force: bool, _: &mut App) -> Option<Task<anyhow::Result<serde_json::Value>>> {
+            fn supported_modes(&self, _: &App) -> Vec<PromptContextType> {
+                vec![]
+            }
+            fn supports_images(&self, _: &App) -> bool {
+                false
+            }
+            fn available_commands(&self, _: &App) -> Vec<AvailableCommand> {
+                vec![]
+            }
+            fn confirm_command(&self, _: &mut App) {
+                panic!("Completion must not send a prompt");
+            }
+            fn eido_completions_enabled(&self, _: &App) -> bool {
+                true
+            }
+            fn eido_completions(
+                &self,
+                text: String,
+                _: usize,
+                selection: Option<String>,
+                force: bool,
+                _: &mut App,
+            ) -> Option<Task<anyhow::Result<serde_json::Value>>> {
                 Some(Task::ready(Ok(if selection.is_some() {
                     self.0.fetch_add(1, Ordering::SeqCst);
                     serde_json::json!({"handled":true,"items":[],"text":text.replace("~pair", "pair()"),"cursor":"中文\npair(".len()})
-                } else {assert!(force); serde_json::json!({"handled":true,"items":[{"id":"pair", "label":"Pair template"}]})})))
+                } else {
+                    assert!(force);
+                    serde_json::json!({"handled":true,"items":[{"id":"pair", "label":"Pair template"}]})
+                })))
             }
         }
         init_test(cx);
         let app_state = cx.update(AppState::test);
-        cx.update(|cx| { editor::init(cx); workspace::init(app_state.clone(), cx); });
+        cx.update(|cx| {
+            editor::init(cx);
+            workspace::init(app_state.clone(), cx);
+        });
         let project = Project::test(app_state.fs.clone(), [path!("/dir").as_ref()], cx).await;
-        let window = cx.add_window(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
-        let workspace = window.read_with(cx, |mw, _| mw.workspace().clone()).unwrap();
+        let window =
+            cx.add_window(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+        let workspace = window
+            .read_with(cx, |mw, _| mw.workspace().clone())
+            .unwrap();
         let mut cx = VisualTestContext::from_window(window.into(), cx);
         let count = Arc::new(AtomicUsize::new(0));
         let editor = workspace.update_in(&mut cx, |workspace, window, cx| {
             let workspace_handle = cx.weak_entity();
-            let message_editor = cx.new(|cx| MessageEditor::new(workspace_handle.clone(), project.downgrade(), None, Default::default(), "pi".into(), "Test", EditorMode::AutoHeight {min_lines:1,max_lines:None}, window, cx));
+            let message_editor = cx.new(|cx| {
+                MessageEditor::new(
+                    workspace_handle.clone(),
+                    project.downgrade(),
+                    None,
+                    Default::default(),
+                    "pi".into(),
+                    "Test",
+                    EditorMode::AutoHeight {
+                        min_lines: 1,
+                        max_lines: None,
+                    },
+                    window,
+                    cx,
+                )
+            });
             let editor = message_editor.read(cx).editor().clone();
-            let provider = PromptCompletionProvider::new(Delegate(count.clone()), editor.downgrade(), message_editor.read(cx).mention_set().clone(), workspace_handle);
-            editor.update(cx, |editor, _| editor.set_completion_provider(Some(std::rc::Rc::new(provider))));
-            workspace.active_pane().update(cx, |pane, cx| pane.add_item(Box::new(cx.new(|_| MessageEditorItem(message_editor.clone()))),true,true,None,window,cx));
-            message_editor.read(cx).focus_handle(cx).focus(window,cx);
+            let provider = PromptCompletionProvider::new(
+                Delegate(count.clone()),
+                editor.downgrade(),
+                message_editor.read(cx).mention_set().clone(),
+                workspace_handle,
+            );
+            editor.update(cx, |editor, _| {
+                editor.set_completion_provider(Some(std::rc::Rc::new(provider)))
+            });
+            workspace.active_pane().update(cx, |pane, cx| {
+                pane.add_item(
+                    Box::new(cx.new(|_| MessageEditorItem(message_editor.clone()))),
+                    true,
+                    true,
+                    None,
+                    window,
+                    cx,
+                )
+            });
+            message_editor.read(cx).focus_handle(cx).focus(window, cx);
             editor
         });
         let original = "中文\n~pair suffix";
@@ -2913,25 +3081,40 @@ mod tests {
             editor.update_in(&mut cx, |editor, window, cx| {
                 editor.set_text(original, window, cx);
                 let cursor = multi_buffer::MultiBufferOffset("中文\n~pair".len());
-                editor.change_selections(Default::default(),window,cx,|selections| selections.select_ranges([cursor..cursor]));
+                editor.change_selections(Default::default(), window, cx, |selections| {
+                    selections.select_ranges([cursor..cursor])
+                });
                 editor.show_completions(&editor::actions::ShowCompletions, window, cx);
             });
             cx.run_until_parked();
             let before = count.load(Ordering::SeqCst);
             editor.update_in(&mut cx, |editor, window, cx| {
                 assert!(editor.has_visible_completions_menu());
-                editor.confirm_completion(&editor::actions::ConfirmCompletion::default(), window, cx);
-                if stale { editor.set_text("Newer draft", window, cx); }
+                editor.confirm_completion(
+                    &editor::actions::ConfirmCompletion::default(),
+                    window,
+                    cx,
+                );
+                if stale {
+                    editor.set_text("Newer draft", window, cx);
+                }
             });
             cx.run_until_parked();
             editor.update_in(&mut cx, |editor, window, cx| {
                 if stale {
                     assert_eq!(editor.text(cx), "Newer draft");
-                    assert_eq!(count.load(Ordering::SeqCst),before);
+                    assert_eq!(count.load(Ordering::SeqCst), before);
                 } else {
-                    assert_eq!(count.load(Ordering::SeqCst),before + 1);
-                    assert_eq!(editor.text(cx),"中文\npair() suffix");
-                    assert_eq!(editor.selections.newest::<multi_buffer::MultiBufferOffset>(&editor.display_snapshot(cx)).start.0,"中文\npair(".len());
+                    assert_eq!(count.load(Ordering::SeqCst), before + 1);
+                    assert_eq!(editor.text(cx), "中文\npair() suffix");
+                    assert_eq!(
+                        editor
+                            .selections
+                            .newest::<multi_buffer::MultiBufferOffset>(&editor.display_snapshot(cx))
+                            .start
+                            .0,
+                        "中文\npair(".len()
+                    );
                     editor.undo(&editor::actions::Undo, window, cx);
                     assert_eq!(editor.text(cx), original);
                 }
@@ -4793,6 +4976,7 @@ mod tests {
                         Task::ready(Ok(Mention::Text {
                             content,
                             tracked_buffers: Vec::new(),
+                            capture: None,
                         }))
                         .shared(),
                         None,
@@ -4955,6 +5139,7 @@ mod tests {
                         Task::ready(Ok(Mention::Text {
                             content,
                             tracked_buffers: Vec::new(),
+                            capture: None,
                         }))
                         .shared(),
                         None,
@@ -5537,6 +5722,7 @@ mod tests {
                 Mention::Text {
                     content,
                     tracked_buffers: _,
+                    ..
                 } if content == "content"
             )
         }));
@@ -5714,6 +5900,41 @@ mod tests {
 
         cx.run_until_parked();
         (message_editor, cx)
+    }
+
+    #[gpui::test]
+    async fn test_eido_restored_reference_preserves_capture_metadata_and_exact_text(
+        cx: &mut TestAppContext,
+    ) {
+        init_test(cx);
+        let (message_editor, cx) = setup_message_editor(cx).await;
+        let captured = "captured unsaved text \nlast line ";
+        let original = acp::ContentBlock::Resource(acp::EmbeddedResource::new(
+            acp::EmbeddedResourceResource::TextResourceContents(
+                acp::TextResourceContents::new(captured, "file:///project/file.txt?column=3#L2:3")
+                    .meta(acp::Meta::from_iter([(
+                        "eidoReference".into(),
+                        serde_json::json!({"version":1,"unsaved":true,"summary":false}),
+                    )])),
+            ),
+        ));
+        message_editor.update_in(cx, |editor, window, cx| {
+            editor
+                .session_capabilities
+                .write()
+                .set_prompt_capabilities(acp::PromptCapabilities::new().embedded_context(true));
+            editor.set_message(vec![original.clone()], window, cx);
+        });
+        cx.run_until_parked();
+        let restored =
+            message_editor.update(cx, |editor, cx| editor.draft_content_blocks_snapshot(cx));
+        assert_eq!(
+            restored
+                .iter()
+                .filter(|block| matches!(block, acp::ContentBlock::Resource(_)))
+                .collect::<Vec<_>>(),
+            vec![&original]
+        );
     }
 
     #[gpui::test]

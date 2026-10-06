@@ -97,6 +97,58 @@ test("ACP discovers pi commands; local commands persist and replay without model
   } finally { await h.dispose(); }
 });
 
+test('plugin command history retains order, cancellation and identity without model messages or replayed execution', {timeout:30_000}, async () => {
+  let ready!:()=>void, release!:()=>void;
+  const began = new Promise<void>(resolve=>{ready=resolve;}), gate = new Promise<void>(resolve=>{release=resolve;});
+  const h = await harness([context=>{
+    assert.doesNotMatch(JSON.stringify(context.messages), /command-secret|history-echo|history-hold/);
+    return 'Only the ordinary prompt reached the model.';
+  }], {setup:async cwd=>{
+    await mkdir(join(cwd,'extensions'));
+    await writeFile(join(cwd,'extensions/history.js'), `export default pi => {
+      let count = 0;
+      pi.registerCommand('history-echo', {handler:async(args,ctx)=>{ctx.ui.notify('Echo '+(++count)+': '+args);}});
+      pi.registerCommand('history-hold', {handler:async(_,ctx)=>{ctx.ui.notify('Hold entered');await ctx.ui.input('Hold gate');ctx.ui.notify('Hold settled');}});
+    };`);
+  }, form:async()=>{ready();await gate;return {action:'cancel'};}, native:async()=>({handled:true})});
+  try {
+    const task = await h.newTask();
+    const echo = {sessionId:task.sessionId, prompt:[{type:'text' as const,text:'/history-echo command-secret  '}],_meta:{eidoDeliveryId:'history-echo-delivery'}};
+    await h.connection.agent.request(methods.agent.session.prompt,echo);
+    await h.connection.agent.request(methods.agent.session.prompt,echo);
+    const hold = {...echo,prompt:[{type:'text' as const,text:'/history-hold'}],_meta:{eidoDeliveryId:'history-hold-delivery'}};
+    const pending = h.connection.agent.request(methods.agent.session.prompt,hold);
+    await began;
+    await h.connection.agent.notify(methods.agent.session.cancel,{sessionId:task.sessionId});
+    release();
+    assert.equal((await pending as {stopReason:string}).stopReason,'cancelled');
+    await h.prompt(task.sessionId,'/session');
+    const before = await h.entries();
+    assert.equal(before.filter(entry=>entry.type==='message').length,0,'local commands are never model messages');
+    const inputs = before.filter(entry=>entry.customType==='eido.command.input.v1');
+    assert.deepEqual(inputs.map(entry=>entry.data.command),['/history-echo command-secret  ','/history-hold']);
+    assert.equal(before.find(entry=>entry.customType==='eido.command.result.v1'&&entry.data.commandId===inputs[1].id)?.data.status,'cancelled');
+    await h.connection.agent.request(methods.agent.session.close,{sessionId:task.sessionId});
+    h.updates.length=0;
+    await h.connection.agent.request(methods.agent.session.load,{sessionId:task.sessionId,cwd:h.cwd,mcpServers:[]});
+    const chunks = h.updates.map(({update})=>update).filter(update=>['user_message_chunk','agent_message_chunk'].includes(update.sessionUpdate));
+    const users = chunks.filter(update=>update.sessionUpdate==='user_message_chunk');
+    assert.deepEqual(users.map(update=>update.sessionUpdate==='user_message_chunk'&&update.content.type==='text'?update.content.text:''),['/history-echo command-secret  ','/history-hold','/session']);
+    assert.equal(users[0]?.sessionUpdate==='user_message_chunk'&&users[0].messageId, inputs[0].id);
+    const serialized = chunks.map(update=>JSON.stringify(update));
+    const at=(value:string)=>serialized.findIndex(text=>text.includes(value));
+    assert.ok(at('/history-echo')<at('Echo 1:'));
+    assert.ok(at('Echo 1:')<at('/history-hold'));
+    assert.ok(at('/history-hold')<at('Hold entered'));
+    assert.equal(h.requests(),0);
+    assert.equal((await h.entries()).filter(entry=>entry.customType==='eido.command.input.v1').length,2,'reload cannot execute commands');
+    await h.connection.agent.request(methods.agent.session.prompt,echo);
+    await assert.rejects(h.connection.agent.request(methods.agent.session.prompt,hold),/may already have run/);
+    await h.prompt(task.sessionId,'Ordinary prompt');
+    assert.equal(h.requests(),1);
+  } finally {release();await h.dispose();}
+});
+
 test('pi argument callbacks and stacked autocomplete providers use the native completion RPC without sending a prompt', {timeout: 20_000}, async () => {
   const h = await harness([], {
     native: async () => ({handled: true}), form: async () => ({action: 'cancel'}),
@@ -597,7 +649,7 @@ test("cancelling OAuth dismisses the native request and releases the pi turn", {
     const pending=h.prompt(task.sessionId,'/login deepseek oauth');
     await ready;
     await h.connection.agent.notify(methods.agent.session.cancel,{sessionId:task.sessionId});
-    assert.equal((await pending).stopReason,'cancelled');
+    assert.equal((await pending as {stopReason:string}).stopReason,'cancelled');
     assert.equal(dismissed,true);
     assert.equal(h.completedElicitations.length,0);
     const auth=await readFile(join(h.cwd,'fixture-auth.json'),'utf8').catch(()=> '{}');

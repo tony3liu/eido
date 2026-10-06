@@ -9,7 +9,7 @@ export const DELIVERY = Symbol.for('eido.pi.delivery');
 export const DELIVERY_RECORD = 'eido.delivery.v1';
 type Receipt = {sessionId:string; id:string; hash:string; state:'accepted'|'completed'|'interrupted'|'unclaimed'; response?:PromptResponse};
 type SteeringResponse = {outcome:'injected'}|{outcome:'promptRequired';reason:'noRunningTurn'};
-type Steering = {receipt:Receipt; entered:boolean; queued:boolean; completed:boolean};
+type Steering = {receipt:Receipt; entered:boolean; queued:boolean; completed:boolean; prompt:PromptRequest['prompt']};
 
 /** Receipts live in pi's journal, outside the model context and across tree navigation. */
 export function createDeliveryLedger(pi:AgentSession, changed:(id:string,state:string)=>void=()=>{},
@@ -18,6 +18,13 @@ export function createDeliveryLedger(pi:AgentSession, changed:(id:string,state:s
   const running = new Set<string>();
   const steering = new Map<string,Steering>();
   const enqueueContext = new AsyncLocalStorage<Steering>();
+  const promptContext = new AsyncLocalStorage<{prompt:PromptRequest['prompt']; recorded:boolean}>();
+  const invokeWithPrompt = <T>(params:PromptRequest, invoke:()=>Promise<T>) =>
+    promptContext.run({prompt:structuredClone(params.prompt), recorded:false}, invoke);
+  const recordPrompt = (id:string, prompt:PromptRequest['prompt']) => {
+    if(prompt.some(block=>block.type==='resource'||block.type==='resource_link'))
+      appendEidoEntry(pi.sessionManager,'eido.prompt.v1',{messageId:id,prompt});
+  };
   const messageOwners = new WeakMap<object,Steering>();
   for(const entry of pi.sessionManager.getEntries()) {
     if(entry.type==='custom'&&entry.customType===DELIVERY_RECORD) {
@@ -67,6 +74,11 @@ export function createDeliveryLedger(pi:AgentSession, changed:(id:string,state:s
   const append=pi.sessionManager.appendMessage.bind(pi.sessionManager);
   pi.sessionManager.appendMessage=message=>{
     const entry=append(message),item=messageOwners.get(message);
+    if(message.role==='user') {
+      const original=promptContext.getStore();
+      if(item)recordPrompt(entry,item.prompt);
+      else if(original&&!original.recorded){original.recorded=true;recordPrompt(entry,original.prompt);}
+    }
     if(item){
       messageOwners.delete(message);
       finishSteering(item,'completed');
@@ -75,7 +87,7 @@ export function createDeliveryLedger(pi:AgentSession, changed:(id:string,state:s
     return entry;
   };
   return {
-    dispose(){enqueueContext.disable();},
+    dispose(){enqueueContext.disable();promptContext.disable();},
     turnEnded(){
       for(const item of [...steering.values()]) {
         if(!item.queued||item.completed)continue;
@@ -86,7 +98,7 @@ export function createDeliveryLedger(pi:AgentSession, changed:(id:string,state:s
       return {deliveries:ids.map(id=>({id,state:running.has(id)?'running':receipts.get(id)?.state==='accepted'?'interrupted':receipts.get(id)?.state==='unclaimed'?'unknown':receipts.get(id)?.state??'unknown'}))};
     },
     async deliver(params:PromptRequest, invoke:()=>Promise<PromptResponse>) {
-      const identity=identify(params);if(!identity)return invoke();
+      const identity=identify(params);if(!identity)return invokeWithPrompt(params,invoke);
       const {receipt,previous}=identity;
       if(previous&&previous.state!=='unclaimed') {
         if(previous.state==='completed'&&previous.response)return structuredClone(previous.response);
@@ -94,7 +106,7 @@ export function createDeliveryLedger(pi:AgentSession, changed:(id:string,state:s
       }
       record(receipt);running.add(receipt.id);
       try {
-        const response=await invoke();
+        const response=await invokeWithPrompt(params,invoke);
         record({...receipt,state:response.stopReason==='end_turn'?'completed':'interrupted',response});
         return response;
       } catch(error) {
@@ -113,7 +125,7 @@ export function createDeliveryLedger(pi:AgentSession, changed:(id:string,state:s
         throw ambiguous();
       }
       record(receipt);running.add(receipt.id);
-      const item:Steering={receipt,entered:false,queued:false,completed:false};
+      const item:Steering={receipt,entered:false,queued:false,completed:false,prompt:structuredClone(params.prompt)};
       steering.set(receipt.id,item);
       try {
         const result=await enqueueContext.run(item,invoke);

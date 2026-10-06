@@ -2287,6 +2287,7 @@ pub struct AcpThread {
     shared_buffers: HashMap<Entity<Buffer>, BufferSnapshot>,
     turn_id: u32,
     running_turn: Option<RunningTurn>,
+    cancelling_turn: Option<(u32, futures::future::Shared<Task<()>>)>,
     connection: Rc<dyn AgentConnection>,
     token_usage: Option<TokenUsage>,
     cost: Option<SessionCost>,
@@ -2553,6 +2554,7 @@ impl AcpThread {
             provisional_title: None,
             project,
             running_turn: None,
+            cancelling_turn: None,
             turn_id: 0,
             connection,
             session_id,
@@ -2731,11 +2733,15 @@ impl AcpThread {
     }
 
     pub fn status(&self) -> ThreadStatus {
-        if self.running_turn.is_some() {
+        if self.running_turn.is_some() || self.cancelling_turn.is_some() {
             ThreadStatus::Generating
         } else {
             ThreadStatus::Idle
         }
+    }
+
+    pub fn is_cancelling(&self) -> bool {
+        self.running_turn.is_none() && self.cancelling_turn.is_some()
     }
 
     pub fn had_error(&self) -> bool {
@@ -4326,14 +4332,30 @@ impl AcpThread {
         self.cancel_outstanding_elicitations(cx);
 
         let Some(turn) = self.running_turn.take() else {
-            return Task::ready(());
+            return self.cancelling_turn.as_ref()
+                .map(|(_, task)| cx.background_spawn(task.clone()))
+                .unwrap_or_else(|| Task::ready(()));
         };
         self.mark_pending_entries_as_canceled(permission_outcome, cx);
         self.connection.cancel(&self.session_id, cx);
+        // A cancel notification is a request, not acknowledgement. Keep the
+        // session busy until its prompt settles, including plugin commands that
+        // cannot react immediately to pi.abort(). Follow-ups await this barrier.
+        let id = turn.id;
+        let task = cx.spawn(async move |this, cx| {
+            turn.send_task.await;
+            this.update(cx, |this, cx| {
+                if this.cancelling_turn.as_ref().is_some_and(|(pending_id, _)| *pending_id == id) {
+                    this.cancelling_turn = None;
+                    if this.running_turn.is_none() {
+                        cx.emit(AcpThreadEvent::StatusChanged);
+                    }
+                }
+            }).ok();
+        }).shared();
+        self.cancelling_turn = Some((id, task.clone()));
         cx.emit(AcpThreadEvent::StatusChanged);
-
-        // Wait for the send task to complete
-        cx.background_spawn(turn.send_task)
+        cx.background_spawn(task)
     }
 
     fn update_idle_sleep_prevention(&mut self, cx: &mut Context<Self>) {
@@ -11560,6 +11582,39 @@ mod tests {
         });
     }
 
+    #[gpui::test]
+    async fn test_eido_cancel_keeps_busy_until_remote_settlement(cx: &mut TestAppContext) {
+        init_test(cx);
+        let project = Project::test(FakeFs::new(cx.executor()), [], cx).await;
+        let (finish, finished) = oneshot::channel::<()>();
+        let finished = RefCell::new(Some(finished));
+        let connection = Rc::new(FakeAgentConnection::new().on_user_message(move |_, _, _| {
+            let finished = finished.borrow_mut().take().unwrap();
+            async move {
+                finished.await?;
+                Ok(acp::PromptResponse::new(acp::StopReason::Cancelled))
+            }.boxed_local()
+        }));
+        let thread = cx.update(|cx| connection.new_session(project, PathList::new(&[Path::new(path!("/test"))]), cx)).await.unwrap();
+        let request = thread.update(cx, |thread, cx| thread.send_raw("command", cx));
+        cx.run_until_parked();
+        let cancellation = thread.update(cx, |thread, cx| thread.cancel(cx));
+        cx.run_until_parked();
+        thread.read_with(cx, |thread, _| {
+            assert_eq!(thread.status(), ThreadStatus::Generating);
+            assert!(thread.is_cancelling());
+        });
+        // Repeated stop requests retain the same in-flight barrier.
+        let repeated = thread.update(cx, |thread, cx| thread.cancel(cx));
+        cx.run_until_parked();
+        assert!(thread.read_with(cx, |thread, _| thread.is_cancelling()));
+        finish.send(()).unwrap();
+        cancellation.await;
+        repeated.await;
+        assert_eq!(request.await.unwrap().unwrap().stop_reason, acp::StopReason::Cancelled);
+        assert_eq!(thread.read_with(cx, |thread, _| thread.status()), ThreadStatus::Idle);
+    }
+
     /// Tests that when a follow-up message is sent during generation,
     /// the first turn completing does NOT clear `running_turn` because
     /// it now belongs to the second turn.
@@ -12724,7 +12779,7 @@ mod tests {
             cx.run_until_parked();
             assert_eq!(cx.active_idle_sleep_preventions(), 0);
             thread.read_with(cx, |thread, _| {
-                assert_eq!(thread.status(), ThreadStatus::Idle);
+                assert_eq!(thread.status(), ThreadStatus::Generating);
                 assert!(matches!(
                     thread.idle_sleep_prevention,
                     IdleSleepPrevention::Inactive
@@ -12735,6 +12790,7 @@ mod tests {
                 .send(Ok(acp::PromptResponse::new(acp::StopReason::EndTurn)))
                 .expect("backend should still be running");
             cancel.await;
+            assert_eq!(thread.read_with(cx, |thread, _| thread.status()), ThreadStatus::Idle);
             request.await.expect("turn should complete");
             assert_eq!(cx.active_idle_sleep_preventions(), 0);
         }
@@ -13363,7 +13419,7 @@ mod tests {
         cx.run_until_parked();
         assert_eq!(
             thread.read_with(cx, |thread, _| thread.status()),
-            ThreadStatus::Idle
+            ThreadStatus::Generating
         );
         assert_eq!(cx.active_idle_sleep_preventions(), 0);
 
@@ -13371,6 +13427,7 @@ mod tests {
             .send(Ok(acp::PromptResponse::new(acp::StopReason::Cancelled)))
             .expect("backend should still be running");
         cancel.await;
+        assert_eq!(thread.read_with(cx, |thread, _| thread.status()), ThreadStatus::Idle);
         request.await.expect("turn should complete");
         assert_eq!(cx.active_idle_sleep_preventions(), 0);
     }

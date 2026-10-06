@@ -128,19 +128,28 @@ export function installPiCommands(pi: AgentSession, client: AgentContext, suppor
       const name = match?.[1] ?? "";
       const argument = match?.[2]?.trim() ?? "";
       const signal = context.activeTurnSignal();
+      let extensionCommandId: string | undefined;
       const record = (output: string, status: "completed" | "failed" | "cancelled") => {
         // Custom entries are excluded from the model projection. Local command
         // history survives reload without creating fake user/assistant turns.
-        appendEidoEntry(pi.sessionManager,PI_COMMAND_RECORD, { command: text.trim(), output, status });
+        if (extensionCommandId) appendEidoEntry(pi.sessionManager, "eido.command.result.v1", {commandId:extensionCommandId, output, status});
+        else appendEidoEntry(pi.sessionManager,PI_COMMAND_RECORD, { command: text.trim(), output, status });
         context.enqueue({ sessionUpdate: "agent_message_chunk", content: {type: "text", text: output} });
       };
       try {
         signal?.throwIfAborted();
         if (!supported.some(command => command.name === name) && catalogue().some(command => command.name === name)) {
-          if (images?.length && pi.extensionRunner.getRegisteredCommands().some(command => command.invocationName === name)) {
-            throw new Error("This extension command accepts text arguments only. Send the image in a conversation, skill or prompt template.");
+          if (pi.extensionRunner.getRegisteredCommands().some(command => command.invocationName === name)) {
+            if (images?.length) throw new Error("This extension command accepts text arguments only. Send the image in a conversation, skill or prompt template.");
+            // Write the input before plugin output, outside model context. pi
+            // owns dispatch; Eido only retains the native conversation history.
+            extensionCommandId = appendEidoEntry(pi.sessionManager, "eido.command.input.v1", {command:text});
+            await pi.prompt(text.trimStart());
+            signal?.throwIfAborted();
+            appendEidoEntry(pi.sessionManager, "eido.command.result.v1", {commandId:extensionCommandId, status:"completed"});
+            return true;
           }
-          // Preserve pi's own extension dispatch and skill/template expansion.
+          // Skills and templates still expand through pi's regular prompt path.
           return false;
         }
         if (images?.length) throw new Error("Built-in commands do not accept image attachments. Remove the attachment and retry.");

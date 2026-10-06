@@ -449,8 +449,19 @@ fn group_by_relevance<T>(items: &mut [T], group_key: impl Fn(&T) -> u32) {
 }
 
 pub trait PromptCompletionProviderDelegate: Send + Sync + 'static {
-    fn eido_completions_enabled(&self, _cx: &App) -> bool { false }
-    fn eido_completions(&self, _text: String, _cursor: usize, _selection: Option<String>, _force: bool, _cx: &mut App) -> Option<Task<Result<serde_json::Value>>> { None }
+    fn eido_completions_enabled(&self, _cx: &App) -> bool {
+        false
+    }
+    fn eido_completions(
+        &self,
+        _text: String,
+        _cursor: usize,
+        _selection: Option<String>,
+        _force: bool,
+        _cx: &mut App,
+    ) -> Option<Task<Result<serde_json::Value>>> {
+        None
+    }
 
     fn supports_context(&self, mode: PromptContextType, cx: &App) -> bool {
         self.supported_modes(cx).contains(&mode)
@@ -844,6 +855,7 @@ impl<T: PromptCompletionProviderDelegate> PromptCompletionProvider<T> {
                         source_range.clone(),
                         editor,
                         mention_set,
+                        workspace,
                         terminal_selections,
                     )
                 }
@@ -1895,21 +1907,31 @@ impl<T: PromptCompletionProviderDelegate> PromptCompletionProvider<T> {
             }
         }
     }
-
 }
 
 impl<T: PromptCompletionProviderDelegate> CompletionProvider for PromptCompletionProvider<T> {
     fn completions(
-        &self, buffer: &Entity<Buffer>, position: Anchor, trigger: CompletionContext,
-        window: &mut Window, cx: &mut Context<Editor>,
+        &self,
+        buffer: &Entity<Buffer>,
+        position: Anchor,
+        trigger: CompletionContext,
+        window: &mut Window,
+        cx: &mut Context<Editor>,
     ) -> Task<Result<Vec<CompletionResponse>>> {
         let force = trigger.trigger_kind == lsp::CompletionTriggerKind::INVOKED;
         let fallback = self.native_completions(buffer, position, trigger, window, cx);
         let snapshot = buffer.read(cx).snapshot();
         let original = snapshot.text();
-        if original.len() > 65_536 { return fallback; }
+        if original.len() > 65_536 {
+            return fallback;
+        }
         let cursor = position.to_offset(&snapshot);
-        let Some(request) = self.source.eido_completions(original.clone(), cursor, None, force, cx) else { return fallback; };
+        let Some(request) = self
+            .source
+            .eido_completions(original.clone(), cursor, None, force, cx)
+        else {
+            return fallback;
+        };
         let buffer = buffer.clone();
         let editor = self.editor.clone();
         let source = self.source.clone();
@@ -1920,10 +1942,15 @@ impl<T: PromptCompletionProviderDelegate> CompletionProvider for PromptCompletio
             };
             cx.update(|cx| {
                 // A slow plugin must never replace a newer draft with old suggestions.
-                if buffer.read(cx).snapshot().text() != original { return Ok(Vec::new()); }
+                if buffer.read(cx).snapshot().text() != original {
+                    return Ok(Vec::new());
+                }
                 let mut completions = Vec::new();
                 for item in response["items"].as_array().into_iter().flatten().take(32) {
-                    let (Some(label), Some(id)) = (item["label"].as_str(), item["id"].as_str()) else { continue; };
+                    let (Some(label), Some(id)) = (item["label"].as_str(), item["id"].as_str())
+                    else {
+                        continue;
+                    };
                     let id = id.to_owned();
                     let target_editor = editor.clone();
                     let source = source.clone();
@@ -1934,44 +1961,131 @@ impl<T: PromptCompletionProviderDelegate> CompletionProvider for PromptCompletio
                         replace_range: position..position,
                         new_text: String::new(),
                         label: CodeLabel::plain(label.to_owned(), None),
-                        documentation: item["description"].as_str().map(|value| CompletionDocumentation::MultiLinePlainText(value.to_owned().into())),
+                        documentation: item["description"].as_str().map(|value| {
+                            CompletionDocumentation::MultiLinePlainText(value.to_owned().into())
+                        }),
                         source: project::CompletionSource::Custom,
-                        icon_path: None, icon_color: None, match_start: None,
-                        snippet_deduplication_key: None, insert_text_mode: None,
+                        icon_path: None,
+                        icon_color: None,
+                        match_start: None,
+                        snippet_deduplication_key: None,
+                        insert_text_mode: None,
                         // Native completion inserts nothing; pi applies only the selected item.
                         confirm: Some(Arc::new(move |_, window, cx| {
-                            let (target_editor, source, original, buffer, version, id) = (target_editor.clone(), source.clone(), original.clone(), buffer.clone(), version.clone(), id.clone());
+                            let (target_editor, source, original, buffer, version, id) = (
+                                target_editor.clone(),
+                                source.clone(),
+                                original.clone(),
+                                buffer.clone(),
+                                version.clone(),
+                                id.clone(),
+                            );
                             window.defer(cx, move |window, cx| {
                                 let _ = target_editor.update(cx, |editor, cx| {
                                     let current = editor.buffer().read(cx).snapshot(cx);
-                                    let selection = editor.selections.newest::<multi_buffer::MultiBufferOffset>(&editor.display_snapshot(cx));
-                                    if current.text() != original || buffer.read(cx).version() != version || selection.start.0 != cursor || selection.end.0 != cursor || editor.selections.count() != 1 { return; }
-                                    let Some(request) = source.eido_completions(original.clone(), cursor, Some(id), false, cx) else { return; };
+                                    let selection = editor
+                                        .selections
+                                        .newest::<multi_buffer::MultiBufferOffset>(
+                                        &editor.display_snapshot(cx),
+                                    );
+                                    if current.text() != original
+                                        || buffer.read(cx).version() != version
+                                        || selection.start.0 != cursor
+                                        || selection.end.0 != cursor
+                                        || editor.selections.count() != 1
+                                    {
+                                        return;
+                                    }
+                                    let Some(request) = source.eido_completions(
+                                        original.clone(),
+                                        cursor,
+                                        Some(id),
+                                        false,
+                                        cx,
+                                    ) else {
+                                        return;
+                                    };
                                     cx.spawn_in(window, async move |editor, cx| {
                                         let response = request.await?;
                                         editor.update_in(cx, |editor, window, cx| {
                                             let current = editor.buffer().read(cx).snapshot(cx);
-                                            let selection = editor.selections.newest::<multi_buffer::MultiBufferOffset>(&editor.display_snapshot(cx));
-                                            if current.text() != original || buffer.read(cx).version() != version || selection.start.0 != cursor || selection.end.0 != cursor || editor.selections.count() != 1 { return; }
-                                            let (Some(after), Some(caret)) = (response["text"].as_str(), response["cursor"].as_u64()) else { return; };
-                                            if response["handled"].as_bool() != Some(true) { return; }
-                                            let Some((range, text)) = eido_completion_edit(&original, after, caret as usize) else { return; };
+                                            let selection = editor
+                                                .selections
+                                                .newest::<multi_buffer::MultiBufferOffset>(
+                                                &editor.display_snapshot(cx),
+                                            );
+                                            if current.text() != original
+                                                || buffer.read(cx).version() != version
+                                                || selection.start.0 != cursor
+                                                || selection.end.0 != cursor
+                                                || editor.selections.count() != 1
+                                            {
+                                                return;
+                                            }
+                                            let (Some(after), Some(caret)) = (
+                                                response["text"].as_str(),
+                                                response["cursor"].as_u64(),
+                                            ) else {
+                                                return;
+                                            };
+                                            if response["handled"].as_bool() != Some(true) {
+                                                return;
+                                            }
+                                            let Some((range, text)) = eido_completion_edit(
+                                                &original,
+                                                after,
+                                                caret as usize,
+                                            ) else {
+                                                return;
+                                            };
                                             editor.transact(window, cx, |editor, window, cx| {
-                                                editor.buffer().update(cx, |buffer, cx| buffer.edit([(multi_buffer::MultiBufferOffset(range.start)..multi_buffer::MultiBufferOffset(range.end), text)], None, cx));
-                                                let caret = multi_buffer::MultiBufferOffset(caret as usize);
-                                                editor.change_selections(Default::default(), window, cx, |selections| selections.select_ranges([caret..caret]));
+                                                editor.buffer().update(cx, |buffer, cx| {
+                                                    buffer.edit(
+                                                        [(
+                                                            multi_buffer::MultiBufferOffset(
+                                                                range.start,
+                                                            )
+                                                                ..multi_buffer::MultiBufferOffset(
+                                                                    range.end,
+                                                                ),
+                                                            text,
+                                                        )],
+                                                        None,
+                                                        cx,
+                                                    )
+                                                });
+                                                let caret =
+                                                    multi_buffer::MultiBufferOffset(caret as usize);
+                                                editor.change_selections(
+                                                    Default::default(),
+                                                    window,
+                                                    cx,
+                                                    |selections| {
+                                                        selections.select_ranges([caret..caret])
+                                                    },
+                                                );
                                             });
                                         })?;
                                         anyhow::Ok(())
-                                    }).detach_and_log_err(cx);
+                                    })
+                                    .detach_and_log_err(cx);
                                 });
                             });
                             false
                         })),
-                        group: Some(CompletionGroup {key: "pi-completions".into(), label: Some("pi".into())}),
+                        group: Some(CompletionGroup {
+                            key: "pi-completions".into(),
+                            label: Some("pi".into()),
+                        }),
                     });
                 }
-                Ok(vec![CompletionResponse {completions, display_options: CompletionDisplayOptions {dynamic_width: true}, is_incomplete: true}])
+                Ok(vec![CompletionResponse {
+                    completions,
+                    display_options: CompletionDisplayOptions {
+                        dynamic_width: true,
+                    },
+                    is_incomplete: true,
+                }])
             })
         })
     }
@@ -1984,7 +2098,9 @@ impl<T: PromptCompletionProviderDelegate> CompletionProvider for PromptCompletio
         _trigger_in_words: bool,
         cx: &mut Context<Editor>,
     ) -> bool {
-        if self.source.eido_completions_enabled(cx) { return true; }
+        if self.source.eido_completions_enabled(cx) {
+            return true;
+        }
         let buffer = buffer.read(cx);
         let position = position.to_point(buffer);
         let line_start = Point::new(position.row, 0);
@@ -2850,6 +2966,7 @@ fn completion_text_for_terminal_selections(
     source_range: Range<Anchor>,
     editor: WeakEntity<Editor>,
     mention_set: WeakEntity<MentionSet>,
+    workspace: WeakEntity<Workspace>,
     terminal_selections: Vec<String>,
 ) -> (String, ConfirmCallback) {
     const TERMINAL_PLACEHOLDER: &str = "terminal ";
@@ -2868,6 +2985,7 @@ fn completion_text_for_terminal_selections(
         move |_: CompletionIntent, window: &mut Window, cx: &mut App| {
             let editor = editor.clone();
             let mention_set = mention_set.clone();
+            let workspace = workspace.clone();
             let source_range = source_range.clone();
             let terminal_ranges = terminal_ranges.clone();
             window.defer(cx, move |window, cx| {
@@ -2886,24 +3004,27 @@ fn completion_text_for_terminal_selections(
                     let range = snapshot.anchor_after(offset + terminal_range.start)
                         ..snapshot.anchor_after(offset + terminal_range.end);
 
-                    let crease = crate::mention_set::crease_for_mention(
-                        mention_uri.name().into(),
-                        mention_uri.icon_path(cx),
-                        None,
-                        None,
-                        None,
-                        range,
-                        editor.downgrade(),
-                    );
-
-                    let Some(crease_id) = editor.update(cx, |editor, cx| {
-                        let crease_ids = editor.insert_creases(vec![crease.clone()], cx);
-                        editor.fold_creases(vec![crease], false, window, cx);
-                        crease_ids.first().copied()
-                    }) else {
-                        log::error!("insert_creases returned no ids for terminal selection");
+                    let Some((anchor, _)) = snapshot.anchor_to_buffer_anchor(range.start) else {
                         continue;
                     };
+                    let Some((crease_id, loaded, entity)) =
+                        crate::mention_set::insert_crease_for_mention(
+                            anchor,
+                            terminal_range.end - terminal_range.start,
+                            mention_uri.name().into(),
+                            mention_uri.icon_path(cx),
+                            None,
+                            Some(mention_uri.clone()),
+                            Some(workspace.clone()),
+                            None,
+                            editor.clone(),
+                            window,
+                            cx,
+                        )
+                    else {
+                        continue;
+                    };
+                    drop(loaded);
 
                     mention_set
                         .update(cx, |mention_set, cx| {
@@ -2913,9 +3034,10 @@ fn completion_text_for_terminal_selections(
                                 Task::ready(Ok(crate::mention_set::Mention::Text {
                                     content: terminal_text,
                                     tracked_buffers: vec![],
+                                    capture: None,
                                 }))
                                 .shared(),
-                                None,
+                                entity,
                                 cx,
                             );
                         })
@@ -3518,11 +3640,31 @@ mod tests {
 }
 
 /// Translate a pi replacement into one native edit without splitting UTF-8.
-fn eido_completion_edit(before: &str, after: &str, cursor: usize) -> Option<(Range<usize>, String)> {
-    if after.len() > 65_536 || cursor > after.len() || !after.is_char_boundary(cursor) { return None; }
-    let prefix = before.chars().zip(after.chars()).take_while(|(a, b)| a == b).map(|(a, _)| a.len_utf8()).sum::<usize>();
-    let suffix = before[prefix..].chars().rev().zip(after[prefix..].chars().rev()).take_while(|(a, b)| a == b).map(|(a, _)| a.len_utf8()).sum::<usize>();
-    Some((prefix..before.len() - suffix, after[prefix..after.len() - suffix].to_owned()))
+fn eido_completion_edit(
+    before: &str,
+    after: &str,
+    cursor: usize,
+) -> Option<(Range<usize>, String)> {
+    if after.len() > 65_536 || cursor > after.len() || !after.is_char_boundary(cursor) {
+        return None;
+    }
+    let prefix = before
+        .chars()
+        .zip(after.chars())
+        .take_while(|(a, b)| a == b)
+        .map(|(a, _)| a.len_utf8())
+        .sum::<usize>();
+    let suffix = before[prefix..]
+        .chars()
+        .rev()
+        .zip(after[prefix..].chars().rev())
+        .take_while(|(a, b)| a == b)
+        .map(|(a, _)| a.len_utf8())
+        .sum::<usize>();
+    Some((
+        prefix..before.len() - suffix,
+        after[prefix..after.len() - suffix].to_owned(),
+    ))
 }
 
 #[cfg(test)]
@@ -3532,12 +3674,15 @@ mod eido_completion_tests {
     fn test_eido_completion_preserves_unicode_and_suffix() {
         let before = "备注\n/review qu suffix";
         let after = "备注\n/review quick suffix";
-        let (range, replacement) = eido_completion_edit(before, after, "备注\n/review quick".len()).unwrap();
-        let mut actual = before.to_string(); actual.replace_range(range, &replacement);
+        let (range, replacement) =
+            eido_completion_edit(before, after, "备注\n/review quick".len()).unwrap();
+        let mut actual = before.to_string();
+        actual.replace_range(range, &replacement);
         assert_eq!(actual, after);
         assert!(eido_completion_edit("", "中文", 1).is_none());
         assert!(eido_completion_edit("", "text", 100).is_none());
         let (range, text) = eido_completion_edit("same", "same", 2).unwrap();
-        assert!(range.is_empty()); assert!(text.is_empty());
+        assert!(range.is_empty());
+        assert!(text.is_empty());
     }
 }

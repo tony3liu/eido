@@ -74,7 +74,7 @@ test('ACP embeds editor context and passes images through templates, skills, rel
     assert.equal(initialized.agentCapabilities?.promptCapabilities?.image, true);
     const task = await connection.agent.request(methods.agent.session.new, {cwd, mcpServers: []});
     const send = (prompt: ContentBlock[], id?: string) => connection.agent.request(methods.agent.session.prompt, {sessionId: task.sessionId, prompt, ...(id ? {_meta: {eidoDeliveryId: id}} : {})});
-    const first: ContentBlock[] = [text('/inspect present'), {type: 'resource', resource: {uri: 'file:///project/unsaved.ts#L2:3', text: 'buffer-only-marker'}}, image];
+    const first: ContentBlock[] = [text('/inspect present'), {type: 'resource', resource: {uri: 'file:///project/unsaved.ts#L2:3', text: 'buffer-only-marker', _meta:{eidoReference:{version:1,unsaved:true,summary:false}}}}, image];
     assert.equal((await send(first, 'attachment-delivery')).stopReason, 'end_turn');
     await send(first, 'attachment-delivery');
     assert.equal(checked, 1, 'the original attachment identity prevents duplicate inference');
@@ -88,6 +88,10 @@ test('ACP embeds editor context and passes images through templates, skills, rel
     await connection.agent.request(methods.agent.session.load, {sessionId: task.sessionId, cwd, mcpServers: []});
     assert.ok(updates.some(update => update.sessionUpdate === 'user_message_chunk' && update.content.type === 'image' && update.content.data === png));
     assert.match(JSON.stringify(updates), /buffer-only-marker/);
+    const restored = updates.filter(update => update.sessionUpdate === 'user_message_chunk' && update.content.type === 'resource');
+    assert.equal(restored.length, 1, 'one immutable reference survives history reload without duplicate model calls');
+    assert.equal(restored[0]?.sessionUpdate, 'user_message_chunk');
+    if (restored[0]?.sessionUpdate === 'user_message_chunk') assert.deepEqual(restored[0].content, first[1]);
     await writeFile(join(cwd, 'settings.json'), JSON.stringify({defaultProvider: 'eido-fixture', defaultModel: 'scripted', images: {blockImages: true, autoResize: false}}));
     await send([text('/reload')]);
     assert.equal((await send([text('Image blocking applies now'), image])).stopReason, 'end_turn');

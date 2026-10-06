@@ -6,6 +6,7 @@ mod config_options;
 pub(crate) mod conversation_view;
 mod diagnostics;
 mod eido_access;
+mod eido_reference;
 mod eido_pi_ui;
 mod eido_verification;
 mod eido_queue;
