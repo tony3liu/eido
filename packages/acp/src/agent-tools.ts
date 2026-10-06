@@ -46,6 +46,7 @@ export function installAgentToolPolicy(session: AgentSession, selectors: string[
   const pending = new Set<string>();
   let defaults = new Set<string>();
   let refreshing=false;
+  let lastActive = new Set<string>();
   type McpDefinition = ToolDefinition & {eidoMcpExposure?:string; eidoMcpAutoEnableCodemode?:boolean};
   const definition = (name:string) => session.getToolDefinition(name) as McpDefinition|undefined;
   const readDefaults=()=>{
@@ -58,6 +59,8 @@ export function installAgentToolPolicy(session: AgentSession, selectors: string[
     if(refreshing)return;
     refreshing=true;
     try {
+      const currentActive = new Set(session.getActiveToolNames());
+      if ([...lastActive].some(name => allowed.has(name) && !currentActive.has(name))) pending.clear();
       const known=allTools();
       // Tool definitions belong to the SDK/resource-loader inputs. Exposure is
       // the public pi control for both model declarations and nested discovery.
@@ -91,23 +94,13 @@ export function installAgentToolPolicy(session: AgentSession, selectors: string[
       for(const name of automatic)active.add(name);
       previous=new Map(tools.map(tool=>[tool.name,tool.exposure]));
       session.setActiveToolsByName([...active]);
+      lastActive = new Set(session.getActiveToolNames());
     } finally {refreshing=false;}
   };
-  const hooks=new WeakMap<object,{refresh:()=>void;set:(names:string[])=>void}>();
-  const bindRuntime=()=>{
-    const runtime=session.resourceLoader.getExtensions().runtime;
-    if(hooks.get(runtime)?.refresh===runtime.refreshTools)return;
-    const refreshTools=runtime.refreshTools, setActive=runtime.setActiveTools;
-    const hook={refresh:()=>{refreshTools();refresh();},set:(names:string[])=>{
-      const before=session.getActiveToolNames();
-      setActive(names);
-      if(before.some(name=>allowed.has(name)&&!session.getActiveToolNames().includes(name)))pending.clear();
-      refresh();
-    }};
-    hooks.set(runtime,hook);runtime.refreshTools=hook.refresh;runtime.setActiveTools=hook.set;
-  };
-  const policy={allows:(name:string)=>allowed.has(name),changed:()=>{bindRuntime();readDefaults();refresh();},
-    registered:()=>refresh(),reset:()=>{bindRuntime();readDefaults();refresh(true);}};
+  // Observe public prompt/command and tool-call boundaries. Never replace the
+  // extension runtime's internal refreshTools/setActiveTools implementation.
+  const policy={allows:(name:string)=>allowed.has(name),changed:()=>{readDefaults();refresh();},
+    registered:()=>refresh(),reset:()=>{readDefaults();refresh(true);}};
   Object.defineProperty(session,Symbol.for('eido.pi.tools'),{value:policy});
   policy.reset();
   return policy;

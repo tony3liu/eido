@@ -268,9 +268,9 @@ def main():
         targets = ['-p', 'eido_ui'] if command == 'check' else ['-p', 'zed', '--bin', 'eido']
         if command in ('test-acp', 'test-native'):
             cargo_command = 'test'
-            targets = ['-p', 'acp_thread', '--lib', 'test_eido_']
+            targets = ['-p', 'acp_thread', '--lib', 'test_eido_', '--features', 'db/test-support']
             if command == 'test-native':
-                targets = ['-p', 'acp_thread', '-p', 'action_log', '-p', 'agent_servers', '-p', 'settings', '-p', 'agent_ui', '-p', 'workspace', '-p', 'gpui_platform', '-p', 'extensions_ui', '--lib', 'test_eido_', '--features', ','.join(BUILD_FEATURES)]
+                targets = ['-p', 'acp_thread', '-p', 'action_log', '-p', 'agent_servers', '-p', 'settings', '-p', 'agent_ui', '-p', 'workspace', '-p', 'gpui_platform', '-p', 'extensions_ui', '--lib', 'test_eido_', '--features', ','.join([*BUILD_FEATURES, 'db/test-support'])]
             env.pop('EIDO_ROOT', None)
         if command == 'build':
             targets += ['--features', ','.join(BUILD_FEATURES)]

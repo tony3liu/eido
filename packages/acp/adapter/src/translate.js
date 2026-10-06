@@ -66,7 +66,7 @@ export function translateEvent(event, failedResult) {
                     status: "pending",
                     rawInput: event.args,
                     locations: fileLocations(event.args),
-                    _meta: { toolName: event.toolName },
+                    _meta: { toolName: event.toolName, ...(event.parentToolCallId ? { parentToolCallId: event.parentToolCallId } : {}) },
                 }];
         case "tool_execution_update":
             const update = {

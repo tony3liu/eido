@@ -59,7 +59,14 @@ function replayMessage(message) {
             };
             if (message.details !== undefined)
                 update.rawOutput = message.details;
-            return [update];
+            const nested = (message.nestedCalls?.calls ?? []).flatMap(call => [
+                { sessionUpdate: "tool_call", toolCallId: call.id, title: call.name, kind: mapKind(call.name), status: "pending",
+                  rawInput: call.arguments, _meta: {toolName:call.name,parentToolCallId:call.id.slice(0,call.id.lastIndexOf('/')) || message.toolCallId} },
+                { sessionUpdate: "tool_call_update", toolCallId:call.id, status:call.status === 'ok' ? 'completed' : 'failed',
+                  content:[{type:'content',content:{type:'text',text:call.error ?? (call.status === 'ok' ? 'Nested call completed. Detailed output is recorded in the parent tool result.' : 'Nested call was interrupted; no action was replayed.')}}],
+                  rawOutput:{durationMs:call.durationMs,argumentsBytes:call.argumentsBytes} }
+            ]);
+            return [...nested, update];
         }
         case "bashExecution":
             return [{ sessionUpdate: "agent_message_chunk", content: { type: "text", text: bashExecutionToText(message) } }];

@@ -61,7 +61,7 @@ test("only pi packages are searchable; MCP secrets stay out of list data and inv
     await assert.rejects(center.execute({operation:"mcp-save",text:edit.text,revision:edit.revision}), /configuration changed/);
     assert.equal((await configuredMcp(dir)).length,0);
     await center.execute({operation:"mcp-remove",name:"local"});
-    assert.equal((await center.execute()).mcp.length,2);
+    assert.equal((await center.execute()).mcp.filter(s => !s.builtin).length,1);
     await assert.rejects(center.execute({operation:"search-skills",query:"x"}),/Unsupported/);
   } finally {await rm(dir,{recursive:true,force:true});}
 });
@@ -114,7 +114,7 @@ test('MCP follows pi enabled, env interpolation and validation without resolving
       await assert.rejects(center.execute({operation:'mcp-save',text:JSON.stringify({mcpServers:{bad:server}})}));
     }
     delete process.env.EIDO_MCP_FIXTURE_SECRET;
-    assert.equal((await center.execute()).mcp.length,5,'inspection does not resolve credentials');
+    assert.equal((await center.execute()).mcp.filter(s => !s.builtin).length,4,'inspection does not resolve credentials');
     const unresolved = await configuredMcp(dir);
     assert.deepEqual(unresolved.map(server => server[Symbol.for('eido.pi.mcp.options')].unresolved), [true, true]);
     assert.doesNotMatch(JSON.stringify(unresolved), /EIDO_MCP_FIXTURE_SECRET|config-fixture-secret/);

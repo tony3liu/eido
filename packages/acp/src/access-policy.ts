@@ -16,7 +16,8 @@ export function accessPolicy(agentDir: string, session:()=>AgentSession|undefine
         : "\nEido access mode: Ask Before Actions. The native client handles tool permission requests.";
     }]], ["tool_call", [async (raw:unknown, rawContext:unknown) => {
       const pi=session(), event=raw as ToolCallEvent, context=rawContext as ExtensionContext;
-      const policy=(pi as unknown as Record<symbol, {allows(name:string):boolean}|undefined>)?.[Symbol.for('eido.pi.tools')];
+      const policy=(pi as unknown as Record<symbol, {allows(name:string):boolean;registered():void}|undefined>)?.[Symbol.for('eido.pi.tools')];
+      policy?.registered();
       if(!pi || !policy?.allows(event.toolName))return {block:true,reason:'This tool is not enabled for this agent.'};
       const permission=(pi as unknown as Record<symbol, ((event:ToolCallEvent,signal:AbortSignal|undefined)=>Promise<ToolCallEventResult|undefined>)|undefined>)[Symbol.for('eido.pi.permission')];
       if(!permission)return {block:true,reason:'The native permission handler is unavailable.'};

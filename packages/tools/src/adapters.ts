@@ -2,11 +2,11 @@ import { existsSync, constants, accessSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { browserDirectory } from "../../runtime/src/paths.mjs";
 import { browserDecisionSettings } from "../../runtime/src/browser/config.mjs";
 
 const require = createRequire(import.meta.url);
-export const browserCachePath = process.env.PLAYWRIGHT_BROWSERS_PATH
-  ?? fileURLToPath(new URL("../../../.local/browsers", import.meta.url));
+export const browserCachePath = browserDirectory();
 
 export interface Adapter {
   id: string;

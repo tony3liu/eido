@@ -4,7 +4,7 @@ import {mkdir} from 'node:fs/promises';
 import {join} from 'node:path';
 import {randomUUID} from 'node:crypto';
 import type {AgentSession, ExtensionUIContext} from '@earendil-works/pi-coding-agent';
-// Reuse the bundled pi 1.0.2 report/export implementations; only its terminal UI is replaced.
+// Reuse the bundled pi report/export implementations; only its terminal UI is replaced.
 import {collectBugReportMetadata, collectBugReportDiagnostics, writeBugReportArchive, bugReportArchiveFileName} from '../node_modules/@earendil-works/pi-coding-agent/dist/core/bug-report.js';
 import {uploadBugReport} from '../node_modules/@earendil-works/pi-coding-agent/dist/core/bug-report-upload.js';
 import {serializeSessionBranch} from '../node_modules/@earendil-works/pi-coding-agent/dist/core/session-export.js';

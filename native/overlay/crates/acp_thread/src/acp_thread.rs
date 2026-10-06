@@ -961,6 +961,7 @@ pub struct ToolCall {
     pub raw_input_markdown: Option<Entity<Markdown>>,
     pub raw_output: Option<serde_json::Value>,
     pub tool_name: Option<SharedString>,
+    pub parent_tool_call_id: Option<SharedString>,
     pub subagent_session_info: Option<SubagentSessionInfo>,
     pub sandbox_authorization_details: Option<SandboxAuthorizationDetails>,
     pub sandbox_fallback_authorization_details: Option<SandboxFallbackAuthorizationDetails>,
@@ -1027,6 +1028,7 @@ impl ToolCall {
             raw_input_markdown,
             raw_output: tool_call.raw_output,
             tool_name,
+            parent_tool_call_id: tool_call.meta.as_ref().and_then(|meta| meta.get("parentToolCallId")).and_then(|value| value.as_str()).map(SharedString::from),
             subagent_session_info,
             sandbox_authorization_details,
             sandbox_fallback_authorization_details,
@@ -1115,6 +1117,9 @@ impl ToolCall {
             label_changed |= self.tool_name.is_some();
         }
 
+        if let Some(parent) = meta.as_ref().and_then(|meta| meta.get("parentToolCallId")).and_then(|value| value.as_str()) {
+            self.parent_tool_call_id = Some(parent.to_owned().into());
+        }
         if let Some(subagent_session_info) = subagent_session_info_from_meta(&meta) {
             self.subagent_session_info = Some(subagent_session_info);
         }
@@ -3551,6 +3556,7 @@ impl AcpThread {
                     raw_input_markdown: None,
                     raw_output: None,
                     tool_name: None,
+                    parent_tool_call_id: None,
                     subagent_session_info: None,
                     sandbox_authorization_details: None,
                     sandbox_fallback_authorization_details: None,
@@ -8180,6 +8186,21 @@ mod tests {
                 }
             });
         }
+    }
+
+    #[gpui::test]
+    fn test_eido_nested_tool_parent_survives_metadata_free_updates(cx: &mut TestAppContext) {
+        init_test(cx);
+        let languages = cx.update(|cx| Arc::new(LanguageRegistry::test(cx.background_executor().clone())));
+        cx.update(|cx| {
+            let meta: acp::Meta = serde_json::from_value(serde_json::json!({"parentToolCallId":"code-parent"})).unwrap();
+            let mut call = ToolCall::from_acp(acp::ToolCall::new("nested", "read").meta(meta),
+                ToolCallStatus::Pending, languages.clone(), &HashMap::default(), cx).unwrap();
+            assert_eq!(call.parent_tool_call_id.as_deref(), Some("code-parent"));
+            call.update_fields(acp::ToolCallUpdateFields::new().status(acp::ToolCallStatus::Completed),
+                None, languages, &HashMap::default(), cx).unwrap();
+            assert_eq!(call.parent_tool_call_id.as_deref(), Some("code-parent"));
+        });
     }
 
     #[gpui::test]

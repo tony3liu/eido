@@ -4,6 +4,7 @@ import { mkdtemp, mkdir, writeFile, readFile, rm, stat, readdir } from "node:fs/
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createPiSettings, checkPiUpdate, bundledVersion } from "../../src/pi/settings.mjs";
+import {computerSettings, computerMcp} from '../../src/computer.mjs';
 
 async function fixture(t) {
   const root = await mkdtemp(join(tmpdir(), "eido-pi-settings-"));
@@ -18,10 +19,25 @@ async function fixture(t) {
   return {target,source,put,get,config,bridge:createPiSettings(target,source)};
 }
 
+test('Computer Use uses one global executable, reports absence and rejects stale settings', async t => {
+  const f = await fixture(t);
+  assert.equal((await computerSettings(f.target, {PATH:''})).enabled, false);
+  const initial = await f.bridge.execute({operation:'status'});
+  const configured = await f.bridge.execute({operation:'computer-use', path:process.execPath, enabled:true, expected:initial.computerUseRevision});
+  assert.equal(configured.computerUse.status, 'configured');
+  assert.deepEqual(await computerMcp(f.target), [{name:'eido_computer', command:process.execPath, args:['mcp'], env:[]}]);
+  await assert.rejects(f.bridge.execute({operation:'computer-use', path:'relative', enabled:true}), /absolute/);
+  await assert.rejects(f.bridge.execute({operation:'computer-use', path:process.execPath, enabled:false, expected:null}), /changed/);
+  await f.bridge.execute({operation:'computer-use', path:join(f.target,'absent-driver'), enabled:true, expected:configured.computerUseRevision});
+  assert.equal((await computerSettings(f.target)).status, 'not_installed');
+  assert.deepEqual(await computerMcp(f.target), []);
+  assert.deepEqual((await f.get(f.target,'settings.json')).customSetting, {retain:true});
+});
+
 test("defaults roundtrip uses pi model validation and preserves unrelated settings", async t => {
   const f=await fixture(t);
   const result=await f.bridge.execute({operation:"defaults",provider:"eido-fixture",model:"test-model",thinking:"off"});
-  assert.equal(result.version,"1.0.2");
+  assert.equal(result.version,"1.0.4");
   assert.equal(result.defaultModel,"test-model");
   assert.deepEqual((await f.get(f.target,"settings.json")).customSetting,{retain:true});
   const before=await readFile(join(f.target,"settings.json"),"utf8");
@@ -73,7 +89,7 @@ test('model overrides use pi precedence and preserve other models and concurrent
 test('tool defaults preserve modifiers, explicit empty lists and concurrent edits', async t => {
   const f = await fixture(t);
   assert.equal((await f.bridge.status()).defaultTools, null);
-  const tools = ['+codemode','-edit','+custom_tool'];
+  const tools = ['+codemode','-edit','+custom_tool','mcp__fixture__*'];
   assert.deepEqual((await f.bridge.execute({operation:'tool-defaults',tools,expected:null})).defaultTools,tools);
   assert.equal((await f.get(f.target,'settings.json')).customSetting.retain,true);
   await assert.rejects(f.bridge.execute({operation:'tool-defaults',tools:[],expected:null}),/changed while/);
@@ -209,7 +225,7 @@ test("update detection compares registry versions without installing packages", 
     return {ok:true,json:async()=>({name:"@earendil-works/pi-coding-agent",version})};
   };
   assert.equal((await checkPiUpdate(response(bundledVersion))).status,"up_to_date");
-  assert.equal((await checkPiUpdate(response("1.0.3"))).status,"update_available");
+  assert.equal((await checkPiUpdate(response("1.0.5"))).status,"update_available");
   assert.equal((await checkPiUpdate(response("0.99.9"))).status,"ahead");
   const failed=await checkPiUpdate(async()=>{throw new Error("private-network-error")});
   assert.equal(failed.status,"error"); assert.ok(!JSON.stringify(failed).includes("private-network-error"));

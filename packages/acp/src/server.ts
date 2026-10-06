@@ -19,6 +19,8 @@ import { createSubagents } from "./subagents.ts";
 import { installAgentToolPolicy } from "./agent-tools.ts";
 import { configuredMcp } from "../../runtime/src/pi/extensions.mjs";
 import { browserDecisionEnvironment } from "../../runtime/src/browser/config.mjs";
+import {computerMcp} from '../../runtime/src/computer.mjs';
+import {codemodeImages} from './codemode-images.ts';
 
 export async function startEidoAgent(agentDir: string, sessionDir: string, stream?: Stream, modelRuntime?: ModelRuntime) {
   const runtime = modelRuntime ?? await ModelRuntime.create({
@@ -43,6 +45,7 @@ export async function startEidoAgent(agentDir: string, sessionDir: string, strea
         const client = await clientReady;
         let liveSession:AgentSession|undefined;
         const browserDecision = await browserDecisionEnvironment(agentDir);
+        const images = codemodeImages();
         const preview = createPreview(options.cwd, join(agentDir, "previews"), options.sessionManager.getSessionId(), client);
         const shell = createShell(options.cwd, join(agentDir, "commands"), options.sessionManager.getSessionId(), client);
         // Settings are owned by pi. New tasks see credentials/models changed in
@@ -71,12 +74,13 @@ export async function startEidoAgent(agentDir: string, sessionDir: string, strea
           // Preserve pi's defaultTools lifecycle with native file operations.
           tools: undefined,
           noTools: undefined,
-          customTools: [...[...editorTools(options.cwd, options.sessionManager.getSessionId(), client),
+          customTools: [...[...editorTools(options.cwd, options.sessionManager.getSessionId(), client, images.get),
             ...editorQueryTools(options.cwd, options.sessionManager.getSessionId(), client)]
             .map(tool => ({...tool, defaultActive: false})), preview.tool, shell.tool,
             ...(subagents.enabled ? [subagents.tool(options.sessionManager.getSessionId(), client)] : [])],
         });
         liveSession=created.session;
+        const disposeImages = images.attach(created.session);
         // pi reads most runtime settings dynamically. These Agent properties
         // are copied at creation, so refresh them at the same reload boundary.
         const settings = created.session.settingsManager;
@@ -95,7 +99,7 @@ export async function startEidoAgent(agentDir: string, sessionDir: string, strea
         deliveries.set(created.session.sessionId, ledger);
         Object.defineProperty(created.session, DELIVERY, {value:ledger});
         const dispose = created.session.dispose.bind(created.session);
-        created.session.dispose = () => { ledger.dispose(); if(deliveries.get(created.session.sessionId)===ledger)deliveries.delete(created.session.sessionId); dispose(); };
+        created.session.dispose = () => { disposeImages(); ledger.dispose(); if(deliveries.get(created.session.sessionId)===ledger)deliveries.delete(created.session.sessionId); dispose(); };
         const browser = browserLifecycle(created.session);
         const prompt = created.session.prompt.bind(created.session);
         created.session.prompt = async (...args) => {
@@ -129,6 +133,11 @@ export async function startEidoAgent(agentDir: string, sessionDir: string, strea
           toolPolicy.changed();
         };
         installPiCommands(created.session, client, supportsForms, agentDir, supportsNativeUi);
+        const dispatch = created.session.prompt.bind(created.session);
+        created.session.prompt = async (...args) => {
+          toolPolicy.changed();
+          try { return await dispatch(...args); } finally { toolPolicy.registered(); }
+        };
         return created;
       },
     },
@@ -160,7 +169,7 @@ export async function startEidoAgent(agentDir: string, sessionDir: string, strea
     let configured: McpServer[] = [];
     try {configured = await configuredMcp(agentDir, context.params.cwd);}
     catch { /* The bridge reports invalid configuration after the task opens. */ }
-    const bundled = context.params.mcpServers ?? [];
+    const bundled = [...(context.params.mcpServers ?? []).filter(server => server.name !== 'eido_computer'), ...await computerMcp(agentDir)];
     const servers = [...bundled, ...configured.filter(server => !bundled.some(s => s.name === server.name))].map(server =>
       server.name === "eido_browser" && "command" in server
         ? {...server, env: [...server.env?.filter(entry => entry.name !== "EIDO_PI_CONFIG_DIR") ?? [], {name: "EIDO_PI_CONFIG_DIR", value: agentDir}]}

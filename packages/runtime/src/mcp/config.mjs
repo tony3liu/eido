@@ -20,7 +20,7 @@ export function validateMcp(value) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('mcpServers must be an object.');
   const servers = Object.create(null);
   for (const [name, input] of Object.entries(raw)) {
-    if (!/^[a-zA-Z0-9_-]{1,64}$/.test(name) || name === 'eido_browser') throw new Error('Use a unique server name; eido_browser is reserved.');
+    if (!/^[a-zA-Z0-9_-]{1,64}$/.test(name) || ['eido_browser','eido_computer'].includes(name)) throw new Error('Use a unique server name; eido_browser and eido_computer are reserved.');
     if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error(`Invalid MCP server: ${name}.`);
     if (input.disabled !== undefined && typeof input.disabled !== 'boolean') throw new Error(`Invalid disabled flag for ${name}.`);
     if (!!input.command === !!input.url) throw new Error(`Choose a command or HTTP URL for ${name}.`);
@@ -58,7 +58,7 @@ export async function registeredMcp(directory, cwd, registrations) {
   const global = await readMcp(directory);
   const entries = Object.create(null);
   for (const {name, config} of registrations) {
-    if (name === 'eido_browser' || Object.hasOwn(global.mcpServers, name)) continue;
+    if (['eido_browser','eido_computer'].includes(name) || Object.hasOwn(global.mcpServers, name)) continue;
     const validated = validateMcpServerConfig(name, config);
     if (typeof validated === 'string') throw new Error('Invalid registered MCP server.');
     entries[name] = validated;

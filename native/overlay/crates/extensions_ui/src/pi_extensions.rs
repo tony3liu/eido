@@ -397,7 +397,8 @@ impl ExtensionsPage {
         let status = if row.kind == ResourceKind::Mcp { mcp_status(data) }
         else { (if array(&self.pi.data, "pending").iter().any(|p| p["source"].as_str() == Some(&id)) {
             "Pending · Restart Eido to apply"
-        } else if data["builtin"] == true { "Built-in · Enabled" }
+        } else if data["builtin"] == true && data["enabled"] == false { "Built-in · Unavailable" }
+        else if data["builtin"] == true { "Built-in · Enabled" }
         else if !row.configured { "Available from npm" }
         else if data["signedIn"] == true && enabled { "Enabled · Signed in" }
         else if enabled { "Enabled · Global" } else { "Disabled · Global" }).into() };

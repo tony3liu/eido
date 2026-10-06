@@ -8971,6 +8971,9 @@ impl ThreadView {
             };
 
         let body = v_flex()
+            .when_some(tool_call.parent_tool_call_id.as_ref(), |this, parent| {
+                this.child(Label::new(format!("Nested tool · {}", parent)).size(LabelSize::XSmall).color(Color::Muted))
+            })
             .map(|this| {
                 if is_terminal_tool {
                     this.child(self.render_collapsible_command(

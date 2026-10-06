@@ -47,7 +47,12 @@ export function createPreview(cwd: string, storage: string, sessionId: string, c
   async function observe(path: string, signal?: AbortSignal) {
     const canonical = await workspacePath(cwd, path, true);
     if (purpose === 'shell') {
-      const response = await client.request<{content:string;disk:string|null;buffer:string|null}>("_eido/fs/snapshot", {sessionId,path:canonical}, {cancellationSignal:signal});
+      const response = await client.request<{content:string;disk:string|null;buffer:string|null}>("_eido/fs/snapshot", {sessionId,path:canonical}, {cancellationSignal:signal})
+        .catch(error => {
+          signal?.throwIfAborted();
+          const detail = typeof error?.data === 'string' ? error.data : error instanceof Error ? error.message : 'Snapshot unavailable';
+          throw new Error(`Cannot capture ${path}: ${detail}. Select the complete files needed by this command, use dependencies for installed assets, or files: [] for a command requiring no workspace inputs.`);
+        });
       const content = Buffer.from(response.content, 'base64');
       if (content.toString('base64') !== response.content) throw new Error('Invalid native file snapshot.');
       signal?.throwIfAborted();
@@ -233,7 +238,7 @@ export function createPreview(cwd: string, storage: string, sessionId: string, c
       }
       run.dependencies = await captureDependencies(root, params.dependencies ?? [], join(run.directory, "files"), files.map(file => file.path), signal);
       run.fingerprint = hash(JSON.stringify({ entry, files: files.map(({path, hash}) => ({path, hash})), dependencies: run.dependencies, commands: run.commands, server: run.server }));
-      await writeFile(join(run.directory, "manifest.json"), JSON.stringify({ ...run, sessionId, piVersion: "1.0.2" }, null, 2), { mode: 0o600 });
+      await writeFile(join(run.directory, "manifest.json"), JSON.stringify({ ...run, sessionId, piVersion: "1.0.4" }, null, 2), { mode: 0o600 });
       // Recheck after capture. Multi-file reads are sequential, not an atomic editor transaction.
       const captured = await freshness(run, signal);
       if (captured.state !== "current") throw new Error("Inputs changed during capture. Read the files and start a new preview.");
@@ -307,7 +312,10 @@ export function createPreview(cwd: string, storage: string, sessionId: string, c
     const run = active;
     if (!run?.url || run.stopped || !["mcp__eido_browser__browser_open", "mcp__eido_browser__browser_snapshot"].includes(event.toolName)) return;
     const observed = event.content.filter(part => part.type === "text").map(part => part.text).join("\n");
-    const observedUrl = observed.match(/^url: (.+)$/m)?.[1];
+    let observedUrl = observed.match(/^url: (.+)$/m)?.[1];
+    if (!observedUrl) {
+      try { observedUrl = JSON.parse(observed).url; } catch { /* legacy text snapshot */ }
+    }
     if (!observedUrl) return;
     let matches = false;
     try {

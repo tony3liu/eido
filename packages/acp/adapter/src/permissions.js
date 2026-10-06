@@ -28,7 +28,7 @@ export function installPermissionWrapper(session, host) {
                         toolCallId: event.toolCallId,
                         title: toolName,
                         kind: mapKind(toolName),
-                        _meta: { toolName },
+                        _meta: { toolName, ...(event.parentToolCallId ? {parentToolCallId:event.parentToolCallId} : {}) },
                     },
                     options: [
                         { optionId: "allow_always", name: `Always allow ${toolName}`, kind: "allow_always" },

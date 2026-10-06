@@ -16,13 +16,14 @@ export function browserLifecycle(session: AgentSession) {
       closing = (async () => {
         const name = "mcp__eido_browser__browser_close";
         const info = session.getAllTools().find(tool => tool.name === name);
-        const tool = session.agent.state.tools.find(tool => tool.name === name);
+        const tool = session.getToolDefinition(name);
         if (!tool || info?.sourceInfo.path !== "<inline:agentprism-pi-acp-mcp>") {
           throw new Error("The test browser cleanup tool is unavailable.");
         }
         // Invoke the existing runtime tool, after model tools settle. Cleanup is
         // unconditional, so it must not ask the model or enter approval hooks.
-        await tool.execute(`eido-cleanup-${randomUUID()}`, {}, AbortSignal.timeout(5000));
+        const result = await tool.execute(`eido-cleanup-${randomUUID()}`, {}, AbortSignal.timeout(5000), undefined, {} as Parameters<typeof tool.execute>[4]);
+        if (result.isError) throw new Error('The task browser did not confirm cleanup.');
         used = false;
       })().finally(() => { closing = undefined; });
       return closing;

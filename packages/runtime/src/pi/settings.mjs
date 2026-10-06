@@ -4,6 +4,7 @@ import { dirname, join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { pathToFileURL } from "node:url";
 import { browserCredentialId, browserDecisionSettings } from "../browser/config.mjs";
+import {computerSettings} from '../computer.mjs';
 import {runtimeSettings, mergeRuntimeSettings, modelSettings, mergeModelSettings, PiRuntimeSettingsError} from './runtime-settings.mjs';
 import {httpProxyStatus, mergeHttpProxy, PiHttpSettingsError} from './http-settings.mjs';
 
@@ -19,7 +20,7 @@ const { ModelConfig } = await import(new URL("core/model-config.js", piEntry).hr
 const { getSupportedThinkingLevels } = await import(pathToFileURL(join(root, "packages/acp/node_modules/@earendil-works/pi-ai/dist/index.js")).href);
 const manifest = JSON.parse(await readFile(new URL("../package.json", piEntry), "utf8"));
 export const bundledVersion = manifest.version;
-if (bundledVersion !== "1.0.2") throw new PiConfigError("Eido requires bundled pi 1.0.2. Run setup:acp.");
+if (bundledVersion !== "1.0.4") throw new PiConfigError("Eido requires bundled pi 1.0.4. Run setup:acp.");
 
 async function readJson(path, fallback = {}) {
   try { return JSON.parse(await readFile(path, "utf8")); }
@@ -92,6 +93,8 @@ export function createPiSettings(directory = piDirectory(root), sourceDirectory 
       httpProxy: httpProxyStatus(manager.getGlobalSettings()),
       fullAccess: (await readJson(join(directory, "settings.json"))).eido?.fullAccess === true,
       browserDecision: await browserDecisionSettings(directory),
+      computerUse: await computerSettings(directory),
+      computerUseRevision: (await readJson(join(directory, 'settings.json'))).eido?.computerUse ?? null,
       providers, update: await readJson(join(directory, "pi-update.json"), null) };
   }
 
@@ -124,7 +127,7 @@ export function createPiSettings(directory = piDirectory(root), sourceDirectory 
     } else if (operation === "tool-defaults") {
       const selected = request.tools;
       if (selected !== null && (!Array.isArray(selected) || selected.length > 256
-        || selected.some(name => typeof name !== 'string' || !/^[+-]?[A-Za-z0-9_][A-Za-z0-9_.-]{0,255}$/.test(name)))) {
+        || selected.some(name => typeof name !== 'string' || !/^[+-]?[A-Za-z0-9_*][A-Za-z0-9_.*-]{0,255}$/.test(name)))) {
         throw new PiConfigError('Enter comma-separated tool names, optional + or - prefixes, or [] for no default file tools.');
       }
       new FileSettingsStorage(directory, directory).withLock('global', current => {
@@ -134,6 +137,17 @@ export function createPiSettings(directory = piDirectory(root), sourceDirectory 
         }
         if (selected === null) delete value.defaultTools;
         else value.defaultTools = selected;
+        return JSON.stringify(value, null, 2) + '\n';
+      });
+      await chmod(join(directory, 'settings.json'), 0o600);
+    } else if (operation === 'computer-use') {
+      if (typeof request.enabled !== 'boolean' || typeof request.path !== 'string') throw new PiConfigError('Choose enabled or disabled and a Cua Driver executable path.');
+      const path = request.path.trim();
+      if (path && (!path.startsWith('/') || path.includes('\0'))) throw new PiConfigError('Enter an absolute Cua Driver executable path, or leave blank for automatic discovery.');
+      new FileSettingsStorage(directory, directory).withLock('global', current => {
+        const value = current ? JSON.parse(current) : {};
+        if (JSON.stringify(value.eido?.computerUse ?? null) !== JSON.stringify(request.expected ?? null)) throw new PiConfigError('Computer Use configuration changed. Refresh before saving.');
+        value.eido = {...value.eido, computerUse: {enabled: request.enabled, path}};
         return JSON.stringify(value, null, 2) + '\n';
       });
       await chmod(join(directory, 'settings.json'), 0o600);

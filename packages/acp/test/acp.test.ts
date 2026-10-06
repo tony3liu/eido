@@ -107,7 +107,7 @@ test("existing ACP adapter retains sessions and delegates edits to editor buffer
     const initialized = await connection.agent.request(methods.agent.initialize, {protocolVersion:1,clientCapabilities:{fs:{readTextFile:true,writeTextFile:true}},clientInfo:{name:"eido-test",version:"0.0.1"}});
     assert.equal(initialized.protocolVersion,1);
     assert.equal(initialized.agentInfo?.name,"eido-pi");
-    assert.equal(initialized.agentInfo?.version,"1.0.2");
+    assert.equal(initialized.agentInfo?.version,"1.0.4");
     const a = await connection.agent.request(methods.agent.session.new,{cwd,mcpServers:[]});
     const prompt = (sessionId: string,text: string) => connection.agent.request(methods.agent.session.prompt,{sessionId,prompt:[{type:"text",text}]});
     assert.equal((await prompt(a.sessionId,"Remember apricot. Read and edit sample.ts using the editor tools.")).stopReason,"end_turn");

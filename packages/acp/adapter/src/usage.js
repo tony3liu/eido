@@ -9,7 +9,7 @@ export function terminalAssistant(messages) {
     return assistantMessages(messages).at(-1);
 }
 export function promptUsage(messages) {
-    const assistants = assistantMessages(messages);
+    const assistants = messages.filter(message => (message.role === "assistant" || message.role === "toolResult") && message.usage);
     const sum = (key) => assistants.reduce((total, message) => total + (message.usage[key] ?? 0), 0);
     const usage = {
         inputTokens: sum("input"),

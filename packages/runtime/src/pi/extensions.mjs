@@ -1,6 +1,7 @@
 import {piDirectory, runtimeRoot as root, bundledPiEntry} from '../paths.mjs';
 import {validateMcp, credentials, usesOAuth} from '../mcp/config.mjs';
 import {readMcpStatus, mcpRevision} from '../mcp/status.mjs';
+import {computerSettings} from '../computer.mjs';
 export {validateMcp, configuredMcp} from '../mcp/config.mjs';
 import { mkdir, readFile, writeFile, rename, rm, readdir } from "node:fs/promises";
 import { createRequire } from "node:module";
@@ -77,7 +78,9 @@ export function createExtensionCenter(directory = piDirectory(root), fetcher = f
     const mcp = validateMcp(await readJson(join(directory, "mcp.json"), {mcpServers: {}}));
     const active = await activeRuntimes();
     const running = await readMcpStatus(directory, active);
+    const computer = await computerSettings(directory);
     const servers = [{name: "eido_browser", enabled: true, builtin: true, detail: "Built-in browser automation"},
+      {name: 'eido_computer', enabled: computer.enabled && !!computer.executable, builtin: true, detail: computer.message},
       ...Object.entries(mcp.mcpServers).map(([name, s]) => ({name, enabled: s.enabled !== false, builtin: false, oauth: usesOAuth(s), signedIn: usesOAuth(s) && !!credentials(directory).tokens(name, s.url), detail: s.command ? "Local process" : s.type === "sse" ? "SSE server" : "HTTP server"}))];
     for (const state of running) if (!servers.some(server => server.name === state.name)) {
       servers.push({name:state.name, enabled:true, builtin:false, runtimeOnly:true,

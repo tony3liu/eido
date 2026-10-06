@@ -326,7 +326,7 @@ fn decode(value: Option<&str>) -> Result<Option<Vec<u8>>> {
 
 async fn disk_bytes(fs: &dyn Fs, path: &Path) -> Result<Option<Vec<u8>>> {
     let Some(metadata) = fs.metadata(path).await? else {return Ok(None);};
-    ensure!(!metadata.is_dir && !metadata.is_symlink && !metadata.is_fifo && metadata.len <= MAX_BYTES as u64, "File type or size is not supported for review");
+    ensure!(!metadata.is_dir && !metadata.is_symlink && !metadata.is_fifo && metadata.len <= MAX_BYTES as u64, "File is not a regular file or exceeds the 1 MiB capture/review limit");
     Ok(Some(fs.load_bytes(path).await?))
 }
 

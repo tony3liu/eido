@@ -35,6 +35,7 @@ pub(crate) struct PiSettingsView {
     jev_url: Entity<Editor>,
     jev_model: Entity<Editor>,
     jev_key: Entity<Editor>,
+    cua_path: Entity<Editor>,
     busy: bool,
     notice: String,
     failed: bool,
@@ -64,6 +65,7 @@ impl PiSettingsView {
             jev_url: input("Jev System One API endpoint", false, window, cx),
             jev_model: input("Jev model ID", false, window, cx),
             jev_key: input("API key or $ENV_VAR reference; leave blank to keep", true, window, cx),
+            cua_path: input("Absolute cua-driver path; leave blank for automatic discovery", false, window, cx),
             custom_api: "openai-completions".into(), busy: false, notice: String::new(), failed: false,
         };
         view.request(json!({"operation":"status"}), window, cx);
@@ -135,6 +137,9 @@ impl PiSettingsView {
                             view.jev_url.update(cx, |editor, cx| editor.set_text(data["browserDecision"]["apiUrl"].as_str().unwrap_or_default(), window, cx));
                             view.jev_model.update(cx, |editor, cx| editor.set_text(data["browserDecision"]["model"].as_str().unwrap_or_default(), window, cx));
                         }
+                        if view.data.is_none() || matches!(operation.as_str(), "status" | "computer-use") {
+                            view.cua_path.update(cx, |editor, cx| editor.set_text(data["computerUse"]["path"].as_str().unwrap_or_default(), window, cx));
+                        }
                         view.data = Some(data);
                         if matches!(operation.as_str(), "status" | "import") { view.model_settings.clear(); }
                         if operation == "model-settings" { view.model_settings.remove(&saved_model); }
@@ -152,6 +157,7 @@ impl PiSettingsView {
                             "runtime" => "Runtime settings saved. Use /reload in an existing task to apply them.".into(),
                             "http-proxy" => "HTTP proxy saved. Restart Eido to apply this change to all tasks.".into(),
                             "browser-decision" => "Browser decision settings saved. New tasks use this configuration.".into(),
+                            "computer-use" => "Computer Use configuration saved. New tasks use this configuration.".into(),
                             "custom-model" => "Model saved. Select it above to make it the default.".into(),
                             _ => "pi credentials updated.".into(),
                         };
@@ -403,7 +409,7 @@ impl Render for PiSettingsView {
         let model_name = self.models().iter().find(|m| m["id"].as_str() == Some(self.model.as_str())).and_then(|m| m["name"].as_str()).unwrap_or("Select a model").to_owned();
         let credential = self.selected_provider().and_then(|p| p["credential"].as_str()).unwrap_or("none");
         let auth_label = match credential { "oauth" => "OAuth configured", "api_key" => "API key configured", "none" => "No credentials configured", _ => "Environment or custom credentials" };
-        let version = self.data.as_ref().and_then(|d| d["version"].as_str()).unwrap_or("1.0.2");
+        let version = self.data.as_ref().and_then(|d| d["version"].as_str()).unwrap_or("1.0.4");
         let update = self.data.as_ref().map(|d| &d["update"]);
         let update_label = match update.and_then(|u| u["status"].as_str()) {
             Some("up_to_date") => "You are using the latest stable pi release.".to_owned(),
@@ -494,6 +500,18 @@ impl Render for PiSettingsView {
                     .child(Button::new("pi-remove-jev-key", "Remove API Key").disabled(self.busy)
                         .on_click(cx.listener(|this, _, window, cx| this.request(json!({"operation":"browser-decision",
                             "apiUrl":this.jev_url.read(cx).text(cx), "model":this.jev_model.read(cx).text(cx), "removeKey":true}), window, cx))))))
+            .child(v_flex().gap_3().pt_4().border_t_1().border_color(cx.theme().colors().border_variant)
+                .child(Label::new("Computer Use · Cua Driver"))
+                .child(Label::new(self.data.as_ref().and_then(|d| d["computerUse"]["message"].as_str()).unwrap_or("Checking Cua Driver...").to_owned()).size(LabelSize::Small).color(Color::Muted))
+                .child(field("Driver Executable", text_field(self.cua_path.clone(), cx)))
+                .child(h_flex().gap_2()
+                    .children([true, false].into_iter().map(|enabled| {
+                        Button::new(if enabled { "pi-enable-cua" } else { "pi-disable-cua" }, if enabled { "Enable Computer Use" } else { "Disable Computer Use" })
+                            .disabled(self.busy)
+                            .on_click(cx.listener(move |this, _, window, cx| this.request(json!({"operation":"computer-use", "enabled":enabled,
+                                "path":this.cua_path.read(cx).text(cx), "expected":this.data.as_ref().map(|d| &d["computerUseRevision"])}), window, cx)))
+                    })))
+                .child(Label::new("Install Cua Driver and grant its macOS permissions before use. View its connection and tools in Extensions.").size(LabelSize::Small).color(Color::Muted)))
             .child(v_flex().gap_2().pt_4().border_t_1().border_color(cx.theme().colors().border_variant)
                 .child(Label::new("pi Updates"))
                 .child(Label::new(update_label).size(LabelSize::Small).color(Color::Muted))

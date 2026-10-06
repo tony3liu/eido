@@ -12,6 +12,18 @@ spec.loader.exec_module(package)
 
 
 class ProductionPackageTests(unittest.TestCase):
+    def test_filtered_playwright_cli_keeps_its_production_mcp_modules(self):
+        with tempfile.TemporaryDirectory(prefix='eido-package-playwright-') as directory:
+            root = Path(directory)
+            for name in ('playwright', 'playwright-core'):
+                package.copy_tree(package.ROOT / 'node_modules' / name, root / 'node_modules' / name,
+                                  package.dependency_filter, Path('node_modules') / name)
+            result = subprocess.run([shutil.which('node'), root / 'node_modules/playwright/cli.js', '--version'],
+                                    capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn('Version', result.stdout)
+            self.assertFalse(package.dependency_filter(Path('node_modules/playwright/lib/mcp/test/fixtures/private.js')))
+
     def test_runtime_modules_are_complete_and_development_scripts_are_excluded(self):
         expected = set()
         for root in package.RUNTIME_MODULE_ROOTS:

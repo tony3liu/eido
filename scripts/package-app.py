@@ -15,12 +15,14 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 
 ROOT = Path(__file__).resolve().parent.parent
 RUNTIME_FILES = (
     'packages/runtime/package.json',
     'packages/runtime/src/lifecycle.mjs', 'packages/runtime/src/paths.mjs',
-    'packages/runtime/src/browser/config.mjs',
+    'packages/runtime/src/computer.mjs',
+    'packages/runtime/src/browser/config.mjs', 'packages/runtime/src/browser/server.mjs',
     'packages/runtime/src/pi/settings.mjs', 'packages/runtime/src/pi/extensions.mjs',
     'packages/runtime/src/pi/http-settings.mjs', 'packages/runtime/src/pi/runtime-settings.mjs',
     'packages/runtime/src/mcp/config.mjs', 'packages/runtime/src/mcp/status.mjs',
@@ -42,6 +44,10 @@ PRODUCTION_TEST_ENTRYPOINTS = (
     'npm/lib/commands/test.js', 'npm/lib/commands/install-test.js',
     'npm/lib/commands/install-ci-test.js',
     'node_modules/playwright/test.js', 'node_modules/playwright/test.mjs',
+    'node_modules/playwright/lib/mcp/test/testBackend.js',
+    'node_modules/playwright/lib/mcp/test/testContext.js',
+    'node_modules/playwright/lib/mcp/test/testTool.js',
+    'node_modules/playwright/lib/mcp/test/testTools.js',
 )
 
 
@@ -73,7 +79,7 @@ def digest(file):
 
 
 def dependency_filter(path):
-    if any(part in EXCLUDED for part in path.parts) or is_test_payload(path):
+    if has_excluded_part(path) or is_test_payload(path):
         return False
     if LEGAL.match(path.name):
         return True
@@ -87,10 +93,17 @@ def dependency_filter(path):
     return True
 
 
+def has_excluded_part(path):
+    parts = path.parts
+    return any(part in EXCLUDED and not (part == 'test' and
+        parts[max(0, i - 4):i + 1] == ('node_modules', 'playwright', 'lib', 'mcp', 'test'))
+        for i, part in enumerate(parts))
+
+
 def copy_tree(source, target, accept=lambda path: True, prefix=Path(), skip_modules=False):
     for current, directories, files in os.walk(source, followlinks=False):
         relative = Path(current).relative_to(source)
-        directories[:] = [name for name in directories if name not in EXCLUDED and not name.startswith('.')
+        directories[:] = [name for name in directories if (name not in EXCLUDED or name == 'test' and (prefix / relative / name).as_posix() == 'node_modules/playwright/lib/mcp/test') and not name.startswith('.')
                           and not (skip_modules and name == 'node_modules')]
         for name in files:
             local = relative / name
@@ -149,7 +162,7 @@ def audit(bundle):
         if file.is_dir():
             continue
         local = file.relative_to(bundle)
-        if any(part in EXCLUDED for part in local.parts) or is_test_payload(local):
+        if has_excluded_part(local) or is_test_payload(local):
             raise RuntimeError(f'Non-production file in application: {local}')
         if file.is_symlink():
             if not file.resolve().is_relative_to(bundle.resolve()) or not file.exists():
@@ -239,7 +252,7 @@ def build():
         if file.is_file() and LEGAL.match(file.name):
             copy_file(file, resources / 'licenses/zed' / file.name)
     version = json.loads((ROOT / 'package.json').read_text())['version']
-    (runtime / 'eido-runtime.json').write_text(json.dumps({'version': 1, 'pi': '1.0.2', 'acp': '0.9.4',
+    (runtime / 'eido-runtime.json').write_text(json.dumps({'version': 1, 'pi': '1.0.4', 'acp': '0.9.4',
         'productVersion': version, 'nativeProfile': 'dev', 'testFeatures': False,
         'productionPackages': count, 'sourceFingerprint': record['sourceFingerprint']}))
     with (contents / 'Info.plist').open('wb') as stream:
@@ -252,6 +265,13 @@ def build():
     # Local ad-hoc signature; this is not an Apple-notarized distribution.
     run(['codesign', '--force', '--deep', '--sign', '-', bundle])
     run(['codesign', '--verify', '--deep', '--strict', bundle])
+    # Exercise the native bundle bootstrap too: ACP smoke checks alone cannot
+    # detect a native manifest/version mismatch that prevents the app opening.
+    with tempfile.TemporaryDirectory(prefix='eido-package-startup-') as temporary:
+        env = {**os.environ, 'EIDO_USER_DATA_DIR': temporary,
+               'EIDO_PI_CONFIG_DIR': str(Path(temporary) / 'pi')}
+        subprocess.run([str(contents / 'MacOS/eido'), '--help'],
+                       env=env, check=True, timeout=30)
     files = audit(bundle)
     (stage / 'production-manifest.json').write_text(json.dumps({'files': files}, indent=2))
     print(f'Prepared {bundle}: {len(files)} production files; no test/dev payloads.')
