@@ -167,7 +167,7 @@ test("pi starts a preview, discovers failure, edits buffers and rechecks a new c
       .flatMap(text => text.trim().split('\n').map(line => JSON.parse(line)))
       .filter(entry => entry.type === 'message' && entry.message.role === 'toolResult' && entry.message.details?.eidoVerification);
     assert.ok(messages.some(entry => entry.message.details.eidoVerification.runId === repaired.runId));
-    const {replayEntry} = await import('../node_modules/@automatalabs/pi-acp/dist/replay.js');
+    const {replayEntry} = await import('../adapter/src/replay.js');
     assert.ok(messages.flatMap(entry => replayEntry(entry)).some(update =>
       update.sessionUpdate === "tool_call_update" && (update.rawOutput as {eidoVerification?: {runId?: string}})?.eidoVerification?.runId === repaired.runId));
     h.buffers.set(join(h.cwd, "index.html"), source(3));

@@ -1,3 +1,4 @@
+import {appendEidoEntry} from './session-persistence.ts';
 import {mkdir, mkdtemp, readFile, rm, stat, writeFile} from "node:fs/promises";
 import {join, resolve} from "node:path";
 import {SessionManager, type AgentSession, type ExtensionUIContext} from "@earendil-works/pi-coding-agent";
@@ -130,7 +131,7 @@ export async function sessionCommand(pi: AgentSession, client: AgentContext, ui:
       } else {
         const copy = SessionManager.create(cwd,directory);
         // An empty fork must still have a journal discoverable by session/load.
-        copy.appendCustomEntry('eido.command.v1',{command:'/fork',output:'Forked before the first message.',status:'completed'});
+        appendEidoEntry(copy,'eido.command.v1',{command:'/fork',output:'Forked before the first message.',status:'completed'});
         createdPath = copy.getSessionFile();
       }
     }

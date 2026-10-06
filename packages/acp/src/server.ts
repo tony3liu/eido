@@ -5,8 +5,8 @@ import {refreshPiNetwork} from './pi-network.ts';
 import {preparePromptContent} from './prompt-content.ts';
 import {createDeliveryLedger, DELIVERY} from './delivery.ts';
 import {nativeUiAction} from './native-ui.ts';
-import { runAcp } from "@automatalabs/pi-acp";
-import { createAgentSession, ModelRuntime } from "@earendil-works/pi-coding-agent";
+import { runAcp } from "../adapter/src/lib.js";
+import { createAgentSession, ModelRuntime, type AgentSession } from "@earendil-works/pi-coding-agent";
 import { join } from "node:path";
 import type { AgentContext, McpServer, Stream } from "@agentclientprotocol/sdk";
 import { editorTools } from "./editor-tools.ts";
@@ -41,6 +41,7 @@ export async function startEidoAgent(agentDir: string, sessionDir: string, strea
       createAgentSession: async options => {
         if (!options.cwd || !options.sessionManager) throw new Error("Missing ACP session context.");
         const client = await clientReady;
+        let liveSession:AgentSession|undefined;
         const browserDecision = await browserDecisionEnvironment(agentDir);
         const preview = createPreview(options.cwd, join(agentDir, "previews"), options.sessionManager.getSessionId(), client);
         const shell = createShell(options.cwd, join(agentDir, "commands"), options.sessionManager.getSessionId(), client);
@@ -57,7 +58,7 @@ export async function startEidoAgent(agentDir: string, sessionDir: string, strea
           const getExtensions = options.resourceLoader.getExtensions.bind(options.resourceLoader);
           options.resourceLoader.getExtensions = () => {
             const loaded = getExtensions();
-            return { ...loaded, extensions: [...loaded.extensions, preview.extension, shell.extension, accessPolicy(agentDir)] };
+            return { ...loaded, extensions: [...loaded.extensions, preview.extension, shell.extension, accessPolicy(agentDir,()=>liveSession,name=>browser.track(name))] };
           };
           const append = options.resourceLoader.getAppendSystemPrompt.bind(options.resourceLoader);
           options.resourceLoader.getAppendSystemPrompt = () => [...append(),
@@ -75,6 +76,7 @@ export async function startEidoAgent(agentDir: string, sessionDir: string, strea
             .map(tool => ({...tool, defaultActive: false})), preview.tool, shell.tool,
             ...(subagents.enabled ? [subagents.tool(options.sessionManager.getSessionId(), client)] : [])],
         });
+        liveSession=created.session;
         // pi reads most runtime settings dynamically. These Agent properties
         // are copied at creation, so refresh them at the same reload boundary.
         const settings = created.session.settingsManager;
@@ -125,14 +127,6 @@ export async function startEidoAgent(agentDir: string, sessionDir: string, strea
         created.session.reload = async (...args) => {
           await reload(...args);
           toolPolicy.changed();
-        };
-        const beforeToolCall = created.session.agent.beforeToolCall;
-        created.session.agent.beforeToolCall = async (context, signal) => {
-          if (!toolPolicy.allows(context.toolCall.name)) {
-            return { block: true, reason: "This tool is not enabled for this agent." };
-          }
-          browser.track(context.toolCall.name);
-          return beforeToolCall?.(context, signal);
         };
         installPiCommands(created.session, client, supportsForms, agentDir, supportsNativeUi);
         return created;

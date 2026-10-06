@@ -1,3 +1,4 @@
+import {appendEidoEntry} from './session-persistence.ts';
 import { randomUUID } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { readFile, readdir } from "node:fs/promises";
@@ -5,7 +6,7 @@ import { join } from "node:path";
 import { Type } from "typebox";
 import { RequestError, type AgentContext, type McpServer, type SessionUpdate, type SessionConfigOption, type ContentBlock } from "@agentclientprotocol/sdk";
 import { defineTool, type AgentSession, type SessionEntry } from "@earendil-works/pi-coding-agent";
-import type { runAcp } from "@automatalabs/pi-acp";
+import type { runAcp } from "../adapter/src/lib.js";
 import { discoverAgentRoles, type AgentRole } from "./agent-roles.ts";
 
 export const SUBAGENT_RECORD = "eido.subagent.v1";
@@ -56,7 +57,7 @@ export function createSubagents(agentDir: string, sessionDir: string) {
   };
   const context = <T>(params: T, client: AgentContext, signal = new AbortController().signal) => ({params, client, signal, requestId: randomUUID()});
   const publish = (parent: Session, update: SessionUpdate) => {
-    parent.pi.sessionManager.appendCustomEntry(SUBAGENT_EVENT, {update});
+    appendEidoEntry(parent.pi.sessionManager,SUBAGENT_EVENT, {update});
     parent.host?.enqueue(update);
   };
   const updateRow = (parent: Session, row: Row) => {
@@ -98,7 +99,7 @@ export function createSubagents(agentDir: string, sessionDir: string) {
       if (relation) {
         relation.childSessionId = pi.sessionId;
         relations.set(pi.sessionId, relation);
-        if (opening.getStore()) pi.sessionManager.appendCustomEntry(SUBAGENT_RECORD, {...relation, kind: "child"});
+        if (opening.getStore()) appendEidoEntry(pi.sessionManager,SUBAGENT_RECORD, {...relation, kind: "child"});
       }
       const session: Session = {pi};
       sessions.set(pi.sessionId, session);
@@ -169,7 +170,7 @@ export function createSubagents(agentDir: string, sessionDir: string) {
               child.pi.setThinkingLevel(row.role.thinking ?? parent.pi.thinkingLevel);
               child.pi.setSessionName(relation.title);
               row.model = model?.name || model?.id;
-              parent.pi.sessionManager.appendCustomEntry(SUBAGENT_RECORD, {...relation, kind: "parent"});
+              appendEidoEntry(parent.pi.sessionManager,SUBAGENT_RECORD, {...relation, kind: "parent"});
               updateRow(parent, row); summary(); await parent.host!.drain();
               signal?.throwIfAborted(); awaitingPrompts.add(childId);
               const task = previous === undefined ? row.job.task : row.job.task.includes("{previous}") ? row.job.task.replaceAll("{previous}", previous) : `${row.job.task}\n\nPrevious agent result:\n${previous}`;
@@ -265,8 +266,8 @@ export function createSubagents(agentDir: string, sessionDir: string) {
           const row: Row = {job: {task: "User follow-up", title: relation.title}, role: relation.role ?? (await discoverAgentRoles(agentDir)).roles[0]!, id: relation.toolCallId, state: "Running", relation, started: Date.now(), model: session.pi.model?.name || session.pi.model?.id};
           running.set(ctx.params.sessionId, row);
           const parent = sessions.get(relation.parentSessionId);
-          session.pi.sessionManager.appendCustomEntry(SUBAGENT_RECORD, {...relation, kind: "child"});
-          parent?.pi.sessionManager.appendCustomEntry(SUBAGENT_RECORD, {...relation, kind: "parent"});
+          appendEidoEntry(session.pi.sessionManager,SUBAGENT_RECORD, {...relation, kind: "child"});
+          if(parent)appendEidoEntry(parent.pi.sessionManager,SUBAGENT_RECORD, {...relation, kind: "parent"});
           if (parent) updateRow(parent, row);
           const previousEntries = new Set(session.pi.sessionManager.getEntries().map(entry => entry.id));
           const command = describeInput(ctx.params.prompt).trimStart().startsWith("/");

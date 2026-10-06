@@ -28,6 +28,27 @@ def digest(path):
     return hasher.hexdigest()
 
 
+def source_files():
+    root = ROOT / 'native/overlay'
+    files = []
+    for path in root.rglob('*'):
+        if path.is_symlink():
+            raise RuntimeError('Native source links are not supported: ' + str(path))
+        if path.is_file() and 'target' not in path.relative_to(root).parts:
+            files.append(path.relative_to(root).as_posix())
+    return sorted(files)
+
+
+def removed_paths():
+    values = json.loads((ROOT / 'native/removed-paths.json').read_text())
+    if not isinstance(values, list):
+        raise RuntimeError('Native removals must be a list of relative file paths')
+    for value in values:
+        if not isinstance(value, str) or not value or Path(value).is_absolute() or any(part in ('', '.', '..') for part in value.split('/')):
+            raise RuntimeError('Invalid native removal path')
+    return sorted(set(values))
+
+
 def prepare():
     manifest = json.loads(MANIFEST.read_text())
     archive = LOCAL / 'downloads' / manifest['archiveName']
@@ -39,19 +60,20 @@ def prepare():
     previous_state = json.loads(STATE.read_text()) if STATE.exists() else {}
     previous = previous_state.get('files', previous_state)
     overlay = ROOT / 'native' / 'overlay'
-    patch = ROOT / 'native' / 'patches' / 'zed.patch'
-    patched_paths = [line.split(' b/', 1)[1] for line in patch.read_text().splitlines() if line.startswith('diff --git a/')]
-    overlay_paths = [str(path.relative_to(overlay)) for path in overlay.rglob('*') if path.is_file() and 'target' not in path.parts and path.name != 'Cargo.lock']
-    changed_paths = list(dict.fromkeys(patched_paths + overlay_paths + list(previous)))
+    removed = removed_paths()
+    overlay_paths = source_files()
+    if set(removed).intersection(overlay_paths):
+        raise RuntimeError('A native source cannot be both maintained and removed')
+    changed_paths = list(dict.fromkeys(removed + overlay_paths + list(previous)))
     with tempfile.TemporaryDirectory(prefix='eido-native-', dir=LOCAL) as temporary:
         clean = Path(temporary)
         subprocess.run(['tar', '-xzf', str(archive), '-C', str(clean)], check=True)
         baseline = next(clean.iterdir())
         original_hashes = {relative: digest(baseline / relative) if (baseline / relative).is_file() else None for relative in changed_paths}
-        environment = dict(os.environ, GIT_CEILING_DIRECTORIES=str(LOCAL))
-        if patch.read_text().strip():
-            subprocess.run(['git', 'apply', '--check', str(patch)], cwd=baseline, env=environment, check=True)
-            subprocess.run(['git', 'apply', str(patch)], cwd=baseline, env=environment, check=True)
+        for relative in removed:
+            target = baseline / relative
+            if target.is_file():
+                target.unlink()
         for relative in changed_paths:
             current = SOURCE / relative
             pristine = overlay / relative if relative in overlay_paths else baseline / relative
@@ -73,7 +95,7 @@ def prepare():
                     shutil.copy2(desired, destination)
             elif destination.exists():
                 destination.unlink()
-    STATE.write_text(json.dumps({'files': {relative: digest(SOURCE / relative) if (SOURCE / relative).is_file() else None for relative in changed_paths}, 'patchSha256': digest(patch), 'upstreamSha256': digest(MANIFEST)}, indent=2))
+    STATE.write_text(json.dumps({'files': {relative: digest(SOURCE / relative) if (SOURCE / relative).is_file() else None for relative in changed_paths}, 'removedSha256': digest(ROOT / 'native/removed-paths.json'), 'upstreamSha256': digest(MANIFEST), 'maintainedFiles': overlay_paths}, indent=2))
     print('Prepared Eido on Zed', manifest['tag'], manifest['commit'])
 
 
@@ -134,13 +156,15 @@ def native_assets():
 
 def source_fingerprint():
     prepared = json.loads(STATE.read_text())
-    if prepared.get('patchSha256') != digest(ROOT / 'native/patches/zed.patch') or prepared.get('upstreamSha256') != digest(MANIFEST):
+    if prepared.get('removedSha256') != digest(ROOT / 'native/removed-paths.json') or prepared.get('upstreamSha256') != digest(MANIFEST):
         raise RuntimeError('Native inputs changed; run npm run native:prepare')
     state = prepared['files']
     overlay_root = ROOT / 'native/overlay'
-    for overlay in overlay_root.rglob('*'):
-        if overlay.is_file() and 'target' not in overlay.parts and overlay.name != 'Cargo.lock' and str(overlay.relative_to(overlay_root)) not in state:
-            raise RuntimeError('New overlay files found; run npm run native:prepare')
+    for relative in source_files():
+        if relative not in state:
+            raise RuntimeError('New native source files found; run npm run native:prepare')
+    if prepared.get('maintainedFiles') != source_files():
+        raise RuntimeError('Native source files changed; run npm run native:prepare')
     for relative, expected in state.items():
         source = SOURCE / relative
         if expected is None:
@@ -152,7 +176,7 @@ def source_fingerprint():
         overlay = ROOT / 'native/overlay' / relative
         if overlay.exists() and digest(overlay) != expected:
             raise RuntimeError('Overlay changed; run npm run native:prepare before compiling')
-    inputs = {'files': state, 'manifest': digest(MANIFEST), 'patch': digest(ROOT / 'native/patches/zed.patch'), 'nativeAssets': digest(ROOT / 'native/assets.json'), 'buildFeatures': BUILD_FEATURES}
+    inputs = {'files': state, 'manifest': digest(MANIFEST), 'removed': digest(ROOT / 'native/removed-paths.json'), 'nativeAssets': digest(ROOT / 'native/assets.json'), 'buildFeatures': BUILD_FEATURES}
     return hashlib.sha256(json.dumps(inputs, sort_keys=True).encode()).hexdigest()
 
 
@@ -174,9 +198,8 @@ def main():
     env['LK_CUSTOM_WEBRTC'] = str(native_assets())
     env['LK_DEBUG_WEBRTC'] = 'false'
     if command == 'run':
-        if not (ROOT / 'packages/acp/node_modules/@automatalabs/pi-acp/dist/replay.js').is_file():
+        if not (ROOT / 'packages/acp/node_modules/@earendil-works/pi-coding-agent/dist/index.js').is_file():
             raise RuntimeError('ACP dependencies are missing; run npm run setup:acp')
-        subprocess.run([env['EIDO_NODE'], str(ROOT / 'scripts/patch-acp.mjs')], check=True)
         record_path = LOCAL / 'native-build.json'
         if not record_path.exists() or json.loads(record_path.read_text())['sourceFingerprint'] != fingerprint:
             raise RuntimeError('No verified build for the current native source; run npm run native:build')

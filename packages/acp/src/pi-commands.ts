@@ -1,3 +1,4 @@
+import {appendEidoEntry} from './session-persistence.ts';
 import {PI_SHORTCUTS, type createPiShortcuts} from './pi-shortcuts.ts';
 import { methods, type AgentContext, type AvailableCommand, type SessionConfigOption, type SessionUpdate } from "@agentclientprotocol/sdk";
 import { resolveModelScopeWithDiagnostics, type AgentSession, type SessionEntry } from "@earendil-works/pi-coding-agent";
@@ -108,7 +109,7 @@ export function installPiCommands(pi: AgentSession, client: AgentContext, suppor
         const text = `Extension ${basename(error.extensionPath)} (${error.event}): ${error.error}`;
         if (ui) ui.notify(text, 'error');
         else {
-          pi.sessionManager.appendCustomEntry('eido.notice.v1', {text});
+          appendEidoEntry(pi.sessionManager,'eido.notice.v1', {text});
           const update:SessionUpdate = {sessionUpdate:'agent_message_chunk',content:{type:'text',text:`${text}\n\n`}};
           if (activeContext) activeContext.enqueue(update);
           else void client.notify(methods.client.session.update,{sessionId:pi.sessionId,update}).catch(error=>console.error('Extension error notification failed',error));
@@ -130,7 +131,7 @@ export function installPiCommands(pi: AgentSession, client: AgentContext, suppor
       const record = (output: string, status: "completed" | "failed" | "cancelled") => {
         // Custom entries are excluded from the model projection. Local command
         // history survives reload without creating fake user/assistant turns.
-        pi.sessionManager.appendCustomEntry(PI_COMMAND_RECORD, { command: text.trim(), output, status });
+        appendEidoEntry(pi.sessionManager,PI_COMMAND_RECORD, { command: text.trim(), output, status });
         context.enqueue({ sessionUpdate: "agent_message_chunk", content: {type: "text", text: output} });
       };
       try {

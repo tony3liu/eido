@@ -1,5 +1,5 @@
-import {connectDefaultMcpClient} from '../node_modules/@automatalabs/pi-acp/dist/mcp-bridge.js';
-import {realSleep, type PiAcpDeps} from '../node_modules/@automatalabs/pi-acp/dist/deps.js';
+import {connectDefaultMcpClient} from '../adapter/src/mcp-bridge.js';
+import {realSleep, type PiAcpDeps} from '../adapter/src/deps.js';
 import {authenticatedMcpFetch, MCP_FETCH, MCP_OPTIONS, registeredMcp} from '../../../scripts/pi-mcp.mjs';
 import {createMcpStatus, MCP_STATUS} from '../../../scripts/pi-mcp-status.mjs';
 

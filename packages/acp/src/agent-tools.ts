@@ -42,43 +42,73 @@ export function installAgentToolPolicy(session: AgentSession, selectors: string[
   const allTools = session.getAllTools.bind(session);
   let allowed = new Set<string>();
   let previous = new Map<string,string>();
+  const exposures = new WeakMap<ToolDefinition, ToolDefinition['exposure']>();
+  const pending = new Set<string>();
+  let defaults = new Set<string>();
+  let refreshing=false;
   type McpDefinition = ToolDefinition & {eidoMcpExposure?:string; eidoMcpAutoEnableCodemode?:boolean};
   const definition = (name:string) => session.getToolDefinition(name) as McpDefinition|undefined;
-  const refresh = (reset = false, requested = session.getActiveToolNames()) => {
-    const tools = allTools().filter(filter);
-    allowed = new Set(resolveAgentTools(selectors, tools, reset));
-    const indirect = tools.filter(tool => allowed.has(tool.name) && ['codemode','deferred'].includes(tool.exposure));
-    const automatic = new Set<string>();
-    for (const tool of indirect) {
-      const config = definition(tool.name);
-      const exposure = config?.eidoMcpExposure ?? tool.exposure;
-      if (exposure === 'codemode' && config?.eidoMcpAutoEnableCodemode !== false) automatic.add('codemode');
-      if (exposure === 'deferred') automatic.add('tool_search');
-    }
-    for (const name of automatic) {
-      if (tools.some(tool => tool.name === name && tool.sourceInfo.path === discovery.get(name))) allowed.add(name);
-      else automatic.delete(name);
-    }
-    const active = new Set(requested.filter(name => allowed.has(name)));
-    for (const tool of tools) {
-      if (!allowed.has(tool.name) || !['direct','model-only'].includes(tool.exposure)) continue;
-      // pi activates defaults and new extension registrations. Roles additionally
-      // activate their native tools, even when the parent's defaultTools is empty.
-      // Do not resurrect a tool a plugin disabled during the current session.
-      if (!selectors || !reset && ['direct','model-only'].includes(previous.get(tool.name) ?? '')) continue;
-      if (tool.sourceInfo.source === 'sdk' || selectors.includes(`tool:${tool.name}`)
-        || definition(tool.name)?.defaultActive !== false) active.add(tool.name);
-    }
-    for (const name of automatic) active.add(name);
-    previous = new Map(tools.map(tool => [tool.name, tool.exposure]));
-    session.setActiveToolsByName([...active]);
+  const readDefaults=()=>{
+    const next=new Set((session.settingsManager.getDefaultTools()??[])
+      .filter(name=>!name.startsWith('-')).map(name=>name.replace(/^\+/,'')));
+    for(const name of next)if(!defaults.has(name)&&!definition(name))pending.add(name);
+    defaults=next;
   };
-  const policy = {allows:(name:string) => allowed.has(name), changed:()=>refresh(),
-    registered:(names:string[])=>refresh(false, names), reset:()=>refresh(true)};
-  Object.defineProperty(session, Symbol.for('eido.pi.tools'), {value:policy});
-  // Keep registry ownership visible to ACP, but discovery cannot reveal tools
-  // that this role is not allowed to use.
-  session.getAllTools = () => allTools().map(tool => policy.allows(tool.name) ? tool : {...tool, exposure:'hidden'});
+  const refresh = (reset = false) => {
+    if(refreshing)return;
+    refreshing=true;
+    try {
+      const known=allTools();
+      // Tool definitions belong to the SDK/resource-loader inputs. Exposure is
+      // the public pi control for both model declarations and nested discovery.
+      for(const info of known) {
+        const tool=definition(info.name);if(!tool)continue;
+        if(exposures.has(tool))tool.exposure=exposures.get(tool);
+        else exposures.set(tool,tool.exposure);
+      }
+      const tools=allTools();
+      allowed=new Set(resolveAgentTools(selectors,tools.filter(filter),reset));
+      const automatic=new Set<string>();
+      for(const tool of tools.filter(tool=>allowed.has(tool.name))) {
+        const config=definition(tool.name);
+        const exposure=config?.eidoMcpExposure??tool.exposure;
+        if(exposure==='codemode'&&config?.eidoMcpAutoEnableCodemode!==false)automatic.add('codemode');
+        if(exposure==='deferred')automatic.add('tool_search');
+      }
+      for(const name of automatic) {
+        if(tools.some(tool=>tool.name===name&&tool.sourceInfo.path===discovery.get(name)))allowed.add(name);
+        else automatic.delete(name);
+      }
+      const active=new Set(session.getActiveToolNames().filter(name=>allowed.has(name)));
+      for(const tool of tools) {
+        const config=definition(tool.name);
+        if(!allowed.has(tool.name)) {if(config)config.exposure='hidden';continue;}
+        if(!['direct','model-only'].includes(tool.exposure))continue;
+        if(pending.has(tool.name)){active.add(tool.name);pending.delete(tool.name);}
+        if(!selectors || !reset&&['direct','model-only'].includes(previous.get(tool.name)??''))continue;
+        if(tool.sourceInfo.source==='sdk'||selectors.includes(`tool:${tool.name}`)||config?.defaultActive!==false)active.add(tool.name);
+      }
+      for(const name of automatic)active.add(name);
+      previous=new Map(tools.map(tool=>[tool.name,tool.exposure]));
+      session.setActiveToolsByName([...active]);
+    } finally {refreshing=false;}
+  };
+  const hooks=new WeakMap<object,{refresh:()=>void;set:(names:string[])=>void}>();
+  const bindRuntime=()=>{
+    const runtime=session.resourceLoader.getExtensions().runtime;
+    if(hooks.get(runtime)?.refresh===runtime.refreshTools)return;
+    const refreshTools=runtime.refreshTools, setActive=runtime.setActiveTools;
+    const hook={refresh:()=>{refreshTools();refresh();},set:(names:string[])=>{
+      const before=session.getActiveToolNames();
+      setActive(names);
+      if(before.some(name=>allowed.has(name)&&!session.getActiveToolNames().includes(name)))pending.clear();
+      refresh();
+    }};
+    hooks.set(runtime,hook);runtime.refreshTools=hook.refresh;runtime.setActiveTools=hook.set;
+  };
+  const policy={allows:(name:string)=>allowed.has(name),changed:()=>{bindRuntime();readDefaults();refresh();},
+    registered:()=>refresh(),reset:()=>{bindRuntime();readDefaults();refresh(true);}};
+  Object.defineProperty(session,Symbol.for('eido.pi.tools'),{value:policy});
   policy.reset();
   return policy;
 }

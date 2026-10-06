@@ -1,0 +1,31 @@
+{
+  "package": "@automatalabs/pi-acp",
+  "version": "0.9.4",
+  "integrity": "sha512-qppPPA8Odk7pNwDdRQLwlsyL6uF82ELj+3QGTayGMOynXwq/zCqtrWfrJuD3s8QdR777z/MNMW7uln7qEHWEjg==",
+  "files": {
+    "dist/agent.js": {
+      "upstreamSha256": "7168d5d1185399e0be1c1711e847ab82a957ba8ba06f2c0c5050bde26b34d3f8"
+    },
+    "dist/deps.js": {
+      "upstreamSha256": "7dc511ec43c445f8c466a83e8ddf2edfffe79811cf178e6cfd9312c8d7494eae"
+    },
+    "dist/mcp-bridge.js": {
+      "upstreamSha256": "d3912ffa1046ae1b2dbcc1b034f1c917b4eef743b499473d493c50a9e5f0f704"
+    },
+    "dist/pi-shutdown.js": {
+      "upstreamSha256": "48cf70dc87db4cc84fe1ba94ea4564e21c2e55fb62f942f8b060bb850a8dbcb2"
+    },
+    "dist/replay.js": {
+      "upstreamSha256": "00262549fb1c65d1d4e1623ba6150eb51f5de47a8756fbf5e6eed240a879eadf"
+    },
+    "dist/server.js": {
+      "upstreamSha256": "837b5facbba21ce3c7ae384f3d65c93dac820c827dc54b79f34b4262da82698a"
+    },
+    "dist/session.js": {
+      "upstreamSha256": "940dd79b31bb384cf800e1fbbdff575755588b17bdc26bd7f32fd58d419120a5"
+    },
+    "dist/translate.js": {
+      "upstreamSha256": "8858d3c592d7e20b9af72dd58e8169c86df84c8cc0d5d1d9a3f98e942f644568"
+    }
+  }
+}

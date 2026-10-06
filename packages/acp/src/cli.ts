@@ -11,6 +11,9 @@ const agentDir = resolve(process.env.EIDO_PI_CONFIG_DIR || resolve(root, ".local
 const sessionDir = resolve(agentDir, "acp-sessions");
 process.env.PI_CODING_AGENT_DIR = agentDir;
 await mkdir(sessionDir, { recursive: true, mode: 0o700 });
+const {claimBundledRuntime}=await import('../../../scripts/bundled-runtime.mjs');
+const releaseBundle=process.env.EIDO_INSTALLED_RUNTIME==='1'?async()=>{}:await claimBundledRuntime(root);
+process.once('exit',()=>{void releaseBundle();});
 const { createExtensionCenter } = await import("../../../scripts/pi-extensions.mjs");
 const { takeOverStdout, restoreStdout } = await import("../node_modules/@earendil-works/pi-coding-agent/dist/core/output-guard.js");
 takeOverStdout();
@@ -18,15 +21,15 @@ const releaseRuntime = await createExtensionCenter(agentDir).acquireRuntime();
 restoreStdout();
 const { initializePiNetwork } = await import('./pi-network.ts');
 try { initializePiNetwork(agentDir); }
-catch { await releaseRuntime(); throw new Error('Unable to initialize pi networking. Check global HTTP proxy and timeout settings.'); }
+catch { await releaseRuntime(); await releaseBundle(); throw new Error('Unable to initialize pi networking. Check global HTTP proxy and timeout settings.'); }
 const { startEidoAgent } = await import("./server.ts");
-const { agent, connection } = await startEidoAgent(agentDir, sessionDir).catch(async error => {await releaseRuntime(); throw error;});
+const { agent, connection } = await startEidoAgent(agentDir, sessionDir).catch(async error => {await releaseRuntime(); await releaseBundle(); throw error;});
 let shuttingDown: Promise<void> | undefined;
 const shutdown = (code: number) => {
   shuttingDown ??= (async () => {
     const deadline = setTimeout(() => process.exit(1), 15_000);
-    try { await agent.dispose(); await releaseRuntime(); clearTimeout(deadline); process.exit(code); }
-    catch { await releaseRuntime(); clearTimeout(deadline); console.error("Eido ACP cleanup failed."); process.exit(1); }
+    try { await agent.dispose(); await releaseRuntime(); await releaseBundle(); clearTimeout(deadline); process.exit(code); }
+    catch { await releaseRuntime(); await releaseBundle(); clearTimeout(deadline); console.error("Eido ACP cleanup failed."); process.exit(1); }
   })();
   return shuttingDown;
 };

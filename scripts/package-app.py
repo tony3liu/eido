@@ -18,7 +18,7 @@ import sys
 
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPT_NAMES = (
-    'browser-config.mjs', 'browser-server.mjs', 'pi-component-terminal.mjs',
+    'bundled-runtime.mjs', 'browser-config.mjs', 'browser-server.mjs', 'pi-component-terminal.mjs',
     'pi-extensions.mjs', 'pi-http-settings.mjs', 'pi-mcp-auth.mjs',
     'pi-mcp-status.mjs', 'pi-mcp.mjs', 'pi-runtime-settings.mjs',
     'pi-settings.mjs', 'preview-server.mjs', 'project-command.mjs',
@@ -168,6 +168,8 @@ def build():
             raise RuntimeError(f'Node has a non-system dynamic dependency: {path}')
     run([node, ROOT / 'node_modules/typescript/bin/tsc', '-p', ROOT / 'tsconfig.runtime.json', '--outDir', runtime], cwd=ROOT)
     copy_file(ROOT / 'packages/acp/package.json', runtime / 'packages/acp/package.json')
+    copy_tree(ROOT / 'packages/acp/adapter', runtime / 'packages/acp/adapter',
+              lambda path: path.suffix == '.js' or path.name in {'package.json', 'LICENSE'})
     (runtime / 'package.json').write_text(json.dumps({'name': 'eido-runtime', 'private': True, 'type': 'module'}))
     for name in SCRIPT_NAMES:
         copy_file(ROOT / 'scripts' / name, runtime / 'scripts' / name)

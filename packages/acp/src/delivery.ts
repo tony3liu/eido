@@ -1,3 +1,4 @@
+import {appendEidoEntry} from './session-persistence.ts';
 import {AsyncLocalStorage} from 'node:async_hooks';
 import {createHash} from 'node:crypto';
 import {closeSync, fsyncSync, openSync} from 'node:fs';
@@ -26,7 +27,7 @@ export function createDeliveryLedger(pi:AgentSession, changed:(id:string,state:s
   }
   const record=(receipt:Receipt)=>{
     receipts.set(receipt.id,receipt);
-    pi.sessionManager.appendCustomEntry(DELIVERY_RECORD,receipt);
+    appendEidoEntry(pi.sessionManager,DELIVERY_RECORD,receipt);
     const file=pi.sessionManager.getSessionFile();
     if(!file)throw new Error('Delivery requires a persistent pi session.');
     const fd=openSync(file,'r');

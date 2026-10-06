@@ -1,4 +1,3 @@
-import difflib
 import importlib.util
 import json
 from pathlib import Path
@@ -24,8 +23,7 @@ class NativePrepareTests(unittest.TestCase):
             setattr(self.native, name, value)
         self.overlay = self.root / "native/overlay"
         self.overlay.mkdir(parents=True)
-        self.patch = self.root / "native/patches/zed.patch"
-        self.patch.parent.mkdir()
+        self.removed = self.root / "native/removed-paths.json"
         source = self.root / "fixture"
         source.mkdir()
         (source / "legacy.rs").write_text("legacy code\n")
@@ -37,22 +35,21 @@ class NativePrepareTests(unittest.TestCase):
             "archiveName": archive.name, "sha256": self.native.digest(archive),
             "tag": "fixture", "commit": "local",
         }))
-        self.patch.write_text("")
+        self.removed.write_text("[]")
 
     def tearDown(self):
         self.temporary.cleanup()
 
     def delete_legacy(self):
-        self.patch.write_text("diff --git a/legacy.rs b/legacy.rs\n" + "".join(
-            difflib.unified_diff(["legacy code\n"], [], fromfile="a/legacy.rs", tofile="/dev/null")))
+        self.removed.write_text(json.dumps(["legacy.rs"]))
 
-    def test_deletion_is_applied_repeatedly_and_patch_removal_restores_upstream(self):
+    def test_deletion_is_applied_repeatedly_and_removal_reversal_restores_upstream(self):
         self.native.prepare()
         self.delete_legacy()
         self.native.prepare()
         self.native.prepare()
         self.assertFalse((self.native.SOURCE / "legacy.rs").exists())
-        self.patch.write_text("")
+        self.removed.write_text("[]")
         self.native.prepare()
         self.assertEqual((self.native.SOURCE / "legacy.rs").read_text(), "legacy code\n")
 
@@ -71,6 +68,26 @@ class NativePrepareTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "edits outside the overlay"):
             self.native.prepare()
         self.assertEqual(modified.read_text(), "manual work must survive\n")
+
+
+    def test_full_source_and_lockfile_are_direct_build_inputs(self):
+        (self.overlay / "legacy.rs").write_text("native Eido implementation\n")
+        (self.overlay / "Cargo.lock").write_text("pinned lockfile\n")
+        self.native.prepare()
+        self.assertEqual((self.native.SOURCE / "legacy.rs").read_text(), "native Eido implementation\n")
+        self.assertEqual((self.native.SOURCE / "Cargo.lock").read_text(), "pinned lockfile\n")
+        (self.overlay / "legacy.rs").unlink()
+        self.native.prepare()
+        self.assertEqual((self.native.SOURCE / "legacy.rs").read_text(), "legacy code\n")
+
+    def test_removal_rejects_path_escape_and_source_overlap(self):
+        self.removed.write_text('["../outside.rs"]')
+        with self.assertRaisesRegex(RuntimeError, "Invalid native removal"):
+            self.native.prepare()
+        self.delete_legacy()
+        (self.overlay / "legacy.rs").write_text("preserve me\n")
+        with self.assertRaisesRegex(RuntimeError, "both maintained and removed"):
+            self.native.prepare()
 
 
 if __name__ == "__main__":

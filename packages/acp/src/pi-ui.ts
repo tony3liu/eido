@@ -1,3 +1,4 @@
+import {appendEidoEntry} from './session-persistence.ts';
 import {createPiShortcuts, PI_SHORTCUTS} from './pi-shortcuts.ts';
 import { methods, type AgentContext, type AvailableCommand, type ElicitationPropertySchema, type SessionUpdate } from "@agentclientprotocol/sdk";
 import type { AgentSession, ExtensionUIContext, ExtensionUIDialogOptions } from "@earendil-works/pi-coding-agent";
@@ -14,6 +15,11 @@ export function createPiUI(pi: AgentSession, client: AgentContext, turnSignal: (
   let activeComponent = false;
   const findTheme = (name:string) => pi.resourceLoader.getThemes().themes.find(theme => theme.name === name) ?? getThemeByName(name);
   let theme = findTheme(pi.settingsManager.getTheme() ?? 'dark') ?? getThemeByName('dark')!;
+  // pi copies the UI object; this stable proxy keeps its theme reference current.
+  const liveTheme = new Proxy(theme, {get(_target,key) {
+    const value=Reflect.get(theme,key,theme);
+    return typeof value==='function'?value.bind(theme):value;
+  }});
   const request = async (title: string, property: ElicitationPropertySchema | undefined, opts?: ExtensionUIDialogOptions) => {
     const signals = [lifetime.signal, turnSignal(), opts?.signal].filter((signal): signal is AbortSignal => !!signal);
     const timeout = new AbortController();
@@ -38,7 +44,7 @@ export function createPiUI(pi: AgentSession, client: AgentContext, turnSignal: (
   };
   const notice = (text: string) => {
     // Display-only notices are persisted as custom data, outside model context.
-    pi.sessionManager.appendCustomEntry("eido.notice.v1", {text});
+    appendEidoEntry(pi.sessionManager,"eido.notice.v1", {text});
     emit({
       sessionUpdate: "agent_message_chunk", content: {type: "text", text: `${text}\n\n`},
     });
@@ -83,7 +89,7 @@ export function createPiUI(pi: AgentSession, client: AgentContext, turnSignal: (
     ...state?.controls,
     ...autocomplete?.controls,
     ...editor?.controls,
-    get theme() {return theme;},
+    get theme() {return liveTheme;},
     getAllThemes() {
       return [...new Map([...getAvailableThemesWithPaths(), ...pi.resourceLoader.getThemes().themes
         .filter(theme => !!theme.name).map(theme => ({name:theme.name!, path:theme.sourcePath}))].map(theme => [theme.name,theme])).values()];

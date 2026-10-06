@@ -1,0 +1,9 @@
+{
+  "name": "@eido/pi-acp",
+  "version": "0.9.4",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "main": "src/lib.js",
+  "types": "src/lib.d.ts"
+}
