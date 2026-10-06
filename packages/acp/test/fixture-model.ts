@@ -4,7 +4,7 @@ import { ModelRuntime } from "@earendil-works/pi-coding-agent";
 
 export type FixtureStep = (context: TranscriptContext, signal?: AbortSignal, options?: SimpleStreamOptions) => ToolCall[] | string | Promise<ToolCall[] | string>;
 
-export async function fixtureModel(directory: string, steps: FixtureStep[]) {
+export async function fixtureModel(directory: string, steps: FixtureStep[], options: {reasoning?: boolean} = {}) {
   const runtime = await ModelRuntime.create({
     authPath: join(directory, "fixture-auth.json"), modelsPath: null,
     modelsStorePath: join(directory, "fixture-models.json"), refreshOnCreate: false,
@@ -13,7 +13,7 @@ export async function fixtureModel(directory: string, steps: FixtureStep[]) {
   runtime.registerProvider("eido-fixture", {
     name: "Local deterministic test fixture", api: "eido-fixture", baseUrl: "http://127.0.0.1/unused",
     apiKey: "fixture-never-sent", models: [{
-      id: "scripted", name: "Scripted (no inference)", reasoning: false, input: ["text", "image"],
+      id: "scripted", name: "Scripted (no inference)", reasoning: options.reasoning ?? false, input: ["text", "image"],
       contextWindow: 128000, maxTokens: 4096,
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     }],

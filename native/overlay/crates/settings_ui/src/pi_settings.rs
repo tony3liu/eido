@@ -5,12 +5,21 @@ use gpui::{Context, Entity, IntoElement, Render, Window};
 use serde_json::{Value, json};
 use ui::{ContextMenu, DropdownMenu, DropdownStyle, prelude::*};
 
+struct ModelSettingsDraft {
+    expected: Value,
+    thinking: Value,
+    reserve: Entity<Editor>,
+    recent: Entity<Editor>,
+}
+
 pub(crate) struct PiSettingsView {
     data: Option<Value>,
     scroll_handle: gpui::ScrollHandle,
     provider: String,
     model: String,
     thinking: String,
+    model_settings_open: bool,
+    model_settings: HashMap<String, ModelSettingsDraft>,
     default_tools: Entity<Editor>,
     runtime_inputs: HashMap<String, Entity<Editor>>,
     runtime_values: HashMap<String, Value>,
@@ -44,6 +53,7 @@ impl PiSettingsView {
     pub(crate) fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let mut view = Self {
             data: None, scroll_handle: gpui::ScrollHandle::new(), provider: String::new(), model: String::new(), thinking: "off".into(),
+            model_settings_open: false, model_settings: HashMap::new(),
             default_tools: input("Leave blank to use Eido defaults", false, window, cx),
             runtime_inputs: HashMap::new(), runtime_values: HashMap::new(), runtime_expected: HashMap::new(), runtime_open: HashSet::new(),
             http_proxy: input("HTTP(S) proxy URL; leave blank to keep", true, window, cx), http_proxy_expected: Value::Null,
@@ -66,6 +76,7 @@ impl PiSettingsView {
         self.notice.clear();
         self.failed = false;
         let operation = request["operation"].as_str().unwrap_or("status").to_owned();
+        let saved_model = format!("{}/{}", request["provider"].as_str().unwrap_or_default(), request["model"].as_str().unwrap_or_default());
         let root = std::env::var_os("EIDO_ROOT").map(std::path::PathBuf::from);
         let node = std::env::var_os("EIDO_NODE");
         let task = cx.background_spawn(async move {
@@ -125,14 +136,18 @@ impl PiSettingsView {
                             view.jev_model.update(cx, |editor, cx| editor.set_text(data["browserDecision"]["model"].as_str().unwrap_or_default(), window, cx));
                         }
                         view.data = Some(data);
+                        if matches!(operation.as_str(), "status" | "import") { view.model_settings.clear(); }
+                        if operation == "model-settings" { view.model_settings.remove(&saved_model); }
                         if view.provider.is_empty() {
                             view.provider = view.providers().first().map(|p| p["id"].as_str().unwrap_or_default().into()).unwrap_or_default();
                             view.select_first_model();
                         }
+                        view.ensure_model_settings(window, cx);
                         view.notice = match operation.as_str() {
                             "status" | "check-update" => String::new(),
                             "import" => "Local pi configuration imported. New tasks will use these settings.".into(),
                             "defaults" => "Defaults saved for new tasks. Existing tasks keep their models.".into(),
+                            "model-settings" => "Model overrides saved. New tasks use them; /reload updates compaction in open tasks. Thinking applies when selecting this model.".into(),
                             "tool-defaults" => "Tool defaults saved. New tasks use this list; /reload adds newly selected tools to the current task.".into(),
                             "runtime" => "Runtime settings saved. Use /reload in an existing task to apply them.".into(),
                             "http-proxy" => "HTTP proxy saved. Restart Eido to apply this change to all tasks.".into(),
@@ -151,6 +166,76 @@ impl PiSettingsView {
 
     fn providers(&self) -> &[Value] {
         self.data.as_ref().and_then(|data| data["providers"].as_array()).map(Vec::as_slice).unwrap_or_default()
+    }
+
+    fn model_key(&self) -> String { format!("{}/{}", self.provider, self.model) }
+
+    fn ensure_model_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.model_settings_open || self.model.is_empty() { return; }
+        let key = self.model_key();
+        if self.model_settings.contains_key(&key) { return; }
+        let expected = self.models().iter().find(|model| model["id"].as_str() == Some(&self.model))
+            .map(|model| model["settings"]["values"].clone()).unwrap_or_else(|| json!({}));
+        let reserve = input("Use global default", false, window, cx);
+        let recent = input("Use global default", false, window, cx);
+        reserve.update(cx, |editor, cx| editor.set_text(runtime_text(&expected["reserveTokens"]), window, cx));
+        recent.update(cx, |editor, cx| editor.set_text(runtime_text(&expected["keepRecentTokens"]), window, cx));
+        self.model_settings.insert(key, ModelSettingsDraft {thinking: expected["thinkingLevel"].clone(), expected, reserve, recent});
+    }
+
+    fn save_model_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(draft) = self.model_settings.get(&self.model_key()) else { return; };
+        let mut values = json!({"thinkingLevel": draft.thinking});
+        for (key, editor) in [("reserveTokens", &draft.reserve), ("keepRecentTokens", &draft.recent)] {
+            let text = editor.read(cx).text(cx);
+            values[key] = if text.trim().is_empty() { Value::Null }
+                else if let Ok(value) = text.trim().parse::<u64>() { json!(value) }
+                else { self.failed = true; self.notice = "Enter a non-negative whole token count, or leave blank for the global default.".into(); cx.notify(); return; };
+        }
+        let changes: serde_json::Map<String, Value> = values.as_object().unwrap().iter()
+            .filter(|(key, value)| *value != &draft.expected[*key]).map(|(key, value)| (key.clone(), value.clone())).collect();
+        if changes.is_empty() { self.failed = false; self.notice = "No model overrides to save.".into(); cx.notify(); return; }
+        self.request(json!({"operation":"model-settings", "provider": self.provider, "model": self.model,
+            "changes": changes, "expected": draft.expected}), window, cx);
+    }
+
+    fn model_settings_section(&self, window: &mut Window, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let mut section = v_flex().gap_3().child(h_flex().child(Button::new("pi-model-overrides", "Model Overrides")
+            .start_icon(Icon::new(if self.model_settings_open { IconName::ChevronDown } else { IconName::ChevronRight }))
+            .on_click(cx.listener(|view, _, window, cx| {
+                view.model_settings_open = !view.model_settings_open; view.ensure_model_settings(window, cx); cx.notify();
+            }))));
+        if !self.model_settings_open { return section.into_any_element(); }
+        let key = self.model_key();
+        let Some(draft) = self.model_settings.get(&key) else { return section.into_any_element(); };
+        let selected = draft.thinking.clone();
+        let levels = self.levels();
+        let weak = cx.entity().downgrade();
+        let menu = ContextMenu::build(window, cx, move |mut menu, _, _| {
+            for value in std::iter::once(Value::Null).chain(levels.into_iter().map(Value::String)) {
+                let weak = weak.clone(); let key = key.clone();
+                let label = if value.is_null() { "Use global default".to_owned() } else { runtime_choice(&value) };
+                menu = menu.entry(label, None, move |_, cx| { let _ = weak.update(cx, |view, cx| {
+                    if view.busy { return; }
+                    if let Some(draft) = view.model_settings.get_mut(&key) { draft.thinking = value.clone(); }
+                    cx.notify();
+                }); });
+            }
+            menu
+        });
+        let effective = self.models().iter().find(|model| model["id"].as_str() == Some(&self.model))
+            .map(|model| model["settings"]["effective"].clone()).unwrap_or(Value::Null);
+        section = section
+            .child(Label::new(format!("Global overrides for {}", self.model_key())).size(LabelSize::Small).color(Color::Muted))
+            .child(field("Thinking Level", DropdownMenu::new("pi-model-thinking", if selected.is_null() {"Use global default".to_owned()} else {runtime_choice(&selected)}, menu)
+                .style(DropdownStyle::Outlined).full_width(true).into_any_element()))
+            .child(field("Reserved Tokens", text_field(draft.reserve.clone(), cx)))
+            .child(field("Recent Tokens to Keep", text_field(draft.recent.clone(), cx)))
+            .child(Label::new(format!("Effective token limits: {} reserved · {} recent. Blank fields inherit global compaction settings.",
+                runtime_text(&effective["reserveTokens"]), runtime_text(&effective["keepRecentTokens"]))).size(LabelSize::Small).color(Color::Muted))
+            .child(h_flex().child(Button::new("pi-save-model-overrides", "Save Model Overrides").style(ButtonStyle::Outlined).disabled(self.busy)
+                .on_click(cx.listener(|view, _, window, cx| view.save_model_settings(window, cx)))));
+        section.into_any_element()
     }
 
     fn save_runtime(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -278,6 +363,7 @@ impl PiSettingsView {
                             "pi-custom-api" => view.custom_api = value.clone(),
                             _ => {}
                         }
+                        view.ensure_model_settings(window, cx);
                         cx.notify();
                     });
                 });
@@ -341,6 +427,7 @@ impl Render for PiSettingsView {
                         .on_click(cx.listener(|this, _, window, cx| this.request(json!({"operation":"defaults", "provider":this.provider,"model":this.model,"thinking":this.thinking}), window, cx))))
                     .child(Button::new("pi-refresh", "Reload").disabled(self.busy)
                         .on_click(cx.listener(|this, _, window, cx| this.request(json!({"operation":"status"}), window, cx))))))
+            .child(self.model_settings_section(window, cx))
             .child(v_flex().gap_3().pt_4().border_t_1().border_color(cx.theme().colors().border_variant)
                 .child(Label::new("Tool Defaults"))
                 .child(text_field(self.default_tools.clone(), cx))

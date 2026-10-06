@@ -29,6 +29,47 @@ test("defaults roundtrip uses pi model validation and preserves unrelated settin
   assert.equal(await readFile(join(f.target,"settings.json"),"utf8"),before);
 });
 
+test('model overrides use pi precedence and preserve other models and concurrent fields', async t => {
+  const f = await fixture(t);
+  const id = 'family/model.v1';
+  f.config.providers['eido-fixture'].models.push({id, name:'Thinking fixture', reasoning:true, contextWindow:64000, maxTokens:4096});
+  await f.put(f.target, 'models.json', f.config);
+  const original = await f.get(f.target, 'settings.json');
+  original.compaction = {reserveTokens:2048, keepRecentTokens:8192,
+    modelOverrides:{'other/provider-model':{reserveTokens:100}}};
+  original.modelThinkingLevels = {'other/provider-model':'high'};
+  await f.put(f.target, 'settings.json', original);
+  const model = status => status.providers.find(p=>p.id==='eido-fixture').models.find(m=>m.id===id);
+  const initial = model(await f.bridge.status()).settings;
+  assert.deepEqual(initial.values, {thinkingLevel:null, reserveTokens:null, keepRecentTokens:null});
+  assert.deepEqual(initial.effective, {reserveTokens:2048, keepRecentTokens:8192});
+  const update = (changes, expected) => f.bridge.execute({operation:'model-settings',provider:'eido-fixture',model:id,changes,expected});
+  const changed = {thinkingLevel:'high',reserveTokens:4096};
+  let result = await update(changed, initial.values);
+  assert.equal(model(result).settings.values.thinkingLevel,'high');
+  assert.deepEqual(model(result).settings.effective, {reserveTokens:4096,keepRecentTokens:8192});
+  let stored = await f.get(f.target,'settings.json');
+  assert.equal(stored.compaction.modelOverrides['eido-fixture/'+id].reserveTokens,4096);
+  assert.equal(stored.compaction.modelOverrides['other/provider-model'].reserveTokens,100);
+  assert.equal(stored.modelThinkingLevels['other/provider-model'],'high');
+  assert.equal(stored.defaultThinkingLevel,'off');
+  assert.equal(stored.customSetting.retain,true);
+  const saved = await readFile(join(f.target,'settings.json'),'utf8');
+  for (const changes of [{thinkingLevel:'not-a-level'},{reserveTokens:-1},{keepRecentTokens:0.1},{other:true}]) {
+    await assert.rejects(update(changes,model(result).settings.values));
+    assert.equal(await readFile(join(f.target,'settings.json'),'utf8'),saved);
+  }
+  await assert.rejects(update({reserveTokens:6000},initial.values),/changed while/);
+  await assert.rejects(f.bridge.execute({operation:'model-settings',provider:'eido-fixture',model:'test-model',changes:{thinkingLevel:'high'},expected:{thinkingLevel:null}}));
+  // An unrelated field written since opening must survive a sparse save.
+  stored.compaction.modelOverrides['eido-fixture/'+id].keepRecentTokens = 9999;
+  await f.put(f.target,'settings.json',stored);
+  result = await update({reserveTokens:null,thinkingLevel:null},model(result).settings.values);
+  assert.equal(model(result).settings.effective.keepRecentTokens,9999);
+  await update({keepRecentTokens:null},model(result).settings.values);
+  assert.deepEqual(await f.get(f.target,'settings.json'),original);
+});
+
 test('tool defaults preserve modifiers, explicit empty lists and concurrent edits', async t => {
   const f = await fixture(t);
   assert.equal((await f.bridge.status()).defaultTools, null);

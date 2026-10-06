@@ -3,7 +3,7 @@ import { dirname, join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { browserCredentialId, browserDecisionSettings } from "./browser-config.mjs";
-import {runtimeSettings, mergeRuntimeSettings, PiRuntimeSettingsError} from './pi-runtime-settings.mjs';
+import {runtimeSettings, mergeRuntimeSettings, modelSettings, mergeModelSettings, PiRuntimeSettingsError} from './pi-runtime-settings.mjs';
 import {httpProxyStatus, mergeHttpProxy, PiHttpSettingsError} from './pi-http-settings.mjs';
 
 class PiConfigError extends Error {}
@@ -81,7 +81,7 @@ export function createPiSettings(directory = join(root, ".local/eido"), sourceDi
       return { id: provider.id, name: provider.name ?? provider.id,
         credential: credential?.type ?? (state.configured ? state.source ?? "configured" : "none"),
         models: modelRuntime.getModels(provider.id).map(model => ({ id: model.id, name: model.name,
-          thinkingLevels: getSupportedThinkingLevels(model) })) };
+          thinkingLevels: getSupportedThinkingLevels(model), settings: modelSettings(manager, model) })) };
     }).filter(provider => provider.models.length).sort((a, b) => a.name.localeCompare(b.name));
     return { version: bundledVersion, adapterVersion: "0.9.4", directory,
       defaultProvider: manager.getDefaultProvider() ?? "",
@@ -103,6 +103,16 @@ export function createPiSettings(directory = join(root, ".local/eido"), sourceDi
       new FileSettingsStorage(directory, directory).withLock('global', current => {
         try { return JSON.stringify(mergeHttpProxy(current ? JSON.parse(current) : {}, request.proxy, request.expected), null, 2) + '\n'; }
         catch (error) { throw new PiConfigError(error instanceof PiHttpSettingsError ? error.message : 'Unable to read global HTTP proxy settings. Repair settings.json before saving.'); }
+      });
+      await chmod(join(directory, 'settings.json'), 0o600);
+    } else if (operation === 'model-settings') {
+      const provider = providerId(request.provider);
+      const model = (await runtime()).getModel(provider, text(request.model, 'Model'));
+      if (!model) throw new PiConfigError('The selected model is not in the pi catalog.');
+      new FileSettingsStorage(directory, directory).withLock('global', current => {
+        try {return JSON.stringify(mergeModelSettings(current ? JSON.parse(current) : {}, `${provider}/${model.id}`,
+          request.changes, request.expected, getSupportedThinkingLevels(model)), null, 2) + '\n';}
+        catch (error) {throw new PiConfigError(error instanceof PiRuntimeSettingsError ? error.message : 'Unable to read model settings. Repair settings.json before saving.');}
       });
       await chmod(join(directory, 'settings.json'), 0o600);
     } else if (operation === 'runtime') {
