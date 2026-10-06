@@ -358,7 +358,8 @@ test('Extensions reports task MCP connections, plugin origins, configuration cha
     const first = await h.newTask();
     remote.mode('unauthorized');
     const second = await h.newTask();
-    let rows = await observe(rows => rows.find(row => row.name === 'remote')?.connections.some(c => c.state === 'needs-auth') === true);
+    let rows = await observe(rows => rows.find(row => row.name === 'remote')?.connections.some(c => c.state === 'needs-auth') === true
+      && rows.find(row => row.name === 'plugin')?.connections.length === 2);
     const states = rows.find(row => row.name === 'remote')!.connections;
     assert.deepEqual(states.map(c => [c.sessionId,c.state]).sort(), [[first.sessionId,'connected'],[second.sessionId,'needs-auth']].sort());
     const dynamic = rows.find(row => row.name === 'plugin')!;

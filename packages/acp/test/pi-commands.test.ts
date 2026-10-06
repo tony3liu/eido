@@ -1116,16 +1116,24 @@ test('native passive components rerender with width and status, and dispose on r
     await h.prompt(a.sessionId,'/redraw');
     await wait(()=>latest(a.sessionId)!.footer[0].includes('Footer Done'));
     assert.match(latest(a.sessionId)!.widgets.live.lines[0],/revision 1/);
+    await h.connection.agent.request('_eido/ui/state',{sessionId:a.sessionId,instance:'first',revision:3,text:'',appearance:'light'});
+    await wait(()=>latest(a.sessionId)!.header[0]==='Header light');
+    await h.connection.agent.request('_eido/ui/state',{sessionId:a.sessionId,instance:'first',revision:4,text:'',appearance:'dark'});
+    await wait(()=>latest(a.sessionId)!.header[0]==='Header dark');
     await h.prompt(a.sessionId,'/retheme');
     assert.deepEqual(latest(a.sessionId)!.header,['Header light']);
-    assert.match(h.text(a.sessionId),/Disposed 3/);
+    assert.match(h.text(a.sessionId),/Disposed 9/);
+    for(const appearance of ['light','dark']) await h.connection.agent.request('_eido/ui/state',{sessionId:a.sessionId,instance:'first',revision:5,text:'',appearance});
+    assert.deepEqual(latest(a.sessionId)!.header,['Header light'],'explicit extension theme survives native appearance changes');
     await h.prompt(a.sessionId,'/undecorate');
     assert.deepEqual(latest(a.sessionId)!.widgets.live.lines,['Plain replacement']);
     assert.equal(latest(a.sessionId)!.header,null);assert.equal(latest(a.sessionId)!.footer,null);
-    assert.match(h.text(a.sessionId),/Disposed 6/);
+    assert.match(h.text(a.sessionId),/Disposed 12/);
     await h.prompt(a.sessionId,'/decorate');await h.prompt(a.sessionId,'/reload');
     assert.deepEqual(latest(a.sessionId)!.widgets,{});
     assert.equal(latest(a.sessionId)!.header,null);assert.equal(latest(a.sessionId)!.footer,null);
+    await h.prompt(a.sessionId,'/decorate');
+    assert.deepEqual(latest(a.sessionId)!.header,['Header dark'],'reload restores native appearance fallback');
     assert.equal(h.requests(),0);
   }finally{await h.dispose();}
 });

@@ -1,3 +1,4 @@
+import {piDirectory} from './runtime-paths.mjs';
 import {validateMcp, credentials, usesOAuth} from './pi-mcp.mjs';
 import {readMcpStatus, mcpRevision} from './pi-mcp-status.mjs';
 export {validateMcp, configuredMcp} from './pi-mcp.mjs';
@@ -30,7 +31,7 @@ const npmName = source => {
   return name;
 };
 
-export function createExtensionCenter(directory = join(root, ".local/eido"), fetcher = fetch) {
+export function createExtensionCenter(directory = piDirectory(root), fetcher = fetch) {
   const queuePath = join(directory, "package-changes.json"), leases = join(directory, "runtimes");
   const settings = () => {
     const manager = SettingsManager.create(directory, directory, {projectTrusted: false});

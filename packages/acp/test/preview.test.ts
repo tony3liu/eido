@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import { client, methods, type CreateTerminalRequest } from "@agentclientprotocol/sdk";
 import { startEidoAgent } from "../src/server.ts";
 import { call, fixtureModel, lastToolText, type FixtureStep } from "./fixture-model.ts";
+import {EDITOR_QUERY} from '../src/editor-query.ts';
 
 const name = (action: string) => `mcp__eido_browser__browser_${action}`;
 const start = () => call("preview", { action: "start", files: ["index.html"], entry: "index.html" });
@@ -66,9 +67,14 @@ async function harness(steps: FixtureStep[], options: {
   const connection = client({ name: "eido-preview-test" })
     .onRequest(methods.client.fs.readTextFile, async ({ params }) => {
       await options.beforeRead?.(params._meta?.["eido.dev/observeBuffer"] === true);
-      return { content: buffers.get(params.path) ?? await readFile(params.path, "utf8"), _meta: params._meta };
+      return { content: buffers.get(params.path) ?? await readFile(params.path, "utf8"), _meta: {...params._meta,'eido.dev/conditionalWrite':true} };
     })
-    .onRequest(methods.client.fs.writeTextFile, ({ params }) => { buffers.set(params.path, params.content); return {}; })
+    .onRequest(methods.client.fs.writeTextFile, async ({ params }) => {
+      const expected=params._meta?.['eido.dev/expectedBuffer'];
+      if(typeof expected==='string' && expected!==(buffers.get(params.path)??await readFile(params.path,'utf8'))) throw new Error('File changed while command was running.');
+      buffers.set(params.path, params.content); return {};
+    })
+    .onRequest(EDITOR_QUERY,{parse:raw=>raw},()=>({output:[...buffers.keys()].map(path=>path.slice(cwd.length+1)).join('\n'),truncated:false}))
     .onRequest(methods.client.session.requestPermission, () => ({ outcome: { outcome: "selected", optionId: "allow_once" } }))
     .onRequest(methods.client.terminal.create, async ({ params }) => {
       const launch = async () => {
@@ -426,4 +432,77 @@ test("project commands cannot silently resolve uncaptured workspace packages thr
     await writeFile(join(h.cwd,"node_modules/eido-uncaptured-fixture/index.js"),"module.exports = 'must not resolve';");
     const task=await h.newTask();await h.prompt(task.sessionId);assert.equal(h.requests(),2);
   }finally{await h.dispose();}
+});
+
+test('shell pipes read unsaved buffers and merge changed/new text into review without saving', {timeout:30_000}, async()=>{
+  let result:any;
+  const h=await harness([
+    ()=>call('bash',{command:"cat index.html | sed 's/Count: 2/Count: 9/g' > next.html; cp next.html index.html"}),
+    context=>{result=JSON.parse(lastToolText(context,'bash'));assert.equal(result.checks[0].exitCode,0);return call('read',{path:'next.html'});},
+    context=>{assert.match(lastToolText(context,'read'),/Count: 9/);return 'Shell changes are ready for review.';},
+  ]);
+  try {
+    const task=await h.newTask();await h.prompt(task.sessionId);
+    assert.equal(h.requests(),3);
+    assert.equal(result.changes.length,2);assert.ok(result.changes.every((c:any)=>c.status==='applied'));
+    assert.match(h.buffers.get(join(h.cwd,'index.html'))!,/Count: 9/);
+    assert.match(h.buffers.get(join(h.cwd,'next.html'))!,/Count: 9/);
+    assert.equal(await readFile(join(h.cwd,'index.html'),'utf8'),source(7));
+    await assert.rejects(stat(join(h.cwd,'next.html')));
+    assert.ok([...h.terminals.values()].every(t=>t.exited&&t.released));
+  } finally {await h.dispose();}
+});
+
+test('shell conflict, deletion and binary outputs remain recoverable without overwriting manual edits', {timeout:30_000}, async()=>{
+  let result:any;
+  const h=await harness([
+    ()=>call('bash',{command:"cp index.html changed.html; printf 'command edit' > index.html; printf '\\000' > binary.bin; rm doomed.txt",files:['index.html','doomed.txt']}),
+    context=>{result=shellResult(context);return 'Unmerged output is preserved.';},
+  ],{create:async(_params,launch)=>{const terminal=await launch();h.buffers.set(join(h.cwd,'index.html'),'Manual edit while command runs');return terminal;}});
+  try {
+    h.buffers.set(join(h.cwd,'doomed.txt'),'Unsaved content to retain');
+    const task=await h.newTask();await h.prompt(task.sessionId);
+    assert.equal(h.requests(),2);
+    assert.equal(h.buffers.get(join(h.cwd,'index.html')),'Manual edit while command runs');
+    assert.equal(h.buffers.get(join(h.cwd,'doomed.txt')),'Unsaved content to retain');
+    assert.equal(await readFile(join(result.recovery,'index.html'),'utf8'),'command edit');
+    assert.deepEqual(await readFile(join(result.recovery,'binary.bin')),Buffer.from([0]));
+    assert.ok(result.changes.some((c:any)=>c.kind==='deleted'&&c.status==='preserved'));
+    assert.ok(result.changes.some((c:any)=>c.path==='index.html'&&c.status==='preserved'));
+    assert.equal(await readFile(join(h.cwd,'index.html'),'utf8'),source(7));
+  } finally {await h.dispose();}
+});
+
+test('failed shell commands retain results and terminate background descendants', {timeout:30_000}, async()=>{
+  let result:any;
+  const h=await harness([
+    ()=>call('bash',{command:'sleep 60 & printf "%s" "$!" > child.pid; printf partial > result.txt; exit 7',files:[]}),
+    context=>{result=shellResult(context);return 'Command failure inspected.';},
+  ]);
+  try {
+    const task=await h.newTask();await h.prompt(task.sessionId);
+    assert.equal(h.requests(),2);assert.equal(result.checks[0].exitCode,7);
+    assert.equal(h.buffers.get(join(h.cwd,'result.txt')),'partial');
+    const pid=Number(h.buffers.get(join(h.cwd,'child.pid')));
+    assert.ok(pid>0);assert.throws(()=>process.kill(pid,0));
+    assert.ok([...h.terminals.values()].every(t=>t.exited&&t.released));
+  } finally {await h.dispose();}
+});
+
+function shellResult(context:Parameters<FixtureStep>[0]) {
+  const result=context.messages.findLast(message=>message.role==='toolResult'&&message.toolName==='bash');
+  assert.ok(result?.role==='toolResult');
+  return JSON.parse(result.content.filter(item=>item.type==='text').map(item=>item.text).join('\n'));
+}
+
+test('shell cancellation releases its terminal and preserves unmerged output', {timeout:30_000},async()=>{
+  let started!:()=>void;const ready=new Promise<void>(resolve=>{started=resolve;});
+  const h=await harness([()=>call('bash',{command:'printf started > result.txt; sleep 60',files:[]})],{create:async(_params,launch)=>{const result=await launch();started();return result;}});
+  try {
+    const task=await h.newTask();const running=h.prompt(task.sessionId);await ready;
+    await h.cancel(task.sessionId);assert.equal((await running).stopReason,'cancelled');
+    assert.ok([...h.terminals.values()].every(t=>t.exited&&t.released));
+    assert.equal(h.buffers.get(join(h.cwd,'result.txt')),undefined);
+    await assert.rejects(stat(join(h.cwd,'result.txt')));
+  } finally {await h.dispose();}
 });

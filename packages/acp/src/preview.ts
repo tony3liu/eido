@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { appendFile, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { appendFile, cp, mkdir, mkdtemp, readFile, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
 import {tmpdir} from "node:os";
 import { extname, join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -29,7 +29,7 @@ type Run = {
   directory: string; terminalId?: string; url?: string; stopped?: boolean; cleanup?: string;
 };
 
-export function createPreview(cwd: string, storage: string, sessionId: string, client: AgentContext) {
+export function createPreview(cwd: string, storage: string, sessionId: string, client: AgentContext, purpose: 'preview' | 'shell' = 'preview') {
   let active: Run | undefined;
   let stopping: Promise<void> | undefined;
   const temporaryInputs = new Map<string, Run>();
@@ -148,7 +148,7 @@ export function createPreview(cwd: string, storage: string, sessionId: string, c
       acceptance: "Not assessed. Browser observations and explicit acceptance criteria are required." };
   }
 
-  const details = (value: Record<string, unknown>) => ({eidoVerification: {version: 1, ...value}});
+  const details = (value: Record<string, unknown>) => ({[purpose === "shell" ? "eidoShell" : "eidoVerification"]: {version: 1, ...value}});
 
   const tool = defineTool({
     name: "preview", label: "Development preview", executionMode: "sequential",
@@ -178,7 +178,7 @@ export function createPreview(cwd: string, storage: string, sessionId: string, c
         return {content: [text(value)], details: active ? details(value) : {}};
       }
       const project = !!(params.commands?.length || params.server);
-      if (!params.files?.length || (!project && !params.entry)) throw new Error("Start requires files and either an HTML entry, commands, or a server.");
+      if (!params.files || (!params.files.length && purpose !== 'shell') || (!project && !params.entry)) throw new Error("Start requires files and either an HTML entry, commands, or a server.");
       if (!project && params.dependencies?.length) throw new Error("Copied dependencies require a project command or server.");
       if (params.server?.path && (!params.server.path.startsWith("/") || params.server.path.startsWith("//") || /[\\\r\n#]/.test(params.server.path))) throw new Error("Server path must be a local URL path beginning with /.");
       for (const spec of [...params.commands ?? [], ...params.server ? [params.server] : []]) {
@@ -189,7 +189,7 @@ export function createPreview(cwd: string, storage: string, sessionId: string, c
       let bytes = 0;
       for (const path of params.files) {
         const local = relative(root, await workspacePath(root, path, true)).split(sep).join("/");
-        if (local.split("/").some(part => part.startsWith(".")) || (!project && ![".html", ".css", ".js", ".mjs", ".json", ".svg", ".txt"].includes(extname(local)))) {
+        if ((purpose !== 'shell' && local.split("/").some(part => part.startsWith("."))) || (!project && ![".html", ".css", ".js", ".mjs", ".json", ".svg", ".txt"].includes(extname(local)))) {
           throw new Error(project ? "Project inputs must be non-hidden text files." : "Preview accepts non-hidden HTML, CSS, JS, MJS, JSON, SVG and TXT inputs only.");
         }
         if (inputs.has(local)) continue;
@@ -315,7 +315,7 @@ export function createPreview(cwd: string, storage: string, sessionId: string, c
     return { content: [...event.content, text({ previewEvidence: evidence })],
       details: {...event.details as Record<string, unknown>, ...details({...evidence, observation: true})} };
   }
-  const path = "<inline:eido-preview>";
+  const path = `<inline:eido-${purpose}>`;
   const extension: Extension = {
     path, resolvedPath: path, sourceInfo: { path, source: "inline", scope: "user", origin: "top-level" },
     handlers: new Map([
@@ -326,7 +326,24 @@ export function createPreview(cwd: string, storage: string, sessionId: string, c
     ]),
     tools: new Map(), messageRenderers: new Map(), commands: new Map(), flags: new Map(), shortcuts: new Map(),
   };
-  return { tool, extension, stop, finishTurn: async (stopStatic = false) => {
+  return { tool, extension, stop, snapshot: () => active, preserveInputs: async () => {
+    const run = active;
+    if (!run || !run.stopped) throw new Error('Stop the command before preserving its output.');
+    const link = join(run.directory, 'files');
+    const source = await realpath(link);
+    const destination = join(run.directory, 'output-snapshot');
+    if (source === destination) return destination;
+    try { await rename(source, destination); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EXDEV') throw error;
+      await cp(source, destination, {recursive: true, verbatimSymlinks: true});
+      await rm(source, {recursive: true, force: true});
+    }
+    temporaryInputs.delete(source);
+    await rm(link);
+    await symlink(destination, link);
+    return destination;
+  }, finishTurn: async (stopStatic = false) => {
     try { if (stopStatic || active?.project) await stop(); }
     finally { await releaseInputs(); }
   } };

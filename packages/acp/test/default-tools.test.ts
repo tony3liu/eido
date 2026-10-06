@@ -7,7 +7,7 @@ import {client, methods} from '@agentclientprotocol/sdk';
 import {startEidoAgent} from '../src/server.ts';
 import {fixtureModel} from './fixture-model.ts';
 
-const native = ['read', 'edit', 'write', 'find', 'grep', 'ls'];
+const native = ['read', 'edit', 'write', 'find', 'grep', 'ls', 'bash'];
 
 test('pi defaultTools controls native declarations, modifiers, reload and delayed plugin registrations', {timeout: 30_000}, async () => {
   const dir = await realpath(await mkdtemp(join(tmpdir(), 'eido-default-tools-')));
@@ -39,13 +39,13 @@ test('pi defaultTools controls native declarations, modifiers, reload and delaye
     }).connect({readable:toClient.readable,writable:toAgent.writable});
   const send = (sessionId: string, command: string) => connection.agent.request(methods.agent.session.prompt,
     {sessionId,prompt:[{type:'text',text:command}]});
-  const inspect = async (id: string) => {await send(id, '/active'); assert.ok(!active.includes('bash')); assert.ok(!active.includes('powershell')); return active;};
+  const inspect = async (id: string) => {await send(id, '/active'); assert.ok(!active.includes('powershell')); return active;};
   const newTask = () => connection.agent.request(methods.agent.session.new,{cwd:dir,mcpServers:[]});
   try {
     await connection.agent.request(methods.agent.initialize,{protocolVersion:1,clientCapabilities:{elicitation:{form:{}}}});
     for (const [configured, expected, dormant, codemode] of [
       [undefined,native,false,false], [[],[],false,false], [['read'],['read'],false,false],
-      [['+codemode','-edit'],['read','write'],false,true], [['read','dormant'],['read'],true,false],
+      [['+codemode','-edit'],['read','write','bash'],false,true], [['read','dormant'],['read'],true,false],
     ] as [string[]|undefined,string[],boolean,boolean][]) {
       await configure(configured);
       const saved = await readFile(settingsPath,'utf8');

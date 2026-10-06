@@ -136,6 +136,9 @@ export function createPiEditor(pi:AgentSession, client:AgentContext, state:Retur
     controls,input:filter,
     refreshTheme(){component?.invalidate();render();},
     async reset(){factory=undefined;handlers.clear();restart();await settled;},
-    close(){closed=true;stopEditor();handlers.clear();factory=undefined;epoch++;active?.abort.abort();},
+    close(){
+      closed=true;stopEditor();handlers.clear();factory=undefined;epoch++;active?.abort.abort();
+      return settled.then(async()=>{await active?.done;});
+    },
   };
 }

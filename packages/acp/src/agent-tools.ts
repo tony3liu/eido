@@ -1,6 +1,6 @@
 import type { AgentSession, ToolInfo, ToolDefinition } from "@earendil-works/pi-coding-agent";
 
-export const agentToolCategories = ["read", "edit", "write", "preview", "browser", "subagent", "extensions", "mcp"];
+export const agentToolCategories = ["read", "edit", "write", "bash", "preview", "browser", "subagent", "extensions", "mcp"];
 const mcpPath = "<inline:agentprism-pi-acp-mcp>";
 const discovery = new Map([['codemode', 'builtin:codemode'], ['tool_search', 'builtin:tool-search']]);
 
@@ -9,7 +9,7 @@ export function validAgentToolSelector(value: string): boolean {
 }
 
 export function availableAgentTools(tools: ToolInfo[]): ToolInfo[] {
-  return tools.filter(tool => discovery.get(tool.name) === tool.sourceInfo.path || tool.name !== "bash" && tool.sourceInfo.source !== "builtin"
+  return tools.filter(tool => discovery.get(tool.name) === tool.sourceInfo.path || (tool.name !== "bash" || tool.sourceInfo.source === 'sdk') && tool.sourceInfo.source !== "builtin"
     && !tool.sourceInfo.path.startsWith("builtin:") && !tool.sourceInfo.path.startsWith("<builtin:")
     && tool.sourceInfo.path !== "<inline:agentprism-pi-acp-control>");
 }

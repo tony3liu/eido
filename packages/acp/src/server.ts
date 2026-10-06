@@ -1,5 +1,6 @@
 import {createMcpConnector} from './mcp.ts';
 import {sessionOwners} from './session-owner.ts';
+import {createShell} from './shell.ts';
 import {refreshPiNetwork} from './pi-network.ts';
 import {preparePromptContent} from './prompt-content.ts';
 import {createDeliveryLedger, DELIVERY} from './delivery.ts';
@@ -42,6 +43,7 @@ export async function startEidoAgent(agentDir: string, sessionDir: string, strea
         const client = await clientReady;
         const browserDecision = await browserDecisionEnvironment(agentDir);
         const preview = createPreview(options.cwd, join(agentDir, "previews"), options.sessionManager.getSessionId(), client);
+        const shell = createShell(options.cwd, join(agentDir, "commands"), options.sessionManager.getSessionId(), client);
         // Settings are owned by pi. New tasks see credentials/models changed in
         // Eido's settings without replacing the model of an active conversation.
         if (!modelRuntime) await runtime.refresh({ allowNetwork: false });
@@ -49,13 +51,13 @@ export async function startEidoAgent(agentDir: string, sessionDir: string, strea
         // reload additions. Only the absent-setting fallback is Eido-specific.
         if (options.settingsManager) {
           const defaults = options.settingsManager.getDefaultTools.bind(options.settingsManager);
-          options.settingsManager.getDefaultTools = () => defaults() ?? ["read", "edit", "write", "find", "grep", "ls"];
+          options.settingsManager.getDefaultTools = () => defaults() ?? ["read", "edit", "write", "find", "grep", "ls", "bash"];
         }
         if (options.resourceLoader) {
           const getExtensions = options.resourceLoader.getExtensions.bind(options.resourceLoader);
           options.resourceLoader.getExtensions = () => {
             const loaded = getExtensions();
-            return { ...loaded, extensions: [...loaded.extensions, preview.extension, accessPolicy(agentDir)] };
+            return { ...loaded, extensions: [...loaded.extensions, preview.extension, shell.extension, accessPolicy(agentDir)] };
           };
           const append = options.resourceLoader.getAppendSystemPrompt.bind(options.resourceLoader);
           options.resourceLoader.getAppendSystemPrompt = () => [...append(),
@@ -70,7 +72,7 @@ export async function startEidoAgent(agentDir: string, sessionDir: string, strea
           noTools: undefined,
           customTools: [...[...editorTools(options.cwd, options.sessionManager.getSessionId(), client),
             ...editorQueryTools(options.cwd, options.sessionManager.getSessionId(), client)]
-            .map(tool => ({...tool, defaultActive: false})), preview.tool,
+            .map(tool => ({...tool, defaultActive: false})), preview.tool, shell.tool,
             ...(subagents.enabled ? [subagents.tool(options.sessionManager.getSessionId(), client)] : [])],
         });
         // pi reads most runtime settings dynamically. These Agent properties
@@ -96,7 +98,7 @@ export async function startEidoAgent(agentDir: string, sessionDir: string, strea
         const prompt = created.session.prompt.bind(created.session);
         created.session.prompt = async (...args) => {
           try { return await prompt(...args); } finally {
-            const cleanup = await Promise.allSettled([browser.close(), preview.finishTurn(!!child)]);
+            const cleanup = await Promise.allSettled([browser.close(), preview.finishTurn(!!child), shell.finishTurn()]);
             const failed = cleanup.find(result => result.status === "rejected");
             if (failed?.status === "rejected") throw failed.reason;
           }
@@ -106,14 +108,13 @@ export async function startEidoAgent(agentDir: string, sessionDir: string, strea
         const abort = created.session.abort.bind(created.session);
         created.session.abort = async () => {
           try { await abort(); } finally {
-            const results = await Promise.allSettled([preview.finishTurn(true), browser.close()]);
+            const results = await Promise.allSettled([preview.finishTurn(true), shell.finishTurn(), browser.close()]);
             const failed = results.find(result => result.status === "rejected");
             if (failed?.status === "rejected") throw failed.reason;
           }
         };
-        // pi-acp validates its tracked bash registration, even when it is inactive.
-        // Keep that registration without activating shell access. MCP tools
-        // keep pi-acp's permission, cancellation, image and lifecycle handling.
+        // The SDK bash override uses current editor captures and the same native
+        // process supervisor as preview. Role restrictions apply after discovery.
         const child = subagents.register(created.session);
         const decisionTools = new Set(["do", "check", "choose"].map(name => `mcp__eido_browser__browser_${name}`));
         let toolPolicy: ReturnType<typeof installAgentToolPolicy>;

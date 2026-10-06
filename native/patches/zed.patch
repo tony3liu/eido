@@ -880,7 +880,7 @@ diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thr
                  snapshot
              };
  
-@@ -4644,10 +4766,60 @@
+@@ -4644,10 +4766,73 @@
          content: String,
          cx: &mut Context<Self>,
      ) -> Task<Result<()>> {
@@ -909,6 +909,19 @@ diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thr
 +        eido: bool,
 +        create: bool,
 +        cx: &mut Context<Self>,
++    ) -> Task<Result<()>> {
++        self.write_text_file_with_snapshot(path, content, eido, create, None, cx)
++    }
++
++    /// Apply command output only against the exact editor input it captured.
++    /// Observing a preview never replaces another tool's read snapshot.
++    pub fn write_text_file_if_unchanged(&self, path: PathBuf, content: String, expected: String, cx: &mut Context<Self>) -> Task<Result<()>> {
++        self.write_text_file_with_snapshot(path, content, true, false, Some(expected), cx)
++    }
++
++    fn write_text_file_with_snapshot(
++        &self, path: PathBuf, content: String, eido: bool, create: bool,
++        expected: Option<String>, cx: &mut Context<Self>,
 +    ) -> Task<Result<()>> {
 +        if let Some(error) = &self.review_write_error {
 +            return Task::ready(Err(anyhow!(error.to_string())));
@@ -941,7 +954,7 @@ diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thr
              let load = project.update(cx, |project, cx| {
                  let path = project
                      .project_path_for_absolute_path(&path, cx)
-@@ -4656,11 +4828,18 @@
+@@ -4656,11 +4841,25 @@
              });
              let buffer = load?.await?;
              let snapshot = this.update(cx, |this, cx| {
@@ -950,6 +963,13 @@ diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thr
 -                    .cloned()
 -                    .unwrap_or_else(|| buffer.read(cx).snapshot())
 -            })?;
++                if let Some(expected) = &expected {
++                    let current = buffer.read(cx).snapshot();
++                    if current.text() != *expected {
++                        anyhow::bail!("File changed while the command was running. Its output was preserved; current edits were not overwritten.");
++                    }
++                    return Ok(current);
++                }
 +                let snapshot = this.shared_buffers.get(&buffer).cloned();
 +                if eido && snapshot.is_none() {
 +                    let buffer = buffer.read(cx);
@@ -965,7 +985,7 @@ diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thr
              let edits = cx
                  .background_executor()
                  .spawn(async move {
-@@ -4674,6 +4853,9 @@
+@@ -4674,6 +4873,9 @@
                  })
                  .await;
  
@@ -975,7 +995,7 @@ diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thr
              if should_update_agent_location {
                  project.update(cx, |project, cx| {
                      project.set_agent_location(
-@@ -4691,10 +4873,16 @@
+@@ -4691,10 +4893,16 @@
  
              let format_on_save = cx.update(|cx| {
                  action_log.update(cx, |action_log, cx| {
@@ -992,7 +1012,7 @@ diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thr
                      buffer.start_transaction();
                      buffer.edit(edits, None, cx);
                      buffer.end_transaction_with_source(BufferEditSource::Agent, cx);
-@@ -4702,13 +4890,24 @@
+@@ -4702,13 +4910,24 @@
                      let settings =
                          language::language_settings::LanguageSettings::for_buffer(buffer, cx);
  
@@ -1023,7 +1043,7 @@ diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thr
  
              if format_on_save {
                  let format_task = project.update(cx, |project, cx| {
-@@ -6930,6 +7129,213 @@
+@@ -6930,6 +7149,229 @@
              "zero\none\ntwo\nthree\nfour\nfive\n"
          );
          request.await.unwrap();
@@ -1234,6 +1254,22 @@ diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thr
 +            String::from_utf8(fs.read_file_sync(path!("/tmp/foo")).unwrap()).unwrap(),
 +            "disk\n"
 +        );
++        // Shell observations compare their own captured contents, independently
++        // of the most recent read from another tool or child agent.
++        let captured = buffer.read_with(cx, |buffer, _| buffer.text());
++        buffer.update(cx, |buffer,cx| buffer.edit([(0..0,"later manual\n")], None, cx));
++        thread.update(cx, |thread,cx| thread.read_text_file(path!("/tmp/foo").into(),None,None,false,cx)).await.unwrap();
++        assert!(thread.update(cx, |thread,cx| thread.write_text_file_if_unchanged(
++            path!("/tmp/foo").into(),"stale shell output".into(),captured,cx)).await.is_err());
++        let current = buffer.read_with(cx, |buffer,_| buffer.text());
++        thread.update(cx, |thread,cx| thread.write_text_file_if_unchanged(
++            path!("/tmp/foo").into(),format!("{current}shell output\n"),current.clone(),cx)).await.unwrap();
++        cx.run_until_parked();
++        assert!(buffer.read_with(cx, |buffer,_| buffer.is_dirty()));
++        assert_eq!(String::from_utf8(fs.read_file_sync(path!("/tmp/foo")).unwrap()).unwrap(),"disk\n");
++        action_log.update(cx, |log,cx| log.reject_all_edits(None,cx)).await;
++        cx.run_until_parked();
++        assert_eq!(buffer.read_with(cx, |buffer,_| buffer.text()), current);
      }
  
      #[gpui::test]
@@ -1930,7 +1966,7 @@ diff --git a/crates/agent_servers/src/acp.rs b/crates/agent_servers/src/acp.rs
 +    let Some(root) = std::env::var_os("EIDO_ROOT") else { return false; };
 +    // Global pi configuration only. Re-read each request so disabling the mode
 +    // affects existing sessions without persisting per-tool Allow Always grants.
-+    std::fs::read_to_string(PathBuf::from(root).join(".local/eido/settings.json"))
++    std::fs::read_to_string(std::env::var_os("EIDO_PI_CONFIG_DIR").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(root).join(".local/eido")).join("settings.json"))
 +        .ok()
 +        .is_some_and(|content| full_access_enabled(&content))
 +}
@@ -2000,7 +2036,7 @@ diff --git a/crates/agent_servers/src/acp.rs b/crates/agent_servers/src/acp.rs
                  .flatten_acp()?;
              cancellation
                  .run_until_cancelled(async { Ok(task.await) })
-@@ -4736,12 +4995,51 @@
+@@ -4736,12 +4995,52 @@
      .detach();
  }
  
@@ -2049,20 +2085,22 @@ diff --git a/crates/agent_servers/src/acp.rs b/crates/agent_servers/src/acp.rs
      ctx: &ClientContext,
  ) {
 +    let create = args.meta.as_ref().and_then(|meta| meta.get("eido.dev/createFile")).and_then(|value| value.as_bool()) == Some(true);
++    let expected = args.meta.as_ref().and_then(|meta| meta.get("eido.dev/expectedBuffer")).and_then(|value| value.as_str()).map(str::to_owned);
      let thread = match session_thread(ctx, &args.session_id) {
          Ok(t) => t,
          Err(e) => return respond_err(responder, e),
-@@ -4751,7 +5049,8 @@
+@@ -4751,7 +5050,9 @@
          let result: Result<_, acp::Error> = async {
              thread
                  .update(cx, |thread, cx| {
 -                    thread.write_text_file(args.path, args.content, cx)
-+                    if create {thread.create_text_file(args.path, args.content, cx)}
++                    if let Some(expected) = expected {thread.write_text_file_if_unchanged(args.path, args.content, expected, cx)}
++                    else if create {thread.create_text_file(args.path, args.content, cx)}
 +                    else {thread.write_text_file(args.path, args.content, cx)}
                  })
                  .map_err(acp::Error::from)?
                  .await?;
-@@ -4777,6 +5076,9 @@
+@@ -4777,6 +5078,9 @@
      cx: &mut AsyncApp,
      ctx: &ClientContext,
  ) {
@@ -2072,7 +2110,7 @@ diff --git a/crates/agent_servers/src/acp.rs b/crates/agent_servers/src/acp.rs
      let thread = match session_thread(ctx, &args.session_id) {
          Ok(t) => t,
          Err(e) => return respond_err(responder, e),
-@@ -4788,16 +5090,179 @@
+@@ -4788,16 +5092,179 @@
              .run_until_cancelled(async {
                  thread
                      .update(cx, |thread, cx| {
@@ -2092,7 +2130,7 @@ diff --git a/crates/agent_servers/src/acp.rs b/crates/agent_servers/src/acp.rs
 +        respond_result(responder, result.map(|content| {
 +            let response = acp::ReadTextFileResponse::new(content);
 +            if observation {
-+                response.meta(acp::Meta::from_iter([("eido.dev/observeBuffer".into(), true.into())]))
++                response.meta(acp::Meta::from_iter([("eido.dev/observeBuffer".into(), true.into()), ("eido.dev/conditionalWrite".into(), true.into())]))
 +            } else {
 +                response
 +            }
@@ -2254,7 +2292,7 @@ diff --git a/crates/agent_servers/src/acp.rs b/crates/agent_servers/src/acp.rs
  }
  
  fn handle_session_notification(
-@@ -4983,6 +5448,7 @@
+@@ -4983,6 +5450,7 @@
                      .into_iter()
                      .map(|env| (env.name, env.value))
                      .collect(),
@@ -2310,7 +2348,7 @@ diff --git a/crates/agent_servers/src/custom.rs b/crates/agent_servers/src/custo
          if is_registry_agent {
              if let Some(registry_store) = project::AgentRegistryStore::try_global(cx) {
                  registry_store.update(cx, |store, cx| store.refresh_if_stale(cx));
-@@ -252,20 +262,48 @@
+@@ -252,20 +262,50 @@
                      extra_env.insert("GEMINI_API_KEY".into(), api_key);
                  }
              }
@@ -2339,11 +2377,13 @@ diff --git a/crates/agent_servers/src/custom.rs b/crates/agent_servers/src/custo
 +                extra_env.insert("EIDO_ROOT".into(), root.to_string_lossy().into_owned());
 +                extra_env.insert(
 +                    "PI_CODING_AGENT_DIR".into(),
-+                    root.join(".local/eido").to_string_lossy().into_owned(),
++                    std::env::var_os("EIDO_PI_CONFIG_DIR").map(std::path::PathBuf::from).unwrap_or_else(|| root.join(".local/eido")).to_string_lossy().into_owned(),
 +                );
 +                project::agent_server_store::AgentServerCommand {
 +                    path: node.into(),
-+                    args: vec![
++                    args: if root.join("packages/acp/src/cli.js").is_file() {
++                        vec![root.join("packages/acp/src/cli.js").to_string_lossy().into_owned()]
++                    } else { vec![
 +                        "--import".into(),
 +                        root.join("node_modules/tsx/dist/loader.mjs")
 +                            .to_string_lossy()
@@ -2351,7 +2391,7 @@ diff --git a/crates/agent_servers/src/custom.rs b/crates/agent_servers/src/custo
 +                        root.join("packages/acp/src/cli.ts")
 +                            .to_string_lossy()
 +                            .into_owned(),
-+                    ],
++                    ] },
 +                    env: Some(extra_env),
 +                }
 +            } else {
@@ -11309,7 +11349,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
      pub turn_fields: TurnFields,
      pub discarded_partial_edits: HashSet<acp::ToolCallId>,
      pub is_loading_contents: bool,
-@@ -621,6 +625,13 @@
+@@ -621,6 +625,14 @@
      pub in_flight_prompt: Option<Vec<acp::ContentBlock>>,
      pub _subscriptions: Vec<Subscription>,
      pub message_editor: Entity<MessageEditor>,
@@ -11320,10 +11360,11 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
 +    eido_last_editor_text: Option<String>,
 +    eido_ui_columns: usize,
 +    eido_last_ui_columns: usize,
++    eido_last_ui_light: Option<bool>,
      pub add_context_menu_handle: PopoverMenuHandle<ContextMenu>,
      pub thinking_effort_menu_handle: PopoverMenuHandle<ContextMenu>,
      pub fast_mode_menu_handle: PopoverMenuHandle<ContextMenu>,
-@@ -799,11 +810,22 @@
+@@ -799,11 +811,22 @@
          window: &mut Window,
          cx: &mut Context<Self>,
      ) -> Self {
@@ -11347,7 +11388,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
  
          let mut should_auto_submit = false;
          let mut show_external_source_prompt_warning = false;
-@@ -818,7 +840,11 @@
+@@ -818,7 +841,11 @@
                  &placeholder,
                  editor::EditorMode::AutoHeight {
                      min_lines: AgentSettings::get_global(cx).message_editor_min_lines,
@@ -11360,7 +11401,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
                  },
                  window,
                  cx,
-@@ -861,7 +887,19 @@
+@@ -861,7 +888,19 @@
          if let Some(project) = project.upgrade() {
              subscriptions.push(cx.subscribe(&project, {
                  let resolver = code_span_resolver.clone();
@@ -11381,7 +11422,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
                      if matches!(
                          event,
                          project::Event::WorktreeAdded(_)
-@@ -879,7 +917,9 @@
+@@ -879,7 +918,9 @@
              let metadata = ThreadMetadataStore::try_global(cx)
                  .and_then(|store| store.read(cx).entry(root_thread_id).cloned());
              let initial_title = if parent_session_id.is_none() {
@@ -11392,7 +11433,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
              } else {
                  thread.read(cx).title()
              }
-@@ -956,6 +996,7 @@
+@@ -956,6 +997,7 @@
          }
  
          subscriptions.push(cx.observe(&message_editor, |this, editor, cx| {
@@ -11400,7 +11441,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
              let is_empty = editor.read(cx).text(cx).is_empty();
              let draft_contents_task = if is_empty {
                  None
-@@ -981,6 +1022,8 @@
+@@ -981,6 +1023,8 @@
  
          let mut this = Self {
              root_thread_id,
@@ -11409,7 +11450,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
              session_id,
              parent_session_id,
              focus_handle: cx.focus_handle(),
-@@ -1021,6 +1064,8 @@
+@@ -1021,6 +1065,8 @@
              should_be_following: false,
              editing_message: None,
              message_queue: MessageQueue::default(),
@@ -11418,7 +11459,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
              turn_fields: TurnFields::default(),
              discarded_partial_edits: HashSet::default(),
              is_loading_contents: false,
-@@ -1034,6 +1079,13 @@
+@@ -1034,6 +1080,14 @@
              hovered_edited_file_buttons: None,
              in_flight_prompt: None,
              message_editor,
@@ -11429,10 +11470,11 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
 +            eido_last_editor_text: None,
 +            eido_ui_columns: 80,
 +            eido_last_ui_columns: 0,
++            eido_last_ui_light: None,
              add_context_menu_handle: PopoverMenuHandle::default(),
              thinking_effort_menu_handle: PopoverMenuHandle::default(),
              fast_mode_menu_handle: PopoverMenuHandle::default(),
-@@ -1052,6 +1104,8 @@
+@@ -1052,6 +1106,8 @@
              thread_search_visible: false,
          };
  
@@ -11441,7 +11483,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
          this.sync_generating_indicator(cx);
          this.sync_editor_mode(cx);
          this.sync_existing_elicitation_states(window, cx);
-@@ -1248,6 +1302,25 @@
+@@ -1248,6 +1304,26 @@
              editor
          } else {
              self.message_editor.clone()
@@ -11450,12 +11492,13 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
 +
 +    pub(crate) fn eido_editor_snapshot(&self, cx: &App) -> serde_json::Value {
 +        serde_json::json!({"instance": self.eido_editor_instance, "revision": self.eido_editor_revision,
-+            "text": self.message_editor.read(cx).text(cx), "columns": self.eido_ui_columns, "toolsExpanded": self.entry_view_state.read(cx).all_tools_expanded})
++            "text": self.message_editor.read(cx).text(cx), "columns": self.eido_ui_columns, "appearance": if cx.theme().appearance().is_light() {"light"} else {"dark"}, "toolsExpanded": self.entry_view_state.read(cx).all_tools_expanded})
 +    }
 +
 +    pub(crate) fn eido_publish_editor(&mut self, cx: &mut Context<Self>) {
 +        let text = self.message_editor.read(cx).text(cx);
-+        if self.eido_last_editor_text.as_ref() == Some(&text) && self.eido_last_ui_columns == self.eido_ui_columns { return; }
++        if self.eido_last_editor_text.as_ref() == Some(&text) && self.eido_last_ui_columns == self.eido_ui_columns && self.eido_last_ui_light == Some(cx.theme().appearance().is_light()) { return; }
++        self.eido_last_ui_light = Some(cx.theme().appearance().is_light());
 +        self.eido_last_ui_columns = self.eido_ui_columns;
 +        self.eido_last_editor_text = Some(text);
 +        self.eido_editor_revision += 1;
@@ -11467,7 +11510,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
          }
      }
  
-@@ -1477,7 +1550,166 @@
+@@ -1477,7 +1553,166 @@
          }
      }
  
@@ -11634,7 +11677,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
          let thread = &self.thread;
  
          if self.is_loading_contents {
-@@ -1504,7 +1736,7 @@
+@@ -1504,7 +1739,7 @@
  
          let text = message_editor.read(cx).text(cx);
          let text = text.trim();
@@ -11643,7 +11686,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
              let connection = thread.read(cx).connection().clone();
              let can_login = !connection.auth_methods().is_empty();
              // Does the agent have a specific logout command? Prefer that in case they need to reset internal state.
-@@ -1662,6 +1894,17 @@
+@@ -1662,6 +1897,17 @@
          window: &mut Window,
          cx: &mut Context<Self>,
      ) {
@@ -11661,7 +11704,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
          let session_id = self.thread.read(cx).session_id().clone();
          let parent_session_id = self.thread.read(cx).parent_session_id().cloned();
          let agent_telemetry_id = self.thread.read(cx).connection().telemetry_id();
-@@ -1681,9 +1924,10 @@
+@@ -1681,9 +1927,10 @@
  
          let side = crate::agent_sidebar_side(cx);
  
@@ -11673,7 +11716,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
              };
  
              let generation = this.update(cx, |this, cx| {
-@@ -1753,7 +1997,9 @@
+@@ -1753,7 +2000,9 @@
                      side = side
                  );
  
@@ -11684,7 +11727,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
                      thread.send_command(contents, cx)
                  } else {
                      thread.send(contents, cx)
-@@ -1785,11 +2031,19 @@
+@@ -1785,11 +2034,19 @@
                  turn_time_ms,
                  side = side
              );
@@ -11706,7 +11749,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
                  this.update(cx, |this, cx| {
                      this.handle_thread_error(err, cx);
                  })
-@@ -1811,6 +2065,10 @@
+@@ -1811,6 +2068,10 @@
      }
  
      pub fn interrupt_and_send(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -11717,7 +11760,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
          let thread = &self.thread;
  
          if self.is_loading_contents {
-@@ -2104,6 +2362,73 @@
+@@ -2104,6 +2365,73 @@
          .detach_and_log_err(cx);
      }
  
@@ -11791,7 +11834,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
      pub fn add_to_queue(
          &mut self,
          content: Vec<acp::ContentBlock>,
-@@ -2143,6 +2468,9 @@
+@@ -2143,6 +2471,9 @@
          self.message_queue.enqueue(QueueEntry {
              id,
              content,
@@ -11801,7 +11844,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
              tracked_buffers,
              steer: false,
              editor,
-@@ -2201,6 +2529,7 @@
+@@ -2201,6 +2532,7 @@
                      entry.content = content;
                      entry.tracked_buffers = tracked_buffers;
                  }
@@ -11809,7 +11852,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
                  cx.notify();
              })?;
  
-@@ -2215,6 +2544,7 @@
+@@ -2215,6 +2547,7 @@
          cx: &mut Context<Self>,
      ) -> Option<QueueEntry> {
          let removed = self.message_queue.remove(id);
@@ -11817,7 +11860,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
          if removed.is_some() {
              self.sync_queue_flag_to_native_thread(cx);
          }
-@@ -2227,7 +2557,8 @@
+@@ -2227,7 +2560,8 @@
          cx.notify();
      }
  
@@ -11827,7 +11870,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
          if let Some(native_thread) = self.as_native_thread(cx) {
              // By default queued messages wait for the turn to fully complete.
              // Only a "steering" front message ends the turn at the next boundary.
-@@ -2244,6 +2575,11 @@
+@@ -2244,6 +2578,11 @@
          window: &mut Window,
          cx: &mut Context<Self>,
      ) {
@@ -11839,7 +11882,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
          let is_generating = self.thread.read(cx).status() == acp_thread::ThreadStatus::Generating;
          if let Some(entry) = self.message_queue.send_now(id, is_generating) {
              self.dispatch_queued_entry(entry, window, cx);
-@@ -2259,14 +2595,18 @@
+@@ -2259,14 +2598,18 @@
          window: &mut Window,
          cx: &mut Context<Self>,
      ) {
@@ -11860,7 +11903,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
  
          // A queued message can itself be a built-in command (e.g. the user typed
          // `/compact` while a turn was generating). Detect that so we run it as a
-@@ -2289,6 +2629,7 @@
+@@ -2289,6 +2632,7 @@
  
          let should_be_following = self.should_be_following;
          let contents_task = cx.spawn_in(window, async move |_this, cx| {
@@ -11868,7 +11911,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
              cancelled.await;
              if should_be_following {
                  workspace
-@@ -2301,7 +2642,7 @@
+@@ -2301,7 +2645,7 @@
              Ok(Some((content, tracked_buffers)))
          });
  
@@ -11877,7 +11920,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
      }
  
      pub fn move_queued_message_to_main_editor(
-@@ -4350,7 +4691,7 @@
+@@ -4350,7 +4694,7 @@
          )
      }
  
@@ -11886,7 +11929,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
          &mut self,
          window: &mut Window,
          cx: &mut Context<Self>,
-@@ -4370,8 +4711,20 @@
+@@ -4370,8 +4714,20 @@
          };
  
          let max_content_width = AgentSettings::get_global(cx).max_content_width;
@@ -11902,13 +11945,13 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
 +            let columns = ((f32::from(bounds.size.width) - 16.) / cell).floor().clamp(10., 1000.) as usize;
 +            let view = view.clone();
 +            cx.defer(move |cx| {let _ = view.update(cx, |this, cx| {
-+                if this.eido_ui_columns != columns {this.eido_ui_columns = columns;this.eido_publish_editor(cx);}
++                this.eido_ui_columns = columns;this.eido_publish_editor(cx);
 +            });});
 +        }, |_, _, _, _| {}).absolute().size_full().top_0().left_0();
  
          h_flex()
              .py_2()
-@@ -4381,8 +4734,9 @@
+@@ -4381,8 +4737,9 @@
              .map(|this| {
                  if has_messages {
                      this.on_action(cx.listener(Self::expand_message_editor))
@@ -11920,7 +11963,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
                          .when(editor_expanded, |this| this.h(vh(0.8, window)))
                  } else {
                      this.flex_1().size_full()
-@@ -4399,6 +4753,9 @@
+@@ -4399,6 +4756,9 @@
                      .flex_grow_0()
                      .justify_between()
                      .gap_2()
@@ -11930,7 +11973,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
                      .child(
                          v_flex()
                              .relative()
-@@ -4407,6 +4764,10 @@
+@@ -4407,6 +4767,10 @@
                              .when(fills_container, |this| this.flex_1())
                              .pt_1()
                              .pr_2p5()
@@ -11941,7 +11984,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
                              .child(self.message_editor.clone())
                              .when(has_messages, |this| {
                                  this.child(
-@@ -4441,6 +4802,9 @@
+@@ -4441,6 +4805,9 @@
                                  )
                              }),
                      )
@@ -11951,7 +11994,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
                      .child(
                          h_flex()
                              .w_full()
-@@ -4464,6 +4828,9 @@
+@@ -4464,6 +4831,9 @@
                                      .flex_wrap()
                                      .gap_1()
                                      .children(self.render_token_usage(cx))
@@ -11961,7 +12004,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
                                      .children(self.profile_selector.clone())
                                      .map(|this| match self.config_options_view.clone() {
                                          Some(config_view) => this.child(config_view),
-@@ -4528,11 +4895,18 @@
+@@ -4528,11 +4898,18 @@
              .id("message_queue_list")
              .max_h_40()
              .overflow_y_scroll()
@@ -11981,7 +12024,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
                      (Color::Accent, "Next in Queue")
                  } else {
                      (Color::Muted, "In Queue")
-@@ -4571,7 +4945,7 @@
+@@ -4571,7 +4948,7 @@
                              .min_w(min_width)
                              .justify_end()
                              .child(
@@ -11990,7 +12033,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
                                      .icon_size(IconSize::Small)
                                      .tooltip(|_window, cx| {
                                          Tooltip::with_meta(
-@@ -4595,6 +4969,7 @@
+@@ -4595,6 +4972,7 @@
                              .child(
                                  Button::new(("send_now_focused", index), "Send Now")
                                      .label_size(LabelSize::Small)
@@ -11998,7 +12041,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
                                      .style(ButtonStyle::Outlined)
                                      .key_binding(
                                          KeyBinding::for_action_in(
-@@ -4615,7 +4990,7 @@
+@@ -4615,7 +4993,7 @@
                              .min_w(min_width)
                              .justify_end()
                              .child(
@@ -12007,7 +12050,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
                                      .icon_size(IconSize::Small)
                                      .tooltip({
                                          let focus_handle = focus_handle.clone();
-@@ -4638,7 +5013,7 @@
+@@ -4638,7 +5016,7 @@
                                      })),
                              )
                              .child(
@@ -12016,7 +12059,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
                                      .icon_size(IconSize::Small)
                                      .tooltip({
                                          let focus_handle = focus_handle.clone();
-@@ -4667,8 +5042,9 @@
+@@ -4667,8 +5045,9 @@
                                  ))
                              })
                              .child(
@@ -12027,7 +12070,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
                                      .when(is_next, |this| this.style(ButtonStyle::Outlined))
                                      .when(is_next && message_editor.is_empty(cx), |this| {
                                          let action: Box<dyn gpui::Action> = if can_fast_track {
-@@ -6261,6 +6637,11 @@
+@@ -6261,6 +6640,11 @@
                                                  s.border_color(focus_border.opacity(0.8))
                                              })
                                      })
@@ -12039,7 +12082,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
                                      .text_xs()
                                      .child(editor.clone().into_any_element())
                              )
-@@ -7278,7 +7659,7 @@
+@@ -7278,7 +7662,7 @@
  
      pub(crate) fn sync_editor_mode(&mut self, cx: &mut Context<Self>) {
          let has_messages = self.list_state.item_count() > 0;
@@ -12048,7 +12091,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
  
          if !has_messages {
              self.editor_expanded = false;
-@@ -7299,7 +7680,11 @@
+@@ -7299,7 +7683,11 @@
          } else {
              EditorMode::AutoHeight {
                  min_lines: AgentSettings::get_global(cx).message_editor_min_lines,
@@ -12061,7 +12104,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
              }
          };
          self.message_editor.update(cx, |editor, cx| {
-@@ -7326,6 +7711,7 @@
+@@ -7326,6 +7714,7 @@
      }
  
      fn render_generating(&self, confirmation: bool, cx: &App) -> impl IntoElement {
@@ -12069,7 +12112,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
          let show_stats = AgentSettings::get_global(cx).show_turn_stats;
          let elapsed_label = show_stats
              .then(|| {
-@@ -7378,15 +7764,23 @@
+@@ -7378,15 +7767,23 @@
                      )
                  } else if is_blocked_on_terminal_command {
                      this
@@ -12099,7 +12142,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
              .when_some(elapsed_label, |this, elapsed| {
                  this.child(
                      Label::new(elapsed)
-@@ -7505,7 +7899,7 @@
+@@ -7505,7 +7902,7 @@
              }
          }
  
@@ -12108,7 +12151,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
  
          v_flex()
              .id(("thinking-block", chunk_ix))
-@@ -7532,7 +7926,7 @@
+@@ -7532,7 +7929,7 @@
                                  div()
                                      .text_size(self.tool_name_font_size())
                                      .text_color(cx.theme().colors().text_muted)
@@ -12117,7 +12160,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
                              ),
                      )
                      .child(
-@@ -7961,6 +8355,14 @@
+@@ -7961,6 +8358,14 @@
              working_dir,
              is_expanded,
          )
@@ -12132,7 +12175,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
          .elapsed(time_elapsed)
          .running(!command_finished && !needs_confirmation)
          .on_toggle_expand(cx.listener({
-@@ -10082,6 +10484,11 @@
+@@ -10082,6 +10487,11 @@
              .into_any_element()
          };
  
@@ -12144,7 +12187,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
          let gradient_overlay = {
              div()
                  .absolute()
-@@ -10089,24 +10496,11 @@
+@@ -10089,24 +10499,11 @@
                  .right_0()
                  .w_12()
                  .h_full()
@@ -12174,7 +12217,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
          };
  
          h_flex()
-@@ -10693,6 +11087,9 @@
+@@ -10693,6 +11090,9 @@
                  let model = thread.model()?;
                  Some(model.name().0)
              });
@@ -12184,7 +12227,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
          let thread_title = thread
              .as_ref()
              .and_then(|t| t.read(cx).title())
-@@ -10775,6 +11172,7 @@
+@@ -10775,6 +11175,7 @@
                  h_flex()
                      .group(&card_header_id)
                      .h_8()
@@ -12192,7 +12235,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
                      .p_1()
                      .w_full()
                      .justify_between()
-@@ -10798,25 +11196,24 @@
+@@ -10798,25 +11199,24 @@
                                      .gap_1p5()
                                      .justify_between()
                                      .child(
@@ -12232,7 +12275,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
                                                          .color(Color::Muted)
                                                          .truncate(),
                                                  )
-@@ -11648,6 +12045,94 @@
+@@ -11648,6 +12048,94 @@
              )
      }
  
@@ -12327,7 +12370,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
      fn render_session_notices(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
          let notices = self.thread.read(cx).notices();
          if notices.is_empty() {
-@@ -12293,6 +12778,31 @@
+@@ -12293,6 +12781,31 @@
                          .size_full()
                          .child(self.render_entries(cx))
                          .vertical_scrollbar_for(&list_state, window, cx)
@@ -12359,7 +12402,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
                          .into_any()
                  } else {
                      this.into_any()
-@@ -12607,9 +13117,15 @@
+@@ -12607,9 +13120,15 @@
                      .flatten(),
                  |this, bar| this.child(bar),
              )
@@ -12375,7 +12418,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
              .when_some(self.render_session_notices(cx), |this, notices| {
                  this.child(notices)
              })
-@@ -12631,7 +13147,9 @@
+@@ -12631,7 +13150,9 @@
              )
              .children(self.render_token_limit_callout(cx))
              .children(self.render_request_elicitations(cx))
@@ -31906,6 +31949,36 @@ diff --git a/crates/workspace/src/persistence.rs b/crates/workspace/src/persiste
  
      /// Creates a unique directory in a FakeFs, returning the path.
      /// Uses a UUID suffix to avoid collisions with other tests sharing the global DB.
+diff --git a/crates/workspace/src/welcome.rs b/crates/workspace/src/welcome.rs
+--- a/crates/workspace/src/welcome.rs
++++ b/crates/workspace/src/welcome.rs
+@@ -447,7 +447,10 @@
+                 .into_any_element()
+         };
+ 
+-        let welcome_label = if self.fallback_to_recent_projects {
++        let eido = std::env::var_os("EIDO_ROOT").is_some();
++        let welcome_label = if eido {
++            if self.fallback_to_recent_projects { "Welcome back to Eido" } else { "Welcome to Eido" }
++        } else if self.fallback_to_recent_projects {
+             "Welcome back to Zed"
+         } else {
+             "Welcome to Zed"
+@@ -477,10 +480,12 @@
+                             .justify_center()
+                             .mb_4()
+                             .gap_4()
+-                            .child(Vector::square(VectorName::ZedLogo, rems_from_px(45_f32)))
++                            .child(if eido {
++                                gpui::svg().path("images/eido-mark.svg").size(rems_from_px(45_f32)).text_color(gpui::rgb(0x4b6df3)).into_any_element()
++                            } else { Vector::square(VectorName::ZedLogo, rems_from_px(45_f32)).into_any_element() })
+                             .child(
+                                 v_flex().child(Headline::new(welcome_label)).child(
+-                                    Label::new("The editor for what's next")
++                                    Label::new(if eido { "Understand. Create. Evolve." } else { "The editor for what's next" })
+                                         .size(LabelSize::Small)
+                                         .color(Color::Muted)
+                                         .italic(),
 diff --git a/crates/workspace/src/workspace.rs b/crates/workspace/src/workspace.rs
 --- a/crates/workspace/src/workspace.rs
 +++ b/crates/workspace/src/workspace.rs
@@ -32422,7 +32495,15 @@ diff --git a/crates/zed/Cargo.toml b/crates/zed/Cargo.toml
 diff --git a/crates/zed/src/main.rs b/crates/zed/src/main.rs
 --- a/crates/zed/src/main.rs
 +++ b/crates/zed/src/main.rs
-@@ -19,7 +19,7 @@
+@@ -2,6 +2,7 @@
+ #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+ 
+ mod reliability;
++mod eido_runtime;
+ mod watcher_debug;
+ mod zed;
+ 
+@@ -19,7 +20,7 @@
  use anyhow::{Context as _, Result};
  use clap::Parser;
  use cli::FORCE_CLI_MODE_ENV_VAR_NAME;
@@ -32431,7 +32512,7 @@ diff --git a/crates/zed/src/main.rs b/crates/zed/src/main.rs
  use collab_ui::channel_view::ChannelView;
  use collections::HashMap;
  use crashes::InitCrashHandler;
-@@ -74,8 +74,8 @@
+@@ -74,8 +75,8 @@
  };
  use zed::{
      OpenListener, OpenRequest, RawOpenRequest, app_menus, build_window_options,
@@ -32442,7 +32523,40 @@ diff --git a/crates/zed/src/main.rs b/crates/zed/src/main.rs
  };
  
  use crate::zed::{CrashHandler, OpenRequestKind, eager_load_active_theme_and_icon_theme};
-@@ -675,37 +675,25 @@
+@@ -210,7 +211,15 @@
+     #[cfg(unix)]
+     util::prevent_root_execution();
+ 
+-    let args = Args::parse();
++    let installed_data = eido_runtime::configure().unwrap_or_else(|error| {
++        eprintln!("Eido could not initialize its installed runtime: {error:#}");
++        std::process::exit(1);
++    });
++    let mut args = Args::parse();
++    if args.user_data_dir.is_none() {
++        args.user_data_dir = installed_data.map(|path| path.to_string_lossy().into_owned());
++    }
++
+ 
+     // `zed --askpass` Makes zed operate in nc/netcat mode for use with askpass
+     #[cfg(not(target_os = "windows"))]
+@@ -381,6 +390,15 @@
+     if failed_single_instance_check {
+         println!("zed is already running");
+         return;
++    }
++
++    if std::env::var_os("EIDO_INSTALLED_RUNTIME").is_some() {
++        if let Some(directory) = args.user_data_dir.as_deref() {
++            if let Err(error) = eido_runtime::prepare_settings(std::path::Path::new(directory)) {
++                eprintln!("Eido could not initialize settings: {error:#}");
++                std::process::exit(1);
++            }
++        }
+     }
+ 
+     let should_install_crash_handler =
+@@ -675,37 +693,25 @@
              cx.background_executor().clone(),
          );
          command_palette::init(cx);
@@ -32493,7 +32607,7 @@ diff --git a/crates/zed/src/main.rs b/crates/zed/src/main.rs
          let prompt_builder = PromptBuilder::load(app_state.fs.clone(), stdout_is_a_pty(), cx);
          project::AgentRegistryStore::init_global(
              cx,
-@@ -720,7 +708,8 @@
+@@ -720,7 +726,8 @@
              false,
              cx,
          );
@@ -32503,7 +32617,12 @@ diff --git a/crates/zed/src/main.rs b/crates/zed/src/main.rs
  
          repl::init(app_state.fs.clone(), cx);
          recent_projects::init(cx);
-@@ -784,7 +773,6 @@
+@@ -780,11 +787,10 @@
+         markdown_preview::init(cx);
+         tabular_data_preview::init(cx);
+         svg_preview::init(cx);
+-        onboarding::init(cx);
++        if std::env::var_os("EIDO_ROOT").is_none() { onboarding::init(cx); }
          settings_ui::init(cx);
          keymap_editor::init(cx);
          extensions_ui::init(cx);
@@ -32511,7 +32630,7 @@ diff --git a/crates/zed/src/main.rs b/crates/zed/src/main.rs
          inspector_ui::init(app_state.clone(), cx);
          json_schema_store::init(cx);
          miniprofiler_ui::init(*STARTUP_TIME.get().unwrap(), cx);
-@@ -1074,20 +1062,8 @@
+@@ -1074,20 +1080,8 @@
                  })
                  .detach_and_log_err(cx);
              }
@@ -32534,6 +32653,15 @@ diff --git a/crates/zed/src/main.rs b/crates/zed/src/main.rs
              }
              OpenRequestKind::DockMenuAction { index } => {
                  cx.perform_dock_menu_action(index);
+@@ -1555,7 +1549,7 @@
+             })
+             .await?;
+         }
+-    } else if matches!(kvp.read_kvp(FIRST_OPEN), Ok(None)) {
++    } else if std::env::var_os("EIDO_ROOT").is_none() && matches!(kvp.read_kvp(FIRST_OPEN), Ok(None)) {
+         cx.update(|cx| show_onboarding_view(app_state, cx)).await?;
+     } else {
+         cx.update(|cx| {
 diff --git a/crates/zed/src/visual_test_runner.rs b/crates/zed/src/visual_test_runner.rs
 --- a/crates/zed/src/visual_test_runner.rs
 +++ b/crates/zed/src/visual_test_runner.rs
@@ -33328,6 +33456,25 @@ diff --git a/crates/zed/src/zed/edit_prediction_registry.rs b/crates/zed/src/zed
 -            .unwrap();
 -    }
 -}
+diff --git a/crates/zed/src/zed/mac_only_instance.rs b/crates/zed/src/zed/mac_only_instance.rs
+--- a/crates/zed/src/zed/mac_only_instance.rs
++++ b/crates/zed/src/zed/mac_only_instance.rs
+@@ -34,6 +34,7 @@
+         ReleaseChannel::Stable => 43737 + (2 * USER_BLOCK),
+         ReleaseChannel::Nightly => 43737 + (3 * USER_BLOCK),
+     };
++    let port = if std::env::var_os("EIDO_ROOT").is_some() { port + 4000 } else { port };
+     let mut user_port = port;
+     let mut sys = System::new_all();
+     sys.refresh_all();
+@@ -71,6 +72,7 @@
+ }
+ 
+ fn instance_handshake() -> &'static str {
++    if std::env::var_os("EIDO_ROOT").is_some() { return "Eido Editor Instance Running"; }
+     match *release_channel::RELEASE_CHANNEL {
+         ReleaseChannel::Dev => "Zed Editor Dev Instance Running",
+         ReleaseChannel::Nightly => "Zed Editor Nightly Instance Running",
 diff --git a/crates/zed/src/zed.rs b/crates/zed/src/zed.rs
 --- a/crates/zed/src/zed.rs
 +++ b/crates/zed/src/zed.rs

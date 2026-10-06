@@ -431,7 +431,7 @@ impl Render for PiSettingsView {
             .child(v_flex().gap_3().pt_4().border_t_1().border_color(cx.theme().colors().border_variant)
                 .child(Label::new("Tool Defaults"))
                 .child(text_field(self.default_tools.clone(), cx))
-                .child(Label::new("Leave blank for read, edit, write, find, grep and ls. Enter [] for no default file tools.").size(LabelSize::Small).color(Color::Muted))
+                .child(Label::new("Leave blank for read, edit, write, find, grep, ls and bash. Enter [] for no default file or shell tools.").size(LabelSize::Small).color(Color::Muted))
                 .child(Label::new("Use tool names separated by commas. +codemode and -edit adjust pi defaults. Plugins keep their own defaults; agent roles still apply.").size(LabelSize::Small).color(Color::Muted))
                 .child(Button::new("pi-save-tool-defaults", "Save Tool Defaults").style(ButtonStyle::Outlined).disabled(self.busy)
                     .on_click(cx.listener(|this, _, window, cx| {

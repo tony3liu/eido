@@ -19,7 +19,7 @@ fn request(full_access: Option<bool>, cx: &mut App) {
     let task = cx.background_spawn(async move {
         let root = root.ok_or_else(|| "Eido runtime is unavailable.".to_string())?;
         let Some(full_access) = full_access else {
-            let enabled = std::fs::read_to_string(root.join(".local/eido/settings.json"))
+            let enabled = std::fs::read_to_string(std::env::var_os("EIDO_PI_CONFIG_DIR").map(PathBuf::from).unwrap_or_else(|| root.join(".local/eido")).join("settings.json"))
                 .ok().and_then(|content| serde_json::from_str::<Value>(&content).ok())
                 .is_some_and(|settings| settings["eido"]["fullAccess"] == true);
             return Ok(enabled);

@@ -51,13 +51,29 @@ export function createPiUI(pi: AgentSession, client: AgentContext, turnSignal: (
   if (autocomplete) Object.defineProperty(pi, PI_AUTOCOMPLETE, {value: autocomplete});
   if (state) Object.defineProperty(pi, PI_UI_STATE, {value: state});
   const editor=state&&autocomplete&&shortcuts?createPiEditor(pi,client,state,()=>theme,agentDir,autocomplete,shortcuts,notice):undefined;
+  let explicitTheme=false;
+  const followAppearance=()=>{
+    if(explicitTheme||pi.settingsManager.getTheme())return;
+    theme=findTheme(state?.appearance()??'dark')!;
+    decorations?.refreshTheme();editor?.refreshTheme();
+  };
+  const stopAppearance=state?.onAppearance(followAppearance);
   const dispose = pi.dispose.bind(pi);
-  pi.dispose = () => {lifetime.abort(); editor?.close(); shortcuts?.close(); autocomplete?.close(); decorations?.close();state?.close(); dispose();};
+  let closing: Promise<void> | undefined;
+  const close = () => closing ??= (async () => {
+    lifetime.abort();stopAppearance?.();
+    const stopped=editor?.close();
+    shortcuts?.close();autocomplete?.close();decorations?.close();state?.close();
+    await stopped;
+  })();
+  Object.defineProperty(pi,Symbol.for('eido.pi.ui.close'),{value:close});
+  pi.dispose = () => {void close(); dispose();};
   const reload = pi.reload.bind(pi);
   pi.reload = async (...args) => {
     lifetime.abort(); lifetime = new AbortController(); await editor?.reset(); shortcuts?.reset(); autocomplete?.reset(); decorations?.reset();state?.reset();
     const result = await reload(...args);
-    theme = findTheme(pi.settingsManager.getTheme() ?? 'dark') ?? getThemeByName('dark')!;
+    explicitTheme=false;
+    theme = findTheme(pi.settingsManager.getTheme() ?? state?.appearance() ?? 'dark') ?? getThemeByName('dark')!;
     decorations?.refreshTheme();
     shortcuts?.refresh();
     return result;
@@ -76,6 +92,7 @@ export function createPiUI(pi: AgentSession, client: AgentContext, turnSignal: (
     setTheme(value) {
       const next = typeof value === 'string' ? findTheme(value) : value;
       if (!next) return {success:false,error:`Unknown pi theme: ${value}`};
+      explicitTheme=true;
       theme = next;
       decorations?.refreshTheme();
       editor?.refreshTheme();

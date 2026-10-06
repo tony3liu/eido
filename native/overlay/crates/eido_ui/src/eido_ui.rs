@@ -295,7 +295,7 @@ impl Render for Composer {
                     .w_full()
                     .max_w(px(780.))
                     .mx_auto()
-                    .max_h(px(300.))
+                    .max_h(ui::vh(0.5, window))
                     .rounded(px(10.))
                     .border_1()
                     .border_color(cx.theme().colors().border)

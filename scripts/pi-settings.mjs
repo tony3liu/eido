@@ -1,3 +1,4 @@
+import {piDirectory} from './runtime-paths.mjs';
 import { readFile, writeFile, mkdir, chmod, rename, mkdtemp, rm, access } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { homedir } from "node:os";
@@ -44,7 +45,7 @@ function providerId(value) {
   return id;
 }
 
-export function createPiSettings(directory = join(root, ".local/eido"), sourceDirectory = join(homedir(), ".pi/agent")) {
+export function createPiSettings(directory = piDirectory(root), sourceDirectory = join(homedir(), ".pi/agent")) {
   const authPath = join(directory, "auth.json");
   const modelsPath = join(directory, "models.json");
   const settings = () => SettingsManager.create(directory, directory, { projectTrusted: false });

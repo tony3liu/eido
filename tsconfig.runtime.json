@@ -1,0 +1,12 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "rewriteRelativeImportExtensions": true,
+    "sourceMap": false,
+    "declaration": false,
+    "rootDir": "."
+  },
+  "include": ["packages/acp/src/**/*.ts"],
+  "exclude": ["**/test/**", "**/tests/**", "**/*.test.ts", "**/*.spec.ts"]
+}

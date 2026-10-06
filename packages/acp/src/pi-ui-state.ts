@@ -20,6 +20,8 @@ export function createPiUIState(pi: AgentSession, client: AgentContext, reportEr
   const nativeReady = new Promise<void>(resolve => {markReady = resolve;});
   let toolsExpanded = false;
   let columns=80;
+  let appearance:'light'|'dark'='dark';
+  const appearanceListeners=new Set<()=>void>();
   const layoutListeners=new Set<()=>void>();
   const editorListeners=new Set<()=>void>();
   const state = {
@@ -94,9 +96,14 @@ export function createPiUIState(pi: AgentSession, client: AgentContext, reportEr
     onEditor(listener:()=>void){editorListeners.add(listener);return()=>{editorListeners.delete(listener);};},
     setShortcuts(shortcuts:NativeShortcut[]){state.shortcuts=shortcuts;publish();},
     columns:()=>columns,
+    appearance:()=>appearance,
+    onAppearance(listener:()=>void){appearanceListeners.add(listener);return()=>{appearanceListeners.delete(listener);};},
     onLayout(listener:()=>void){layoutListeners.add(listener);return()=>{layoutListeners.delete(listener);};},
-    receive(value: EditorState & {toolsExpanded?: boolean; columns?:number}) {
+    receive(value: EditorState & {toolsExpanded?: boolean; columns?:number; appearance?:'light'|'dark'}) {
       sync(value);
+      if((value.appearance==='light'||value.appearance==='dark')&&value.appearance!==appearance){
+        appearance=value.appearance;for(const listener of appearanceListeners)listener();
+      }
       if(Number.isInteger(value.columns)&&value.columns!>=10&&value.columns!<=1000&&columns!==value.columns){
         columns=value.columns!;for(const listener of layoutListeners)listener();
       }

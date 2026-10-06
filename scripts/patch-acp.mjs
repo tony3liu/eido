@@ -53,6 +53,9 @@ async function patchSource(url, before, after) {
 const sessionPath = new URL("dist/session.js", directory);
 const {patchSessionOwner} = await import('./patch-acp-session-owner.mjs');
 await patchSessionOwner(agentPath, patchSource);
+await patchSource(new URL('dist/pi-shutdown.js', directory),
+  '    await emitPiSessionShutdown(session);\n    session.dispose();',
+  '    await emitPiSessionShutdown(session);\n    try { await session[Symbol.for("eido.pi.ui.close")]?.(); } finally { session.dispose(); }');
 await patchSource(sessionPath,
   '            const result = await applyConfig(this.pi, this.deps.modelRuntime, this.availableModels, configId, value, this.settingsManager.getEnabledModels());\n            this.availableModels = result.availableModels;\n            this.modelPreferences = result.preferences;\n            return result.configOptions;',
   '            return await this.applyConfigAtBoundary(configId, value);');
