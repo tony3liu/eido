@@ -36,7 +36,7 @@ pub struct EidoFileQueryResult {
 const MAX_BYTES: usize = 50 * 1024;
 const MAX_LINE: usize = 500;
 
-pub(super) fn allowed_path(root: &Path, path: &Path) -> bool {
+pub fn allowed_path(root: &Path, path: &Path) -> bool {
     path.strip_prefix(root).is_ok_and(|relative| {
         relative.components().all(|part| {
             !matches!(part, Component::ParentDir)
@@ -113,7 +113,7 @@ fn escape_glob(path: &str) -> String {
 }
 
 /// Resolve new editor paths without creating directories or following dangling links.
-pub(super) async fn canonical_editor_path(fs: &dyn project::Fs, path: &Path) -> Result<PathBuf> {
+pub async fn canonical_editor_path(fs: &dyn project::Fs, path: &Path) -> Result<PathBuf> {
     let mut ancestor = path.to_owned();
     let mut suffix = Vec::new();
     loop {

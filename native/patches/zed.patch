@@ -628,7 +628,18 @@ diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thr
  mod mention;
  mod terminal;
  pub use ::terminal::HeadlessTerminal;
-@@ -2333,7 +2335,15 @@
+@@ -2270,6 +2272,10 @@
+     project: Entity<Project>,
+     action_log: Entity<ActionLog>,
+     _git_store_subscription: Subscription,
++    eido_review_subscriptions: Vec<Subscription>,
++    review_write_error: Option<SharedString>,
++    review_blocked_paths: HashSet<PathBuf>,
++    review_copies: Vec<(action_log::ReviewCheckpoint, bool)>,
+     update_last_checkpoint_if_changed_task: Option<Task<Result<()>>>,
+     shared_buffers: HashMap<Entity<Buffer>, BufferSnapshot>,
+     turn_id: u32,
+@@ -2333,7 +2339,15 @@
  }
  
  #[derive(Debug)]
@@ -644,7 +655,7 @@ diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thr
      StatusChanged,
      PromptUpdated,
      NewEntry,
-@@ -2493,7 +2503,8 @@
+@@ -2493,7 +2507,8 @@
                  | AcpThreadEvent::AvailableCommandsUpdated(_)
                  | AcpThreadEvent::ModeUpdated(_)
                  | AcpThreadEvent::ConfigOptionsUpdated(_)
@@ -654,7 +665,57 @@ diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thr
              });
  
          let git_store = project.read(cx).git_store().clone();
-@@ -2776,6 +2787,20 @@
+@@ -2516,6 +2531,10 @@
+             work_dirs,
+             action_log,
+             _git_store_subscription,
++            eido_review_subscriptions: Vec::new(),
++            review_write_error: None,
++            review_blocked_paths: HashSet::default(),
++            review_copies: Vec::new(),
+             update_last_checkpoint_if_changed_task: None,
+             shared_buffers: Default::default(),
+             entries: Default::default(),
+@@ -2550,6 +2569,38 @@
+         }
+     }
+ 
++    pub fn review_is_unavailable(&self) -> bool {
++        self.review_write_error.is_some() || !self.review_blocked_paths.is_empty()
++    }
++
++    pub fn set_review_write_error(&mut self, error: Option<SharedString>) {
++        self.review_write_error = error;
++    }
++
++    pub fn add_review_copy(&mut self, file: action_log::ReviewCheckpoint, archived: bool, cx: &mut Context<Self>) {
++        if !archived { self.review_blocked_paths.insert(file.path.clone()); }
++        self.review_copies.push((file, archived));
++        cx.emit(AcpThreadEvent::NoticesUpdated);
++        cx.notify();
++    }
++
++    pub fn review_copies(&self) -> &[(action_log::ReviewCheckpoint, bool)] { &self.review_copies }
++
++    pub fn review_path_is_blocked(&self, path: &std::path::Path) -> bool { self.review_blocked_paths.contains(path) }
++
++    pub fn keep_current_review(&mut self, path: &std::path::Path, cx: &mut Context<Self>) {
++        self.review_blocked_paths.remove(path);
++        for (file, archived) in &mut self.review_copies {
++            if file.path == path { *archived = true; }
++        }
++        cx.emit(AcpThreadEvent::NoticesUpdated);
++        cx.notify();
++    }
++
++    pub fn retain_review_subscription(&mut self, subscription: Subscription) {
++        self.eido_review_subscriptions.push(subscription);
++    }
++
+     pub fn parent_session_id(&self) -> Option<&acp::SessionId> {
+         self.parent_session_id.as_ref()
+     }
+@@ -2776,6 +2827,20 @@
          }
  
          false
@@ -675,7 +736,7 @@ diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thr
      }
  
      pub fn handle_session_update(
-@@ -3936,7 +3961,7 @@
+@@ -3936,7 +4001,7 @@
          message: Vec<acp::ContentBlock>,
          cx: &mut Context<Self>,
      ) -> BoxFuture<'static, Result<Option<acp::PromptResponse>>> {
@@ -684,7 +745,7 @@ diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thr
      }
  
      /// Sends a prompt without displaying a user-message bubble for it.
-@@ -3948,13 +3973,30 @@
+@@ -3948,13 +4013,30 @@
          message: Vec<acp::ContentBlock>,
          cx: &mut Context<Self>,
      ) -> BoxFuture<'static, Result<Option<acp::PromptResponse>>> {
@@ -716,7 +777,7 @@ diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thr
          cx: &mut Context<Self>,
      ) -> BoxFuture<'static, Result<Option<acp::PromptResponse>>> {
          let language_registry = self.project.read(cx).languages().clone();
-@@ -3963,7 +4005,13 @@
+@@ -3963,7 +4045,13 @@
          for chunk in &message {
              block.append_prompt(chunk.clone(), &language_registry, path_style, cx);
          }
@@ -731,7 +792,7 @@ diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thr
          let git_store = self.project.read(cx).git_store().clone();
  
          let client_user_message_ids = self.connection.client_user_message_ids(cx);
-@@ -4566,19 +4614,45 @@
+@@ -4566,19 +4654,45 @@
          reuse_shared_snapshot: bool,
          cx: &mut Context<Self>,
      ) -> Task<Result<String, acp::Error>> {
@@ -778,7 +839,7 @@ diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thr
                  Ok::<_, acp::Error>(project.open_buffer(path, cx))
              })?;
  
-@@ -4597,14 +4671,15 @@
+@@ -4597,14 +4711,15 @@
              let snapshot = if let Some(snapshot) = snapshot {
                  snapshot
              } else {
@@ -801,7 +862,7 @@ diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thr
                  snapshot
              };
  
-@@ -4644,10 +4719,54 @@
+@@ -4644,10 +4759,60 @@
          content: String,
          cx: &mut Context<Self>,
      ) -> Task<Result<()>> {
@@ -831,6 +892,12 @@ diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thr
 +        create: bool,
 +        cx: &mut Context<Self>,
 +    ) -> Task<Result<()>> {
++        if let Some(error) = &self.review_write_error {
++            return Task::ready(Err(anyhow!(error.to_string())));
++        }
++        if self.review_blocked_paths.contains(&path) {
++            return Task::ready(Err(anyhow!("A saved review for this file conflicts with newer content. Resolve that review before further agent edits.")));
++        }
          let project = self.project.clone();
          let action_log = self.action_log.clone();
 +        let edit_source = action_log::EditSource {
@@ -856,7 +923,7 @@ diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thr
              let load = project.update(cx, |project, cx| {
                  let path = project
                      .project_path_for_absolute_path(&path, cx)
-@@ -4656,11 +4775,18 @@
+@@ -4656,11 +4821,18 @@
              });
              let buffer = load?.await?;
              let snapshot = this.update(cx, |this, cx| {
@@ -880,7 +947,7 @@ diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thr
              let edits = cx
                  .background_executor()
                  .spawn(async move {
-@@ -4674,6 +4800,9 @@
+@@ -4674,6 +4846,9 @@
                  })
                  .await;
  
@@ -890,7 +957,7 @@ diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thr
              if should_update_agent_location {
                  project.update(cx, |project, cx| {
                      project.set_agent_location(
-@@ -4691,10 +4820,16 @@
+@@ -4691,10 +4866,16 @@
  
              let format_on_save = cx.update(|cx| {
                  action_log.update(cx, |action_log, cx| {
@@ -907,7 +974,7 @@ diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thr
                      buffer.start_transaction();
                      buffer.edit(edits, None, cx);
                      buffer.end_transaction_with_source(BufferEditSource::Agent, cx);
-@@ -4702,13 +4837,24 @@
+@@ -4702,13 +4883,24 @@
                      let settings =
                          language::language_settings::LanguageSettings::for_buffer(buffer, cx);
  
@@ -938,7 +1005,7 @@ diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thr
  
              if format_on_save {
                  let format_task = project.update(cx, |project, cx| {
-@@ -6930,6 +7076,213 @@
+@@ -6930,6 +7122,213 @@
              "zero\none\ntwo\nthree\nfour\nfive\n"
          );
          request.await.unwrap();
@@ -1254,7 +1321,7 @@ diff --git a/crates/acp_thread/src/terminal.rs b/crates/acp_thread/src/terminal.
 diff --git a/crates/action_log/src/action_log.rs b/crates/action_log/src/action_log.rs
 --- a/crates/action_log/src/action_log.rs
 +++ b/crates/action_log/src/action_log.rs
-@@ -48,6 +48,13 @@
+@@ -48,6 +48,23 @@
      pub buffers: Vec<PerBufferUndo>,
  }
  
@@ -1265,10 +1332,20 @@ diff --git a/crates/action_log/src/action_log.rs b/crates/action_log/src/action_
 +    pub title: SharedString,
 +}
 +
++/// A consistent review checkpoint, independent of editor-tab persistence.
++#[derive(Clone, Debug)]
++pub struct ReviewCheckpoint {
++    pub path: PathBuf,
++    pub base: String,
++    pub current: String,
++    pub disk_mtime: Option<(u64, u32)>,
++    pub sources: Vec<EditSource>,
++}
++
  /// Tracks actions performed by tools in a thread
  pub struct ActionLog {
      /// Buffers that we want to notify the model about when they change.
-@@ -62,6 +69,8 @@
+@@ -62,6 +79,8 @@
      last_reject_undo: Option<LastRejectUndo>,
      /// Tracks the last time files were read by the agent, to detect external modifications
      file_read_times: HashMap<PathBuf, MTime>,
@@ -1277,7 +1354,7 @@ diff --git a/crates/action_log/src/action_log.rs b/crates/action_log/src/action_
  }
  
  impl ActionLog {
-@@ -73,12 +82,20 @@
+@@ -73,12 +92,81 @@
              linked_action_log: None,
              last_reject_undo: None,
              file_read_times: HashMap::default(),
@@ -1295,10 +1372,71 @@ diff --git a/crates/action_log/src/action_log.rs b/crates/action_log/src/action_
 +        if let Some(parent) = &self.linked_action_log {
 +            parent.update(cx, |log, cx| log.set_save_on_review(save, cx));
 +        }
++    }
++
++    /// Wait for the diff queue before pairing its baseline with buffer contents.
++    /// Conflicted or deleted files keep the last durable checkpoint unchanged.
++    pub fn review_checkpoint(&self, cx: &App) -> Option<Vec<ReviewCheckpoint>> {
++        let (files, pending) = self.review_checkpoint_parts(cx);
++        pending.is_empty().then_some(files)
++    }
++
++    /// Preserve the previous checkpoint for a busy/conflicted file without holding
++    /// back unrelated files in the same task.
++    pub fn review_checkpoint_parts(&self, cx: &App) -> (Vec<ReviewCheckpoint>, Vec<PathBuf>) {
++        let mut result = Vec::new();
++        let mut pending = Vec::new();
++        for (buffer, tracked) in &self.tracked_buffers {
++            let buffer = buffer.read(cx);
++            let Some(file) = buffer.file() else { continue; };
++            let Some(local) = file.as_local() else { continue; };
++            let path = local.abs_path(cx);
++            if tracked.snapshot.version() != &buffer.version() || buffer.has_conflict()
++                || !matches!(tracked.status, TrackedBufferStatus::Modified) || file.disk_state().is_deleted() {
++                pending.push(path);
++                continue;
++            }
++            let base = tracked.diff_base.to_string();
++            let current = tracked.snapshot.as_rope().to_string();
++            if base == current { continue; }
++            result.push(ReviewCheckpoint { path, base, current,
++                disk_mtime: file.disk_state().mtime().and_then(|mtime| mtime.to_seconds_and_nanos_for_persistence()),
++                sources: tracked.edit_sources.values().cloned().collect(),
++            });
++        }
++        (result, pending)
++    }
++
++    /// Caller has checked the actual disk version. Never replace a newer dirty buffer.
++    /// The original baseline is installed directly; old tool calls are not replayed.
++    pub fn restore_review_checkpoint(
++        &mut self, buffer: Entity<Buffer>, saved: ReviewCheckpoint, cx: &mut Context<Self>,
++    ) -> Result<()> {
++        let live = buffer.read(cx);
++        anyhow::ensure!(!self.tracked_buffers.contains_key(&buffer), "File already has an active review");
++        anyhow::ensure!(!live.has_conflict(), "Editor contains a disk conflict");
++        anyhow::ensure!(!live.is_dirty() || live.text() == saved.current, "Editor contains newer unsaved changes");
++        let current_mtime = live.file().and_then(|file| file.disk_state().mtime())
++            .and_then(|mtime| mtime.to_seconds_and_nanos_for_persistence());
++        anyhow::ensure!(current_mtime == saved.disk_mtime, "File changed on disk");
++        if live.text() != saved.current {
++            buffer.update(cx, |buffer, cx| {
++                buffer.edit([(0..buffer.len(), saved.current.as_str())], None, cx);
++            });
++        }
++        self.set_save_on_review(false, cx);
++        let tracked = self.track_buffer_internal(buffer, false, cx);
++        tracked.diff_base = Rope::from(saved.base.as_str());
++        tracked.unreviewed_edits = Patch::new(language::line_diff(&saved.base, &saved.current)
++            .into_iter().map(|(old, new)| Edit { old, new }).collect());
++        tracked.edit_sources = saved.sources.into_iter().map(|source| (source.session_id.clone(), source)).collect();
++        tracked.schedule_diff_update(ChangeAuthor::Agent, cx);
++        cx.notify();
++        Ok(())
      }
  
      pub fn project(&self) -> &Entity<Project> {
-@@ -190,6 +207,7 @@
+@@ -190,6 +278,7 @@
                  }
                  TrackedBuffer {
                      buffer: buffer.clone(),
@@ -1306,12 +1444,18 @@ diff --git a/crates/action_log/src/action_log.rs b/crates/action_log/src/action_
                      diff_base,
                      unreviewed_edits,
                      snapshot: text_snapshot,
-@@ -579,6 +597,35 @@
-     /// Mark a buffer as edited by agent, so we can refresh it in the context
-     pub fn buffer_edited(&mut self, buffer: Entity<Buffer>, cx: &mut Context<Self>) {
+@@ -230,6 +319,7 @@
+                 }
+                 self.handle_buffer_edited(buffer, cx);
+             }
++            BufferEvent::Saved => cx.notify(),
+             BufferEvent::FileHandleChanged => {
+                 self.handle_buffer_file_changed(buffer, cx);
+             }
+@@ -581,6 +671,35 @@
          self.buffer_edited_impl(buffer, true, cx);
-+    }
-+
+     }
+ 
 +    /// Record the originating session, preserving it through every parent log.
 +    /// These are file contributors, not exact ownership of individual lines.
 +    pub fn buffer_edited_by(
@@ -1339,10 +1483,12 @@ diff --git a/crates/action_log/src/action_log.rs b/crates/action_log/src/action_
 +            .find(|(buffer, _)| buffer.read(cx).remote_id() == buffer_id)
 +            .map(|(_, tracked)| tracked.edit_sources.values().cloned().collect())
 +            .unwrap_or_default()
-     }
- 
++    }
++
      fn buffer_edited_impl(
-@@ -751,8 +798,12 @@
+         &mut self,
+         buffer: Entity<Buffer>,
+@@ -751,8 +870,12 @@
                          },
                      });
  
@@ -1357,7 +1503,7 @@ diff --git a/crates/action_log/src/action_log.rs b/crates/action_log/src/action_
                  } else {
                      // For a file created by AI with no pre-existing content,
                      // only delete the file if we're certain it contains only AI content
-@@ -801,9 +852,12 @@
+@@ -801,9 +924,12 @@
                  buffer.update(cx, |buffer, cx| {
                      buffer.set_text(tracked_buffer.diff_base.to_string(), cx)
                  });
@@ -1373,7 +1519,7 @@ diff --git a/crates/action_log/src/action_log.rs b/crates/action_log/src/action_
  
                  // Clear all tracked edits for this buffer and start over as if we just read it.
                  metrics.add_edits(tracked_buffer.unreviewed_edits.edits());
-@@ -883,8 +937,12 @@
+@@ -883,8 +1009,12 @@
                      });
                  }
  
@@ -1388,7 +1534,7 @@ diff --git a/crates/action_log/src/action_log.rs b/crates/action_log/src/action_
              }
          };
          if let Some(telemetry) = telemetry {
-@@ -1009,10 +1067,12 @@
+@@ -1009,10 +1139,12 @@
                  self.buffer_edited(buffer.clone(), cx);
              }
  
@@ -1405,7 +1551,7 @@ diff --git a/crates/action_log/src/action_log.rs b/crates/action_log/src/action_
          }
  
          cx.notify();
-@@ -1268,6 +1328,7 @@
+@@ -1268,6 +1400,7 @@
  
  pub struct TrackedBuffer {
      buffer: Entity<Buffer>,
@@ -6799,7 +6945,7 @@ diff --git a/crates/agent_ui/src/agent_registry_ui.rs b/crates/agent_ui/src/agen
 diff --git a/crates/agent_ui/src/agent_ui.rs b/crates/agent_ui/src/agent_ui.rs
 --- a/crates/agent_ui/src/agent_ui.rs
 +++ b/crates/agent_ui/src/agent_ui.rs
-@@ -1,31 +1,23 @@
+@@ -1,31 +1,24 @@
 -mod agent_configuration;
  pub mod agent_connection_store;
  mod agent_diff;
@@ -6816,6 +6962,7 @@ diff --git a/crates/agent_ui/src/agent_ui.rs b/crates/agent_ui/src/agent_ui.rs
 +mod eido_access;
 +mod eido_pi_ui;
 +mod eido_queue;
++mod eido_review_store;
  pub mod draft_prompt_store;
  mod entry_view_state;
  mod external_source_prompt;
@@ -6834,7 +6981,7 @@ diff --git a/crates/agent_ui/src/agent_ui.rs b/crates/agent_ui/src/agent_ui.rs
  pub mod terminal_thread_metadata_store;
  #[cfg(any(test, feature = "test-support"))]
  pub mod test_support;
-@@ -45,36 +37,27 @@
+@@ -45,36 +38,27 @@
  use agent_settings::{AgentProfileId, AgentSettings};
  use command_palette_hooks::CommandPaletteFilter;
  use editor::{Editor, SelectionEffects, scroll::Autoscroll};
@@ -6877,7 +7024,7 @@ diff --git a/crates/agent_ui/src/agent_ui.rs b/crates/agent_ui/src/agent_ui.rs
  pub use crate::inline_assistant::InlineAssistant;
  pub use crate::message_editor::MessageEditorEvent;
  pub use crate::thread_metadata_store::ThreadId;
-@@ -184,7 +167,6 @@
+@@ -184,7 +168,6 @@
  }
  
  pub const DEFAULT_THREAD_TITLE: &str = "New Agent Thread";
@@ -6885,7 +7032,7 @@ diff --git a/crates/agent_ui/src/agent_ui.rs b/crates/agent_ui/src/agent_ui.rs
  
  #[derive(Clone, Copy, Debug, Eq, PartialEq)]
  pub enum AgentThreadSource {
-@@ -532,21 +514,6 @@
+@@ -532,21 +515,6 @@
      }
  }
  
@@ -6907,7 +7054,7 @@ diff --git a/crates/agent_ui/src/agent_ui.rs b/crates/agent_ui/src/agent_ui.rs
  pub(crate) fn humanize_token_count(count: u64) -> String {
      match count {
          0..=999 => count.to_string(),
-@@ -577,224 +544,25 @@
+@@ -577,224 +545,26 @@
      }
  }
  
@@ -6927,6 +7074,7 @@ diff --git a/crates/agent_ui/src/agent_ui.rs b/crates/agent_ui/src/agent_ui.rs
      cx: &mut App,
  ) {
 +    eido_access::init(cx);
++    eido_review_store::init(cx);
      agent::ThreadStore::init_global(cx);
      prompt_store::init(cx);
 -
@@ -7139,7 +7287,7 @@ diff --git a/crates/agent_ui/src/agent_ui.rs b/crates/agent_ui/src/agent_ui.rs
      CommandPaletteFilter::update_global(cx, |filter, _| {
          use editor::actions::{
              AcceptEditPrediction, AcceptNextLineEditPrediction, AcceptNextWordEditPrediction,
-@@ -816,474 +584,36 @@
+@@ -816,474 +586,36 @@
              TypeId::of::<zed_actions::assistant::CreateSkillFromUrl>(),
          ];
  
@@ -11874,7 +12022,52 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
                                                          .color(Color::Muted)
                                                          .truncate(),
                                                  )
-@@ -12293,6 +12677,31 @@
+@@ -11648,6 +12032,44 @@
+             )
+     }
+ 
++    fn render_review_recovery(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
++        let copies = self.thread.read(cx).review_copies();
++        if copies.is_empty() { return None; }
++        let archived = copies.iter().filter(|(_, archived)| *archived).count();
++        let mut content = v_flex().px_4().py_2().gap_1();
++        for (index, (file, _)) in copies.iter().enumerate().filter(|(_, (_, archived))| !archived) {
++            let path = file.path.clone();
++            let saved = file.clone();
++            content = content.child(h_flex().gap_2()
++                .child(Icon::new(IconName::Warning).size(IconSize::Small).color(Color::Warning))
++                .child(Label::new(format!("Review recovery: {}", file.path.file_name().unwrap_or_default().to_string_lossy())).size(LabelSize::Small))
++                .child(Button::new(("open-review-copy", index), "Open Saved Copy").label_size(LabelSize::Small)
++                    .on_click(cx.listener(move |this, _, window, cx| {
++                        if let Some(workspace) = this.workspace.upgrade() {
++                            open_markdown_in_workspace("Saved Review".into(), crate::eido_review_store::copy_markdown(&saved), workspace, window, cx).detach_and_log_err(cx);
++                        }
++                    })))
++                .child(Button::new(("keep-current-review", index), "Keep Current").label_size(LabelSize::Small)
++                    .tooltip(Tooltip::text("Keep the current file and archive this saved review copy"))
++                    .on_click(cx.listener(move |this, _, _, cx| {
++                        this.thread.update(cx, |thread, cx| thread.keep_current_review(&path, cx));
++                        cx.notify();
++                    }))));
++        }
++        if archived > 0 {
++            content = content.child(Button::new("archived-review-copies", format!("Saved Review Copies ({archived})"))
++                .label_size(LabelSize::Small)
++                .on_click(cx.listener(|this, _, window, cx| {
++                    if let Some(workspace) = this.workspace.upgrade() {
++                        let text = this.thread.read(cx).review_copies().iter().filter(|(_, archived)| *archived)
++                            .map(|(file, _)| crate::eido_review_store::copy_markdown(file)).collect::<Vec<_>>().join("\n\n");
++                        open_markdown_in_workspace("Saved Review Copies".into(), text, workspace, window, cx).detach_and_log_err(cx);
++                    }
++                })));
++        }
++        Some(content.into_any_element())
++    }
++
+     fn render_session_notices(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+         let notices = self.thread.read(cx).notices();
+         if notices.is_empty() {
+@@ -12293,6 +12715,31 @@
                          .size_full()
                          .child(self.render_entries(cx))
                          .vertical_scrollbar_for(&list_state, window, cx)
@@ -11906,7 +12099,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
                          .into_any()
                  } else {
                      this.into_any()
-@@ -12607,6 +13016,10 @@
+@@ -12607,9 +13054,14 @@
                      .flatten(),
                  |this, bar| this.child(bar),
              )
@@ -11917,7 +12110,11 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
              .child(conversation)
              .children(self.render_multi_root_callout(cx))
              .children(self.render_activity_bar(window, cx))
-@@ -12631,7 +13044,9 @@
++            .when_some(self.render_review_recovery(cx), |this, recovery| this.child(recovery))
+             .when_some(self.render_session_notices(cx), |this, notices| {
+                 this.child(notices)
+             })
+@@ -12631,7 +13083,9 @@
              )
              .children(self.render_token_limit_callout(cx))
              .children(self.render_request_elicitations(cx))
