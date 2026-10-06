@@ -1402,8 +1402,17 @@ impl ConversationView {
                 });
         }
 
+        let file_reviews = thread.read(cx).file_reviews().clone();
         let subscriptions = vec![
             cx.subscribe_in(&thread, window, Self::handle_thread_event),
+            cx.observe_in(&file_reviews, window, {
+                let thread = thread.downgrade();
+                move |this, _, window, cx| {
+                    if let Some(thread) = thread.upgrade() {this.eido_observe_task(&thread, window, cx);}
+                    cx.emit(RootThreadUpdated);
+                    cx.notify();
+                }
+            }),
             cx.observe_in(&action_log, window, {
                 let thread = thread.downgrade();
                 move |this, _, window, cx| {
@@ -1786,7 +1795,7 @@ impl ConversationView {
         }
         let session = thread.session_id().to_string();
         let state = thread.eido_turn().clone();
-        let pending_review = thread.action_log().read(cx).changed_buffers(cx).count();
+        let pending_review = thread.pending_review_count(cx);
         crate::eido_task::observe(&session, state, self.eido_task_contents_visible(window, cx), pending_review, cx);
     }
 

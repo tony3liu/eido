@@ -3249,6 +3249,26 @@ impl ThreadView {
 
     // edits
 
+    fn decide_pending_file_operations(&mut self, action: &'static str, cx: &mut Context<Self>) {
+        let journal = self.thread.read(cx).file_reviews().clone();
+        let ids = journal.read(cx).records().iter()
+            .filter(|record| record.decision == acp_thread::FileReviewDecision::Pending)
+            .map(|record| record.id.clone()).collect::<Vec<_>>();
+        cx.spawn(async move |this, cx| {
+            for id in ids {
+                let task = journal.update(cx, |reviews, cx| reviews.decide(id, action, cx));
+                let result = task.await;
+                if let Err(error) = result {
+                    this.update(cx, |this, cx| {
+                        this.thread.update(cx, |thread, cx| thread.handle_session_update(acp::SessionUpdate::Notice(
+                            acp::Notice::new(acp::NoticeSeverity::Warning, error.to_string())), cx)).log_err();
+                        cx.notify();
+                    }).log_err();
+                }
+            }
+        }).detach();
+    }
+
     pub fn keep_all(&mut self, _: &KeepAll, _window: &mut Window, cx: &mut Context<Self>) {
         let thread = &self.thread;
         let telemetry = ActionLogTelemetry::from(thread.read(cx));
@@ -3256,9 +3276,11 @@ impl ThreadView {
         action_log.update(cx, |action_log, cx| {
             action_log.keep_all_edits(Some(telemetry), cx)
         });
+        self.decide_pending_file_operations("accept", cx);
     }
 
     pub fn reject_all(&mut self, _: &RejectAll, _window: &mut Window, cx: &mut Context<Self>) {
+        self.decide_pending_file_operations("reject", cx);
         let thread = &self.thread;
         let telemetry = ActionLogTelemetry::from(thread.read(cx));
         let action_log = thread.read(cx).action_log().clone();
@@ -12097,7 +12119,7 @@ impl ThreadView {
         if self.agent_id.as_ref() != "eido-pi" { return None; }
         let thread = self.thread.read(cx);
         let status = thread.eido_turn().status;
-        let count = thread.action_log().read(cx).changed_buffers(cx).count();
+        let count = thread.pending_review_count(cx);
         let label = if thread.is_cancelling() { "Stopping · waiting for the current operation" }
             else if thread.is_waiting_for_confirmation() { "Waiting for input" }
             else if thread.status() == ThreadStatus::Generating { "Running" }
@@ -12165,6 +12187,59 @@ impl ThreadView {
             self.list_state.scroll_to(ListOffset {item_ix: entry_ix, offset_in_item: px(0.)});
             cx.notify();
         }
+    }
+
+    fn render_file_operations(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let journal = self.thread.read(cx).file_reviews().clone();
+        let reviews = journal.read(cx);
+        if reviews.records().is_empty() && reviews.storage_error().is_none() {return None;}
+        let mut content = v_flex().id("file-operation-reviews").px_4().py_2().gap_1().max_h(px(210.)).overflow_y_scroll()
+            .child(h_flex().gap_2().child(Label::new("File Operations").size(LabelSize::Small))
+                .child(Button::new("accept-all-file-operations", "Accept All").label_size(LabelSize::Small)
+                    .disabled(reviews.busy() || !reviews.records().iter().any(|r| r.decision == acp_thread::FileReviewDecision::Pending))
+                    .on_click(cx.listener(|this, _, _, cx| this.decide_pending_file_operations("accept", cx))))
+                .child(Button::new("reject-all-file-operations", "Reject All").label_size(LabelSize::Small)
+                    .disabled(reviews.busy() || !reviews.records().iter().any(|r| r.decision == acp_thread::FileReviewDecision::Pending))
+                    .on_click(cx.listener(|this, _, _, cx| this.decide_pending_file_operations("reject", cx)))));
+        if let Some(error) = reviews.storage_error() {content = content.child(Label::new(error.to_owned()).size(LabelSize::Small).color(Color::Error));}
+        for record in reviews.records().iter().rev() {
+            let id = record.id.clone();
+            let copy = record.clone();
+            let mut row = h_flex().gap_2().flex_wrap()
+                .child(Label::new(format!("{} · {}", record.label(), record.proposal.path.file_name().unwrap_or_default().to_string_lossy())).size(LabelSize::Small))
+                .child(Button::new(SharedString::from(format!("file-operation-copy-{id}")), "Review").label_size(LabelSize::Small)
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        if let Some(workspace) = this.workspace.upgrade() {
+                            open_markdown_in_workspace("File Operation Review".into(), copy.markdown(), workspace, window, cx).detach_and_log_err(cx);
+                        }
+                    })));
+            use acp_thread::FileReviewDecision as Decision;
+            let actions: &[(&str, &str)] = match record.decision {
+                Decision::Pending => &[("accept", "Accept"), ("reject", "Reject")],
+                Decision::Accepted => &[("restore", "Restore Original")],
+                Decision::Unknown => &[("restore", "Restore Original"), ("reject", "Keep Current")],
+                _ => &[],
+            };
+            for (action, label) in actions {
+                let action = *action; let id = id.clone(); let journal = journal.clone();
+                row = row.child(Button::new(SharedString::from(format!("file-operation-{action}-{id}")), *label).label_size(LabelSize::Small).disabled(reviews.busy())
+                    .on_click(cx.listener(move |_this, _, _, cx| {
+                        let task = journal.update(cx, |reviews, cx| reviews.decide(id.clone(), action, cx));
+                        cx.spawn(async move |this, cx| {
+                            if let Err(error) = task.await {
+                                this.update(cx, |this, cx| {
+                                    this.thread.update(cx, |thread, cx| thread.handle_session_update(acp::SessionUpdate::Notice(
+                                        acp::Notice::new(acp::NoticeSeverity::Warning, error.to_string())), cx)).log_err();
+                                    cx.notify();
+                                }).log_err();
+                            }
+                        }).detach();
+                    })));
+            }
+            content = content.child(row);
+            if let Some(error) = &record.error {content = content.child(Label::new(error.clone()).size(LabelSize::XSmall).color(Color::Warning));}
+        }
+        Some(content.into_any_element())
     }
 
     fn render_review_recovery(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
@@ -13198,6 +13273,7 @@ impl Render for ThreadView {
             .children(self.render_activity_bar(window, cx))
             .when_some(self.render_eido_task_state(cx), |this, state| this.child(state))
             .when_some(self.render_verification(cx), |this, evidence| this.child(evidence))
+            .when_some(self.render_file_operations(cx), |this, review| this.child(review))
             .when_some(self.render_review_recovery(cx), |this, recovery| this.child(recovery))
             .when_some(self.render_session_notices(cx), |this, notices| {
                 this.child(notices)

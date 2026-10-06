@@ -2,6 +2,8 @@ mod connection;
 mod diff;
 mod eido_fs;
 mod eido_turn;
+mod eido_file_review;
+pub use eido_file_review::*;
 pub use eido_turn::*;
 pub use eido_fs::*;
 mod mention;
@@ -2285,6 +2287,7 @@ pub struct AcpThread {
     review_write_error: Option<SharedString>,
     review_blocked_paths: HashSet<PathBuf>,
     review_copies: Vec<(action_log::ReviewCheckpoint, bool)>,
+    file_reviews: Entity<EidoFileReviews>,
     update_last_checkpoint_if_changed_task: Option<Task<Result<()>>>,
     shared_buffers: HashMap<Entity<Buffer>, BufferSnapshot>,
     turn_id: u32,
@@ -2537,15 +2540,19 @@ impl AcpThread {
             }
         });
 
+        register_file_review_log(&action_log, cx);
+        let file_reviews = EidoFileReviews::open(project.clone(), work_dirs.as_ref(), &session_id, cx);
+        let file_review_subscription = cx.observe(&file_reviews, |_, _, cx| cx.notify());
         Self {
             parent_session_id,
             work_dirs,
             action_log,
             _git_store_subscription,
-            eido_review_subscriptions: Vec::new(),
+            eido_review_subscriptions: vec![file_review_subscription],
             review_write_error: None,
             review_blocked_paths: HashSet::default(),
             review_copies: Vec::new(),
+            file_reviews,
             update_last_checkpoint_if_changed_task: None,
             shared_buffers: Default::default(),
             entries: Default::default(),
@@ -2584,6 +2591,17 @@ impl AcpThread {
 
     pub fn review_is_unavailable(&self) -> bool {
         self.review_write_error.is_some() || !self.review_blocked_paths.is_empty()
+    }
+
+    pub fn file_reviews(&self) -> &Entity<EidoFileReviews> { &self.file_reviews }
+
+    pub fn share_file_reviews(&mut self, reviews: Entity<EidoFileReviews>, cx: &mut Context<Self>) {
+        self.eido_review_subscriptions.push(cx.observe(&reviews, |_, _, cx| cx.notify()));
+        self.file_reviews = reviews;
+    }
+
+    pub fn pending_review_count(&self, cx: &App) -> usize {
+        self.action_log.read(cx).changed_buffers(cx).count() + self.file_reviews.read(cx).pending_count()
     }
 
     pub fn set_review_write_error(&mut self, error: Option<SharedString>) {
@@ -4937,6 +4955,9 @@ impl AcpThread {
             }
 
             let format_on_save = cx.update(|cx| {
+                if eido && file_operation_blocks_path(&path, cx) {
+                    anyhow::bail!("This file has a pending file operation. Review it before making further text edits.");
+                }
                 action_log.update(cx, |action_log, cx| {
                     if eido {
                         action_log.set_save_on_review(false, cx);

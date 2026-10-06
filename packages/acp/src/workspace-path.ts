@@ -23,7 +23,7 @@ export async function workspacePath(cwd: string, path: string, allowMissing = fa
   if (local === ".." || local.startsWith(`..${sep}`) || isAbsolute(local)) {
     throw new Error("File is outside this workspace.");
   }
-  if (local.split(sep).some(part => [".git", ".local", ".pi"].includes(part))) {
+  if (local.split(sep).some(part => [".git", ".local", ".pi"].includes(part) || part.startsWith('.eido-review-'))) {
     throw new Error("Private workspace storage is not available to file tools.");
   }
   return canonical;

@@ -599,6 +599,14 @@ fn client_builder(
             on_request!(handle_eido_file_query),
             agent_client_protocol::on_receive_request!(),
         )
+        .on_receive_request(
+            on_request!(handle_eido_file_proposal),
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            on_request!(handle_eido_file_snapshot),
+            agent_client_protocol::on_receive_request!(),
+        )
         // --- Notification handlers (agent→client) ---
         .on_receive_notification(
             on_notification!(handle_session_notification),
@@ -1074,7 +1082,9 @@ impl AcpConnection {
                         } else { log }
                     });
                     let thread: Entity<AcpThread> = cx.new(|cx| {
-                        AcpThread::new(
+                        let parent_reviews = parent_session_id.as_ref().and_then(|id| this.sessions.borrow().get(id)
+                            .and_then(|session| session.thread.upgrade())).map(|thread| thread.read(cx).file_reviews().clone());
+                        let mut thread = AcpThread::new(
                             parent_session_id,
                             title,
                             Some(work_dirs),
@@ -1086,7 +1096,9 @@ impl AcpConnection {
                                 this.agent_capabilities.prompt_capabilities.clone(),
                             ),
                             cx,
-                        )
+                        );
+                        if let Some(reviews) = parent_reviews {thread.share_file_reviews(reviews, cx);}
+                        thread
                     });
 
                     // Register the session before awaiting the RPC so that any
@@ -4993,6 +5005,52 @@ fn handle_complete_elicitation(
         });
     })
     .detach();
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, agent_client_protocol::JsonRpcRequest)]
+#[request(method = "_eido/fs/snapshot", response = EidoFileSnapshotResponse)]
+#[serde(rename_all = "camelCase")]
+struct EidoFileSnapshotRequest { session_id: acp::SessionId, path: PathBuf }
+
+#[derive(Debug, Clone, Serialize, Deserialize, agent_client_protocol::JsonRpcResponse)]
+struct EidoFileSnapshotResponse {
+    #[serde(flatten)]
+    snapshot: acp_thread::EidoFileSnapshot,
+}
+
+fn handle_eido_file_snapshot(args: EidoFileSnapshotRequest, responder: Responder<EidoFileSnapshotResponse>, cx: &mut AsyncApp, ctx: &ClientContext) {
+    let thread = match session_thread(ctx, &args.session_id) {Ok(thread) => thread, Err(error) => return respond_err(responder, error)};
+    cx.spawn(async move |cx| {
+        let result = responder.cancellation().run_until_cancelled(async {
+            thread.update(cx, |thread, cx| thread.observe_file_bytes(args.path, cx))
+                .map_err(acp::Error::from)?.await.map(|snapshot| EidoFileSnapshotResponse {snapshot}).map_err(acp::Error::from)
+        }).await;
+        respond_result(responder, result);
+    }).detach();
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, agent_client_protocol::JsonRpcRequest)]
+#[request(method = "_eido/fs/propose", response = EidoFileProposalResponse)]
+#[serde(rename_all = "camelCase")]
+struct EidoFileProposalRequest {
+    session_id: acp::SessionId,
+    #[serde(flatten)]
+    proposal: acp_thread::EidoFileProposal,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, agent_client_protocol::JsonRpcResponse)]
+#[serde(rename_all = "camelCase")]
+struct EidoFileProposalResponse { review_id: String }
+
+fn handle_eido_file_proposal(args: EidoFileProposalRequest, responder: Responder<EidoFileProposalResponse>, cx: &mut AsyncApp, ctx: &ClientContext) {
+    let thread = match session_thread(ctx, &args.session_id) {Ok(thread) => thread, Err(error) => return respond_err(responder, error)};
+    cx.spawn(async move |cx| {
+        let result = responder.cancellation().run_until_cancelled(async {
+            thread.update(cx, |thread, cx| thread.propose_file_operation(args.proposal, cx))
+                .map_err(acp::Error::from)?.await.map(|review_id| EidoFileProposalResponse {review_id}).map_err(acp::Error::from)
+        }).await;
+        respond_result(responder, result);
+    }).detach();
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, agent_client_protocol::JsonRpcRequest)]

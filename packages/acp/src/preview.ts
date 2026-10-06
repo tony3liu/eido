@@ -46,6 +46,13 @@ export function createPreview(cwd: string, storage: string, sessionId: string, c
 
   async function observe(path: string, signal?: AbortSignal) {
     const canonical = await workspacePath(cwd, path, true);
+    if (purpose === 'shell') {
+      const response = await client.request<{content:string;disk:string|null;buffer:string|null}>("_eido/fs/snapshot", {sessionId,path:canonical}, {cancellationSignal:signal});
+      const content = Buffer.from(response.content, 'base64');
+      if (content.toString('base64') !== response.content) throw new Error('Invalid native file snapshot.');
+      signal?.throwIfAborted();
+      return {canonical, content};
+    }
     const response = await client.request(methods.client.fs.readTextFile, {
       sessionId, path: canonical, _meta: { [observationKey]: true },
     }, { cancellationSignal: signal });
@@ -53,7 +60,7 @@ export function createPreview(cwd: string, storage: string, sessionId: string, c
       throw new Error("This client does not support preview buffer snapshots. Update Eido before using preview.");
     }
     signal?.throwIfAborted();
-    return { canonical, content: response.content };
+    return { canonical, content: Buffer.from(response.content) };
   }
 
   async function freshness(run: Run, signal?: AbortSignal) {
@@ -185,7 +192,7 @@ export function createPreview(cwd: string, storage: string, sessionId: string, c
         if ([spec.command, ...spec.args ?? []].some(value => value.includes("\0"))) throw new Error("Commands and arguments must not contain NUL bytes.");
       }
       const root = await realpath(cwd);
-      const inputs = new Map<string, { content: string; differsFromDisk: boolean }>();
+      const inputs = new Map<string, { content: Buffer; differsFromDisk: boolean }>();
       let bytes = 0;
       for (const path of params.files) {
         const local = relative(root, await workspacePath(root, path, true)).split(sep).join("/");
@@ -196,7 +203,7 @@ export function createPreview(cwd: string, storage: string, sessionId: string, c
         const { canonical, content } = await observe(local, signal);
         const size = Buffer.byteLength(content);
         bytes += size;
-        if (content.includes("\0") || size > 1024 * 1024 || bytes > 16 * 1024 * 1024) throw new Error("Preview requires text inputs (1 MiB per file, 16 MiB total).");
+        if ((purpose !== 'shell' && (content.includes(0) || !Buffer.from(content.toString('utf8')).equals(content))) || size > 1024 * 1024 || bytes > 16 * 1024 * 1024) throw new Error("Inputs exceed the supported type or size (1 MiB per file, 16 MiB total).");
         const disk = await readFile(canonical).catch((error: NodeJS.ErrnoException) => {
           if (error.code !== "ENOENT") throw error;
           return undefined;

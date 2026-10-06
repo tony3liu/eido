@@ -9,8 +9,8 @@ import {EDITOR_QUERY} from './editor-query.ts';
 import {workspacePath} from './workspace-path.ts';
 
 const hash=(text:string|Buffer)=>createHash('sha256').update(text).digest('hex');
-const observation='eido.dev/observeBuffer';
-type Change={path:string;kind:'modified'|'created'|'deleted'|'unsupported';status:'applied'|'preserved';reason?:string;artifact?:string};
+type Snapshot={content:string;disk:string|null;buffer:string|null};
+type Change={path:string;kind:'modified'|'created'|'deleted'|'unsupported';status:'applied'|'review'|'preserved';reason?:string;artifact?:string;reviewId?:string};
 
 /** Commands share preview's native terminal, process supervisor and cleanup.
  * The copy is an execution directory, not a security sandbox. Only conditional
@@ -18,12 +18,11 @@ type Change={path:string;kind:'modified'|'created'|'deleted'|'unsupported';statu
  */
 export function createShell(cwd:string, storage:string, sessionId:string, client:AgentContext) {
   let capturing=false;
-  const inputs=new Map<string,string>();
+  const inputs=new Map<string,Snapshot>();
   const request:AgentContext['request']=async (method:any,params:any,options:any)=>{
     const result:any=await client.request(method,params,options);
-    if(method===methods.client.fs.readTextFile && params._meta?.[observation] && capturing) {
-      if(result._meta?.['eido.dev/conditionalWrite']!==true) throw new Error('Update Eido before running commands against editor buffers.');
-      inputs.set(params.path,result.content);
+    if(method==='_eido/fs/snapshot' && capturing) {
+      inputs.set(params.path,result);
     }
     if(method===methods.client.terminal.create) capturing=false;
     return result;
@@ -36,7 +35,7 @@ export function createShell(cwd:string, storage:string, sessionId:string, client
   const runner=createPreview(cwd,storage,sessionId,forwarded,'shell');
   const tool=defineTool({
     name:'bash',label:'Shell',defaultActive:false,executionMode:'sequential',
-    description:'Execute a bash command in a captured workspace including current unsaved editor contents. Supports pipes, redirects and shell syntax. Optional files selects text inputs (max 512, 16 MiB); otherwise captures all visible workspace files and fails if incomplete. Optional dependencies copies installed dependency/asset directories (max 256 MiB). This is a local process, not an OS sandbox; use relative paths inside the capture. No packages are installed automatically. Changed/new text files enter native unsaved review only if their original editor contents are unchanged. Conflicts, deletions and binary outputs are preserved as artifacts and reported, never silently applied. Commands and descendants stop on completion, failure, timeout and cancellation. For long-running browser verification use preview with a server. Timeout defaults to 60 seconds, max 300.',
+    description:'Execute a bash command in a captured workspace including current unsaved editor contents and binary files. Supports pipes, redirects and shell syntax. Optional files selects inputs (max 512, 16 MiB); otherwise captures all visible workspace files and fails if incomplete. Optional dependencies copies installed dependency/asset directories (max 256 MiB). This is a local process, not an OS sandbox; use relative paths inside the capture. No packages are installed automatically. Changed/new text files enter native unsaved review only against unchanged captured contents. Deletions and binary outputs enter durable native File Operations review; they do not change source files until accepted. Conflicts and unsupported results remain recoverable artifacts. Commands and descendants stop on completion, failure, timeout and cancellation. For long-running browser verification use preview with a server. Timeout defaults to 60 seconds, max 300.',
     promptSnippet:'Run shell commands on current editor contents and review resulting changes',
     parameters:Type.Object({command:Type.String({minLength:1,maxLength:16384}),timeout:Type.Optional(Type.Integer({minimum:1,maximum:300})),
       files:Type.Optional(Type.Array(Type.String(),{maxItems:512})),dependencies:Type.Optional(Type.Array(Type.String(),{maxItems:16}))}),
@@ -95,14 +94,22 @@ export function createShell(cwd:string, storage:string, sessionId:string, client
             await writeFile(artifact,after,{mode:0o600});change.artifact=artifact;
           }
           if(unsupported.has(path)) {change.reason=unsupported.get(path);continue;}
-          if(!after) {change.reason='Deletion was retained as a proposal; the original file is unchanged.';continue;}
-          const content=after.toString('utf8');
-          if(content.includes('\0') || !Buffer.from(content).equals(after)) {change.reason='Binary output was preserved outside the editor.';continue;}
           if(signal?.aborted || result.processCleanup!=='confirmed') {change.reason='Command cancellation or cleanup was not confirmed; output was not applied.';continue;}
           try {
             const canonical=await workspacePath(cwd,path,true);
-            const expected=inputs.get(canonical);
-            if(before && (expected===undefined || hash(expected)!==before.hash)) throw new Error('Captured editor version could not be verified.');
+            const snapshot=inputs.get(canonical);
+            if(before && (!snapshot || hash(Buffer.from(snapshot.content,'base64'))!==before.hash)) throw new Error('Captured editor version could not be verified.');
+            const content=after?.toString('utf8');
+            const binary=after && (after.includes(0) || !Buffer.from(content!).equals(after));
+            if(!after || binary || before && snapshot?.buffer===null) {
+              const response=await client.request<{reviewId:string}>('_eido/fs/propose',{
+                sessionId,path:canonical,runId:run.runId,toolCallId,
+                expectedDisk:snapshot?.disk??null,expectedBuffer:snapshot?.buffer??null,output:after?.toString('base64')??null,
+              },{cancellationSignal:signal});
+              change.status='review';change.reviewId=response.reviewId;continue;
+            }
+            const expected=snapshot?.buffer;
+            if(before && typeof expected!=='string') throw new Error('Captured editor version could not be verified.');
             await client.request(methods.client.fs.writeTextFile,{sessionId,path:canonical,content,
               _meta:before?{'eido.dev/expectedBuffer':expected!}:{'eido.dev/createFile':true}},
               {cancellationSignal:signal});

@@ -40,6 +40,7 @@ pub fn allowed_path(root: &Path, path: &Path) -> bool {
     path.strip_prefix(root).is_ok_and(|relative| {
         relative.components().all(|part| {
             !matches!(part, Component::ParentDir)
+                && !part.as_os_str().to_string_lossy().starts_with(".eido-review-")
                 && ![".git", ".local", ".pi"]
                     .iter()
                     .any(|name| part.as_os_str() == *name)

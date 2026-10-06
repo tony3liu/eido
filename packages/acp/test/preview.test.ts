@@ -64,6 +64,7 @@ async function harness(steps: FixtureStep[], options: {
   const toAgent = new TransformStream(), toClient = new TransformStream();
   const server = await startEidoAgent(cwd, join(cwd, "sessions"), { readable: toAgent.readable, writable: toClient.writable }, fixture.runtime);
   const updates: unknown[] = [];
+  const proposals: any[] = [];
   const connection = client({ name: "eido-preview-test" })
     .onRequest(methods.client.fs.readTextFile, async ({ params }) => {
       await options.beforeRead?.(params._meta?.["eido.dev/observeBuffer"] === true);
@@ -73,6 +74,17 @@ async function harness(steps: FixtureStep[], options: {
       const expected=params._meta?.['eido.dev/expectedBuffer'];
       if(typeof expected==='string' && expected!==(buffers.get(params.path)??await readFile(params.path,'utf8'))) throw new Error('File changed while command was running.');
       buffers.set(params.path, params.content); return {};
+    })
+    .onRequest('_eido/fs/snapshot', {parse:raw=>raw}, async ({params}: any) => {
+      const disk=await readFile(params.path).catch((error:NodeJS.ErrnoException)=>{if(error.code!=='ENOENT')throw error;return undefined;});
+      const buffer=buffers.get(params.path)??(disk&&!disk.includes(0)&&Buffer.from(disk.toString('utf8')).equals(disk)?disk.toString('utf8'):null);
+      return {content:(buffer===null?disk!:Buffer.from(buffer)).toString('base64'),disk:disk?.toString('base64')??null,buffer};
+    })
+    .onRequest('_eido/fs/propose', {parse:raw=>raw}, async ({params}: any) => {
+      const disk=await readFile(params.path).catch((error:NodeJS.ErrnoException)=>{if(error.code!=='ENOENT')throw error;return undefined;});
+      assert.equal(disk?.toString('base64')??null,params.expectedDisk);
+      if(params.expectedBuffer!==null)assert.equal(buffers.get(params.path)??disk?.toString('utf8'),params.expectedBuffer);
+      const reviewId=crypto.randomUUID();proposals.push({...params,reviewId});return {reviewId};
     })
     .onRequest(EDITOR_QUERY,{parse:raw=>raw},()=>({output:[...buffers.keys()].map(path=>path.slice(cwd.length+1)).join('\n'),truncated:false}))
     .onRequest(methods.client.session.requestPermission, () => ({ outcome: { outcome: "selected", optionId: "allow_once" } }))
@@ -101,7 +113,7 @@ async function harness(steps: FixtureStep[], options: {
   const newTask = () => connection.agent.request(methods.agent.session.new, { cwd, mcpServers: options.browser ? [{ name: "eido_browser", command: process.execPath,
     args: [fileURLToPath(new URL("../../runtime/bin/browser-server.mjs", import.meta.url))], env: [{ name: "JEV_BROWSER_HEADED", value: "0" }],
   }] : [] });
-  return { cwd, buffers, terminals, updates, newTask, requests: fixture.requests,
+  return { cwd, buffers, terminals, updates, proposals, newTask, requests: fixture.requests,
     prompt: (sessionId: string) => connection.agent.request(methods.agent.session.prompt, { sessionId, prompt: [{ type: "text", text: "Run the preview verification fixture." }] }),
     cancel: (sessionId: string) => connection.agent.notify(methods.agent.session.cancel, { sessionId }),
     close: (sessionId: string) => connection.agent.request(methods.agent.session.close, { sessionId }),
@@ -461,13 +473,17 @@ test('shell conflict, deletion and binary outputs remain recoverable without ove
   ],{create:async(_params,launch)=>{const terminal=await launch();h.buffers.set(join(h.cwd,'index.html'),'Manual edit while command runs');return terminal;}});
   try {
     h.buffers.set(join(h.cwd,'doomed.txt'),'Unsaved content to retain');
+    await writeFile(join(h.cwd,'doomed.txt'),'Original disk content');
     const task=await h.newTask();await h.prompt(task.sessionId);
     assert.equal(h.requests(),2);
     assert.equal(h.buffers.get(join(h.cwd,'index.html')),'Manual edit while command runs');
     assert.equal(h.buffers.get(join(h.cwd,'doomed.txt')),'Unsaved content to retain');
     assert.equal(await readFile(join(result.recovery,'index.html'),'utf8'),'command edit');
     assert.deepEqual(await readFile(join(result.recovery,'binary.bin')),Buffer.from([0]));
-    assert.ok(result.changes.some((c:any)=>c.kind==='deleted'&&c.status==='preserved'));
+    assert.ok(result.changes.some((c:any)=>c.kind==='deleted'&&c.status==='review'));
+    assert.ok(result.changes.some((c:any)=>c.path==='binary.bin'&&c.status==='review'));
+    assert.equal(h.proposals.length,2);
+    assert.equal(h.proposals.find((p:any)=>p.path.endsWith('doomed.txt')).expectedBuffer,'Unsaved content to retain');
     assert.ok(result.changes.some((c:any)=>c.path==='index.html'&&c.status==='preserved'));
     assert.equal(await readFile(join(h.cwd,'index.html'),'utf8'),source(7));
   } finally {await h.dispose();}
@@ -486,6 +502,32 @@ test('failed shell commands retain results and terminate background descendants'
     const pid=Number(h.buffers.get(join(h.cwd,'child.pid')));
     assert.ok(pid>0);assert.throws(()=>process.kill(pid,0));
     assert.ok([...h.terminals.values()].every(t=>t.exited&&t.released));
+  } finally {await h.dispose();}
+});
+
+test('shell captures binary originals and proposes exact replacement and deletion without changing disk', {timeout:30_000}, async()=>{
+  let result:any;
+  const h=await harness([
+    ()=>call('bash',{command:"cp asset.bin copy.bin; printf '\\000\\377\\004' > asset.bin; rm doomed.bin",files:['asset.bin','doomed.bin']}),
+    context=>{result=shellResult(context);return 'Binary file operations await review.';},
+  ]);
+  try {
+    await writeFile(join(h.cwd,'asset.bin'),Buffer.from([0,255,2]));
+    await writeFile(join(h.cwd,'doomed.bin'),Buffer.from([0,3]));
+    const task=await h.newTask();await h.prompt(task.sessionId);
+    assert.equal(result.changes.length,3);
+    assert.ok(result.changes.every((change:any)=>change.status==='review'&&change.reviewId));
+    assert.equal(h.proposals.length,3);
+    const asset=h.proposals.find(p=>p.path.endsWith('/asset.bin'));
+    assert.deepEqual(Buffer.from(asset.expectedDisk,'base64'),Buffer.from([0,255,2]));
+    assert.deepEqual(Buffer.from(asset.output,'base64'),Buffer.from([0,255,4]));
+    assert.equal(asset.expectedBuffer,null);
+    const deleted=h.proposals.find(p=>p.path.endsWith('/doomed.bin'));
+    assert.equal(deleted.output,null);
+    assert.deepEqual(Buffer.from(deleted.expectedDisk,'base64'),Buffer.from([0,3]));
+    assert.deepEqual(await readFile(join(h.cwd,'asset.bin')),Buffer.from([0,255,2]));
+    assert.deepEqual(await readFile(join(h.cwd,'doomed.bin')),Buffer.from([0,3]));
+    await assert.rejects(stat(join(h.cwd,'copy.bin')));
   } finally {await h.dispose();}
 });
 

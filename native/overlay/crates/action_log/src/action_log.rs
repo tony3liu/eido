@@ -1225,6 +1225,16 @@ impl ActionLog {
             .map(|(buffer, tracked)| (buffer.clone(), tracked.diff.clone()))
     }
 
+    /// Include the diff queue so a destructive operation cannot race a text review.
+    pub fn has_pending_review_for_path(&self, path: &Path, cx: &App) -> bool {
+        self.tracked_buffers.iter().any(|(buffer, tracked)| {
+            let buffer = buffer.read(cx);
+            buffer.file().and_then(|file| file.as_local()).is_some_and(|file| file.abs_path(cx) == path)
+                && (tracked.snapshot.version() != &buffer.version() || tracked.scheduled_version != tracked.version
+                    || !tracked.unreviewed_edits.is_empty() || tracked.has_edits(cx))
+        })
+    }
+
     /// Returns the total number of lines added and removed across all unreviewed buffers.
     pub fn diff_stats(&self, cx: &App) -> DiffStats {
         DiffStats::all_files(self.changed_buffers(cx), cx)
