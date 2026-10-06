@@ -749,6 +749,59 @@ test("tree navigation replays the selected branch in the same ACP task without r
   } finally {await h.dispose();}
 });
 
+test("tree summaries retain abandoned context, use custom instructions and honor reload skip settings", async () => {
+  const actions: {action:string;data:Record<string,unknown>}[]=[];
+  const forms:string[]=[];
+  const h=await harness([
+    ()=> 'First branch response.',
+    ()=> 'Abandoned branch evidence.',
+    context=>{
+      assert.match(JSON.stringify(context),/Abandoned branch evidence/);
+      assert.match(JSON.stringify(context),/Preserve the reproduction steps/);
+      return 'Branch summary: preserved abandoned evidence.';
+    },
+    context=>{
+      assert.match(JSON.stringify(context),/Branch summary: preserved abandoned evidence/);
+      return 'Continued with branch summary.';
+    },
+  ],{
+    form:async params=>{
+      forms.push(params.message);
+      return {action:'accept',content:{value:params.message.startsWith('Summarize the branch')?'Summarize with instructions':'Preserve the reproduction steps'}};
+    },
+    native:async request=>{actions.push(request);return {handled:true};},
+  });
+  try {
+    const task=await h.newTask();
+    await h.prompt(task.sessionId,'First question');
+    await h.prompt(task.sessionId,'Abandoned branch question');
+    const entries=await h.entries();
+    const earlier=entries.find(entry=>entry.type==='message' && entry.message?.role==='assistant' && JSON.stringify(entry.message.content).includes('First branch response'));
+    const later=entries.find(entry=>entry.type==='message' && entry.message?.role==='assistant' && JSON.stringify(entry.message.content).includes('Abandoned branch evidence'));
+    await h.prompt(task.sessionId,`/tree ${earlier.id}`);
+    assert.equal(h.requests(),3);
+    assert.match(JSON.stringify(actions.at(-1)?.data),/Branch summary: preserved abandoned evidence/);
+    assert.ok((await h.entries()).some(entry=>entry.type==='branch_summary'));
+    assert.equal(forms.length,2);
+    await h.prompt(task.sessionId,'Continue with the summary');
+    assert.equal(h.requests(),4);
+    await h.connection.agent.request(methods.agent.session.close,{sessionId:task.sessionId});
+    h.updates.length=0;
+    await h.connection.agent.request(methods.agent.session.load,{sessionId:task.sessionId,cwd:h.cwd,mcpServers:[]});
+    assert.equal(h.text(task.sessionId).split('Branch summary: preserved abandoned evidence.').length-1,1);
+    assert.match(h.text(task.sessionId),/Continued with branch summary/);
+    assert.equal(h.requests(),4,'Reopening only replays the journal');
+    await writeFile(join(h.cwd,'settings.json'),JSON.stringify({...JSON.parse(h.settings),branchSummary:{skipPrompt:true,reserveTokens:4096}}));
+    await h.prompt(task.sessionId,'/reload');
+    await h.prompt(task.sessionId,`/tree ${later.id}`);
+    assert.equal(forms.length,2,'Skip summary prompt must not open another form');
+    assert.equal(h.requests(),4,'Skip prompt switches without generating a summary');
+    assert.equal(actions.at(-1)?.action,'replace_transcript');
+    assert.match(JSON.stringify(actions.at(-1)?.data),/Abandoned branch evidence/);
+    assert.doesNotMatch(JSON.stringify(actions.at(-1)?.data),/Continued with branch summary/);
+  } finally {await h.dispose();}
+});
+
 test("all bundled pi commands are discoverable and native quit follows command journaling", async () => {
   const actions:string[]=[];
   const h=await harness([], {native:async request=>{actions.push(request.action);return {handled:true};}});

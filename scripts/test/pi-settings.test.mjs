@@ -54,7 +54,8 @@ test('runtime controls save sparse pi settings, validate values and reject stale
   const before=(await f.bridge.status()).runtime;
   assert.equal(before.find(field=>field.path==='images.autoResize').effective,true);
   const expected=Object.fromEntries(before.map(field=>[field.path,field.value]));
-  const changes={'transport':'sse','images.blockImages':true,'retry.baseDelayMs':100,'thinkingBudgets.low':2048};
+  const changes={'transport':'sse','images.blockImages':true,'retry.baseDelayMs':100,'thinkingBudgets.low':2048,
+    'branchSummary.reserveTokens':4096,'branchSummary.skipPrompt':true};
   const result=await f.bridge.execute({operation:'runtime',changes,expected});
   for(const [path,value] of Object.entries(changes)) assert.equal(result.runtime.find(field=>field.path===path).effective,value);
   let stored=await f.get(f.target,'settings.json');

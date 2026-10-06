@@ -175,6 +175,12 @@ await patchSource(path,
   '            return replayMessage(entry.message);',
   '            return replayMessage(entry.message).map(update => ["user_message_chunk", "agent_message_chunk", "agent_thought_chunk"].includes(update.sessionUpdate) ? {...update, messageId: entry.id} : update);');
 
+// Branch summaries are retained model context and must remain visible after
+// tree navigation and session/load. They are journal entries, not message roles.
+await patchSource(path,
+  '        case "compaction":\n        case "branch_summary":\n        case "custom":',
+  '        case "compaction":\n            return [];\n        case "branch_summary":\n            return [{sessionUpdate:"agent_message_chunk", messageId:entry.id, content:{type:"text", text:"**Branch summary**\\n\\n" + entry.summary}}];\n        case "custom":');
+
 // Product supplies pi's credential-aware fetch; keep the adapter's transport and lifecycle.
 const mcpBridgePath = new URL('dist/mcp-bridge.js', directory);
 await patchSource(mcpBridgePath,
