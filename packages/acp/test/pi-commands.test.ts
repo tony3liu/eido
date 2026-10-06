@@ -328,15 +328,15 @@ test("invalid, unknown and attached commands never reach the model or mutate con
     const a = await h.newTask();
     for (const command of ["/session extra", "/model missing/model", "/thinking impossible", "/name first\nsecond", "/reload extra", "/changelog extra", "/unknown", "/"]) {
       h.updates.length = 0;
-      await h.prompt(a.sessionId, command);
+      await assert.rejects(h.prompt(a.sessionId, command));
       assert.match(h.text(a.sessionId), /^Command failed:/);
     }
     h.updates.length = 0;
-    await h.connection.agent.request(methods.agent.session.prompt, {sessionId: a.sessionId, prompt: [{type: "text", text: "/name changed"}, {type: "image", data: "AA==", mimeType: "image/png"}]});
+    await assert.rejects(h.connection.agent.request(methods.agent.session.prompt, {sessionId: a.sessionId, prompt: [{type: "text", text: "/name changed"}, {type: "image", data: "AA==", mimeType: "image/png"}]}));
     assert.match(h.text(a.sessionId), /do not accept image attachments/);
     await h.prompt(a.sessionId, "/name");
     assert.match(h.text(a.sessionId), /no name yet/);
-    await h.prompt(a.sessionId, "/compact");
+    await assert.rejects(h.prompt(a.sessionId, "/compact"));
     assert.match(h.text(a.sessionId), /Nothing to compact/);
     assert.equal(h.requests(), 0);
     assert.equal(await readFile(join(h.cwd, "settings.json"), "utf8"), h.settings);
@@ -374,7 +374,7 @@ test("model shortlist saves global pi preferences and rejects unmatched patterns
     const saved = await readFile(join(h.cwd, "settings.json"), "utf8");
     assert.deepEqual(JSON.parse(saved).enabledModels, ["eido-fixture/*"]);
     assert.ok(h.updates.some(({update}) => update.sessionUpdate === "config_option_update" && JSON.stringify(update.configOptions).includes('"preferred":["eido-fixture/scripted"]')));
-    await h.prompt(a.sessionId, "/scoped-models missing/no-such-model");
+    await assert.rejects(h.prompt(a.sessionId, "/scoped-models missing/no-such-model"));
     assert.match(h.text(a.sessionId), /Unmatched model patterns/);
     assert.equal(await readFile(join(h.cwd, "settings.json"), "utf8"), saved);
     await h.prompt(a.sessionId, "/scoped-models all");
@@ -399,7 +399,7 @@ test("reload reports broken extensions, removes stale commands, and recovers nat
     const a = await h.newTask();
     await writeFile(join(h.cwd, "extensions/reload-check.js"), "export default () => { throw new Error('Fixture load failure'); }");
     h.updates.length = 0;
-    await h.prompt(a.sessionId, "/reload");
+    await assert.rejects(h.prompt(a.sessionId, "/reload"));
     assert.match(h.text(a.sessionId), /Reload completed with extension errors/);
     assert.ok(h.updates.some(({update}) => update.sessionUpdate === "available_commands_update" && !update.availableCommands.some(command => command.name === "reload-check")));
     await writeFile(join(h.cwd, "extensions/reload-check.js"), source);
@@ -422,7 +422,7 @@ test("exports use pi formats, refuse overwrite and clean temporary files; change
       const exported = await readFile(path, "utf8");
       if (extension === "html") assert.match(exported, /<!DOCTYPE html>/i);
       else assert.equal(JSON.parse(exported.trim().split("\n")[0]!).id, a.sessionId);
-      await h.prompt(a.sessionId, `/export "${path}"`);
+      await assert.rejects(h.prompt(a.sessionId, `/export "${path}"`));
       assert.match(h.text(a.sessionId), /destination already exists/);
       assert.equal(await readFile(path, "utf8"), exported);
     }
@@ -497,7 +497,7 @@ test("native pi commands route to their owning task and never repeat UI actions 
   const h = await harness([() => 'The actual pi response.'], {native: async params => {actions.push(params); return {handled:true};}});
   try {
     const a = await h.newTask(), b = await h.newTask();
-    await h.prompt(a.sessionId, '/copy');
+    await assert.rejects(h.prompt(a.sessionId, '/copy'));
     assert.match(h.text(a.sessionId), /No pi assistant response/);
     assert.equal(actions.length, 0);
     await h.prompt(a.sessionId, 'Reply once.');
@@ -607,7 +607,7 @@ test("pi OAuth uses native links and manual codes, completes only successful aut
     const before = await readFile(join(h.cwd,'fixture-auth.json'),'utf8');
     assert.equal(JSON.parse(before).deepseek.access,'secret-code-fixture');
     fail = true;
-    await h.prompt(task.sessionId,'/login deepseek oauth');
+    await assert.rejects(h.prompt(task.sessionId,'/login deepseek oauth'));
     assert.match(h.text(task.sessionId),/Sign-in to DeepSeek failed/);
     assert.equal(h.completedElicitations.length,1);
     assert.equal(await readFile(join(h.cwd,'fixture-auth.json'),'utf8'),before);
@@ -715,7 +715,7 @@ test("native new/resume retains IDs and extension hooks can cancel a transition"
     await h.prompt(a.sessionId,`/resume ${a.sessionId}`);
     assert.equal(actions.length,1);
     assert.match(h.text(a.sessionId),/already open/);
-    await h.prompt(a.sessionId,'/resume missing');
+    await assert.rejects(h.prompt(a.sessionId,'/resume missing'));
     assert.equal(actions.length,1);
     assert.equal(h.requests(),0);
   } finally {await h.dispose();}
@@ -740,7 +740,7 @@ test('explicit resume focuses a foreign workspace owner without loading into the
     assert.deepEqual(actions.at(-1),{sessionId:a.sessionId,action:'focus_session',data:{id:b.sessionId}});
     assert.match(h.text(a.sessionId),/Switched to task Foreign workspace/);
     focused=false;
-    await h.prompt(a.sessionId,`/resume ${b.sessionId}`);
+    await assert.rejects(h.prompt(a.sessionId,`/resume ${b.sessionId}`));
     assert.match(h.text(a.sessionId),/Open this task's workspace/);
     assert.ok(actions.every(action=>action.action!=='open_session'));
     assert.equal(h.requests(),0);
@@ -774,7 +774,7 @@ test("import validates JSONL, removes live child ownership and preserves the ori
     const imported=(await readdir(join(h.cwd,'sessions'))).find(path=>path.includes(id))!;
     assert.doesNotMatch(await readFile(join(h.cwd,'sessions',imported),'utf8'),/eido\.subagent\.v1/);
     await writeFile(path,data+'invalid-json');
-    await h.prompt(task.sessionId,`/import "${path}"`);
+    await assert.rejects(h.prompt(task.sessionId,`/import "${path}"`));
     assert.equal(actions.length,1);
     assert.match(h.text(task.sessionId),/malformed record/);
     for (const bad of [
@@ -783,7 +783,7 @@ test("import validates JSONL, removes live child ownership and preserves the ori
       data.replace('"parentId":"child123"', '"parentId":"missing"'),
     ]) {
       await writeFile(path,bad);
-      await h.prompt(task.sessionId,`/import "${path}"`);
+      await assert.rejects(h.prompt(task.sessionId,`/import "${path}"`));
       assert.equal(actions.length,1);
     }
     assert.match(h.text(task.sessionId),/invalid parent reference/);
@@ -1115,7 +1115,7 @@ test('pi custom component commands use the same ACP session and return to native
     assert.match(h.text(a.sessionId),/Component result: selected/);
     await h.prompt(b.sessionId,'/theme-check');assert.match(h.text(b.sessionId),/Pi theme: dark/);
     await h.prompt(a.sessionId,'/theme-check');assert.match(h.text(a.sessionId),/Pi theme: light/);
-    await h.prompt(a.sessionId,'/component-error');assert.match(h.text(a.sessionId),/command:component-error.*Fixture extension failure/);
+    await assert.rejects(h.prompt(a.sessionId,'/component-error'));assert.match(h.text(a.sessionId),/command:component-error.*Fixture extension failure/);
     await h.prompt(a.sessionId,'/reload');
     await h.prompt(a.sessionId,'/theme-check');assert.match(h.text(a.sessionId),/Pi theme: dark/);
     assert.equal(h.requests(),0);
@@ -1492,4 +1492,35 @@ test('custom pi editors share native drafts, filter raw input, submit once and c
     assert.equal(text,'keep');assert.equal(h.requests(),0);
     assert.equal(h.updates.some(({update})=>update.sessionUpdate==='tool_call'&&update.title==='Extension interface'),false);
   }finally{for(const {child} of terminals.values())child.kill();await h.dispose();}
+});
+
+test('task outcome survives reload, distinguishes failure and cancellation, and never replays a command', {timeout:30_000}, async () => {
+  const h = await harness([() => {throw new Error('Deterministic provider failure');}, () => 'Recovered.']);
+  const state = (session:string) => h.updates.filter(item=>item.sessionId===session)
+    .map(item=>item.update).findLast(update=>update.sessionUpdate==='session_info_update' && update._meta?.eidoTurn)?._meta?.eidoTurn as {id?:string;status:string};
+  const reload = async (sessionId:string) => {
+    await h.connection.agent.request(methods.agent.session.close,{sessionId});
+    h.updates.length=0;
+    await h.connection.agent.request(methods.agent.session.load,{sessionId,cwd:h.cwd,mcpServers:[]});
+  };
+  try {
+    const a=await h.newTask();
+    await h.prompt(a.sessionId,'/session');
+    await reload(a.sessionId);
+    assert.equal(state(a.sessionId).status,'completed');
+    const first=state(a.sessionId).id;
+    await assert.rejects(h.prompt(a.sessionId,'/thinking invalid'));
+    await reload(a.sessionId);
+    assert.equal(state(a.sessionId).status,'failed');
+    assert.notEqual(state(a.sessionId).id,first);
+    await assert.rejects(h.prompt(a.sessionId,'Provider failure fixture'));
+    await reload(a.sessionId);
+    assert.equal(state(a.sessionId).status,'failed');
+    assert.equal(h.requests(),1,'loading must never reissue the failed prompt');
+    await h.prompt(a.sessionId,'Recover explicitly');
+    await reload(a.sessionId);
+    assert.equal(state(a.sessionId).status,'completed');
+    assert.equal(h.requests(),2);
+    assert.equal((await h.entries()).filter(e=>e.customType==='eido.turn.v1'&&e.data.status==='running').length,4);
+  } finally {await h.dispose();}
 });

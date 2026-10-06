@@ -610,10 +610,10 @@ fn affects_thread_metadata(event: &AcpThreadEvent) -> bool {
         | AcpThreadEvent::Error
         | AcpThreadEvent::LoadError(_)
         | AcpThreadEvent::Refusal
-        | AcpThreadEvent::WorkingDirectoriesUpdated => true,
+        | AcpThreadEvent::WorkingDirectoriesUpdated
+        | AcpThreadEvent::StatusChanged => true,
         // --
         AcpThreadEvent::EntryUpdated(_)
-        | AcpThreadEvent::StatusChanged
         | AcpThreadEvent::EntriesRemoved(_)
         | AcpThreadEvent::Retry(_)
         | AcpThreadEvent::TokenUsageUpdated
@@ -1404,7 +1404,16 @@ impl ConversationView {
 
         let subscriptions = vec![
             cx.subscribe_in(&thread, window, Self::handle_thread_event),
-            cx.observe(&action_log, |_, _, cx| cx.notify()),
+            cx.observe_in(&action_log, window, {
+                let thread = thread.downgrade();
+                move |this, _, window, cx| {
+                    if let Some(thread) = thread.upgrade() {
+                        this.eido_observe_task(&thread, window, cx);
+                    }
+                    cx.emit(RootThreadUpdated);
+                    cx.notify();
+                }
+            }),
         ];
 
         let subagent_sessions = thread
@@ -1770,6 +1779,17 @@ impl ConversationView {
         Ok(ok)
     }
 
+    fn eido_observe_task(&self, thread: &Entity<AcpThread>, window: &Window, cx: &mut Context<Self>) {
+        let thread = thread.read(cx);
+        if thread.connection().agent_id().as_ref() != "eido-pi" || thread.parent_session_id().is_some() {
+            return;
+        }
+        let session = thread.session_id().to_string();
+        let state = thread.eido_turn().clone();
+        let pending_review = thread.action_log().read(cx).changed_buffers(cx).count();
+        crate::eido_task::observe(&session, state, self.eido_task_contents_visible(window, cx), pending_review, cx);
+    }
+
     fn handle_thread_event(
         &mut self,
         thread: &Entity<AcpThread>,
@@ -1786,6 +1806,7 @@ impl ConversationView {
         };
         let is_subagent = thread.read(cx).parent_session_id().is_some();
         if !is_subagent && affects_thread_metadata(event) {
+            self.eido_observe_task(thread, window, cx);
             cx.emit(RootThreadUpdated);
         }
         match event {
@@ -1941,7 +1962,9 @@ impl ConversationView {
                 if !sent_queued_message {
                     let used_tools = thread.read(cx).used_tools_since_last_user_message();
                     self.notify_with_sound(
-                        if used_tools {
+                        if *stop_reason == acp::StopReason::Cancelled {
+                            "Run cancelled"
+                        } else if used_tools {
                             "Finished running tools"
                         } else {
                             "New message"
@@ -2944,7 +2967,8 @@ impl ConversationView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let (title, message) = match e {
+        let restoring_eido = self.agent.agent_id().as_ref() == "eido-pi" && self.root_session_id.is_some();
+        let (title, mut message) = match e {
             LoadError::Unsupported {
                 command: path,
                 current_version,
@@ -2959,16 +2983,28 @@ impl ConversationView {
                     message.push_str("\n");
                     message.push_str(stderr);
                 };
-                ("Failed to Launch", message)
+                (if restoring_eido { "Connection lost" } else { "Failed to Launch" }, message)
             }
             LoadError::Other(msg) => ("Failed to Launch", msg.to_string()),
         };
+        if restoring_eido {
+            let saved = crate::eido_task::read(&self.root_session_id.as_ref().unwrap().to_string(), cx);
+            let mut recovery = if saved.restored_status() == acp_thread::EidoTurnStatus::Interrupted {
+                "Outcome unknown. Restore the task and check its history before sending again.".to_string()
+            } else {
+                "Restore the task to reconnect to its saved history.".to_string()
+            };
+            if saved.pending_review > 0 {
+                recovery.push_str(&format!(" Awaiting review: {} {}.", saved.pending_review, if saved.pending_review == 1 { "file" } else { "files" }));
+            }
+            message = format!("{recovery}\n\n{message}");
+        }
 
         let action_slot = h_flex()
             .gap_1()
             .child(
-                Button::new("retry-agent-launch", "Retry")
-                    .tooltip(Tooltip::text("Try to restart the agent"))
+                Button::new("retry-agent-launch", if restoring_eido { "Restore task" } else { "Retry" })
+                    .tooltip(Tooltip::text(if restoring_eido { "Reconnect and load history without resending the last message" } else { "Try to restart the agent" }))
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.retry_connection(window, cx);
                     })),
@@ -3095,6 +3131,20 @@ impl ConversationView {
                         .map(|conversation_view| conversation_view.entity_id())
                         == Some(cx.entity_id())
                 })
+    }
+
+    // Seeing a task in the sidebar is sufficient to suppress a popup, but
+    // only seeing its conversation acknowledges the persisted result.
+    fn eido_task_contents_visible(&self, window: &Window, cx: &Context<Self>) -> bool {
+        window.is_window_active()
+            && self.workspace.upgrade().is_some_and(|workspace| {
+                window.root::<MultiWorkspace>().flatten().is_none_or(|multi_workspace| {
+                    multi_workspace.read(cx).workspace() == &workspace
+                }) && self.is_visible_in_agent_panel(&workspace, cx)
+            })
+            && self.active_thread().is_some_and(|view| {
+                view.read(cx).thread.read(cx).parent_session_id().is_none()
+            })
     }
 
     fn agent_status_visible(&self, window: &Window, cx: &Context<Self>) -> bool {
@@ -3612,6 +3662,15 @@ impl ConversationView {
 
 impl Render for ConversationView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.eido_task_contents_visible(window, cx) {
+            if let Some(thread) = self.root_thread(cx) {
+                let thread = thread.read(cx);
+                if thread.connection().agent_id().as_ref() == "eido-pi" {
+                    let session = thread.session_id().to_string();
+                    crate::eido_task::mark_read(&session, cx);
+                }
+            }
+        }
         self.sync_request_elicitation_states(window, cx);
         let eido = std::env::var_os("EIDO_ROOT").is_some();
         let request_elicitation_connection = self.request_elicitation_connection();
@@ -6058,7 +6117,7 @@ pub(crate) mod tests {
     }
 
     #[gpui::test]
-    async fn test_no_notification_when_sidebar_open_but_different_thread_focused(
+    async fn test_eido_task_sidebar_visibility_does_not_acknowledge_background_result(
         cx: &mut TestAppContext,
     ) {
         init_test(cx);
@@ -6143,6 +6202,22 @@ pub(crate) mod tests {
                 .any(|window| window.downcast::<AgentNotification>().is_some()),
             "Expected no notification when the sidebar is open, even if focused on another thread"
         );
+
+        conversation_view.update_in(cx, |view, window, cx| {
+            assert!(view.agent_status_visible(window, cx));
+            assert!(!view.eido_task_contents_visible(window, cx));
+            let state = acp_thread::EidoTurnState {
+                version: 1, id: Some("background-failure".into()),
+                status: acp_thread::EidoTurnStatus::Failed,
+            };
+            crate::eido_task::observe("sidebar-background", state, view.eido_task_contents_visible(window, cx), 0, cx);
+        });
+        cx.read(|cx| crate::eido_session_store::flush("eido-task-state-v1", "sidebar-background", cx)).await.unwrap();
+        cx.read(|cx| {
+            let payload = db::kvp::KeyValueStore::global(cx).scoped("eido-task-state-v1").read("sidebar-background").unwrap().unwrap();
+            let restored: crate::eido_task::Record = serde_json::from_str(&payload).unwrap();
+            assert!(restored.unread, "background failure must remain unread after restart");
+        });
     }
 
     #[gpui::test]

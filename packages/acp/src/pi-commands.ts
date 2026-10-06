@@ -55,6 +55,7 @@ interface CommandContext {
   applyConfigAtBoundary(id: string, value: string): Promise<SessionConfigOption[]>;
   publishAvailableModels(models: readonly Model<Api>[]): Promise<void>;
   activeTurnSignal(): AbortSignal | undefined;
+  reportCommandError(error: Error): void;
 }
 
 function values(option: SessionConfigOption | undefined): {value: string; name: string}[] {
@@ -97,6 +98,7 @@ export function installPiCommands(pi: AgentSession, client: AgentContext, suppor
   const catalogue = () => commandCatalogue(pi, nativeUi);
   const supported = [...piCommands, ...(nativeUi ? nativeCommands : [])];
   let activeContext: CommandContext | undefined;
+  let extensionFailure: Error | undefined;
   const ui = supportsForms ? createPiUI(pi, client, () => activeContext?.activeTurnSignal(), update => {
     if (activeContext) activeContext.enqueue(update);
     else void client.notify(methods.client.session.update, {sessionId: pi.sessionId, update}).catch(error => console.error("pi startup UI notification failed", error));
@@ -107,6 +109,8 @@ export function installPiCommands(pi: AgentSession, client: AgentContext, suppor
       onError(error) {
         options.onError?.(error);
         const text = `Extension ${basename(error.extensionPath)} (${error.event}): ${error.error}`;
+        extensionFailure = new Error(text);
+        activeContext?.reportCommandError(extensionFailure);
         if (ui) ui.notify(text, 'error');
         else {
           appendEidoEntry(pi.sessionManager,'eido.notice.v1', {text});
@@ -123,6 +127,7 @@ export function installPiCommands(pi: AgentSession, client: AgentContext, suppor
     get commands() { return catalogue(); },
     async run(text: string, images: unknown[] | undefined, context: CommandContext): Promise<boolean> {
       activeContext = context;
+      extensionFailure = undefined;
       if (!text.trimStart().startsWith("/")) return false;
       const match = /^\s*\/(\S+)(?:\s+([\s\S]*))?$/.exec(text);
       const name = match?.[1] ?? "";
@@ -146,6 +151,7 @@ export function installPiCommands(pi: AgentSession, client: AgentContext, suppor
             extensionCommandId = appendEidoEntry(pi.sessionManager, "eido.command.input.v1", {command:text});
             await pi.prompt(text.trimStart());
             signal?.throwIfAborted();
+            if (extensionFailure) throw extensionFailure;
             appendEidoEntry(pi.sessionManager, "eido.command.result.v1", {commandId:extensionCommandId, status:"completed"});
             return true;
           }
@@ -335,6 +341,8 @@ export function installPiCommands(pi: AgentSession, client: AgentContext, suppor
           throw error;
         }
         record(`Command failed: ${error instanceof Error ? error.message : String(error)}`, "failed");
+        context.reportCommandError(error instanceof Error ? error : new Error(String(error)));
+        throw error;
       }
       return true;
     },

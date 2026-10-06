@@ -5,6 +5,7 @@ const LABELS = {
     rate_limit: "provider rate limit",
     billing_error: "provider billing or quota wall",
     provider_error: "provider error",
+    command_error: "command failed",
     invalid_model: "unknown or unselectable model",
     empty_prompt: "prompt has no text or images",
     session_busy: "session has a turn in flight",

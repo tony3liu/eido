@@ -1,4 +1,7 @@
 // Adapted for Eido from @automatalabs/pi-acp 0.9.4 (Apache-2.0). See ../LICENSE.
+import {randomUUID} from "node:crypto";
+import {appendEidoEntry} from "./session-persistence.js";
+import {TURN_RECORD, savedTurnState, terminalTurnStatus} from "./turn-state.js";
 import { methods, } from "@agentclientprotocol/sdk";
 import { adapterError, classifyPreflight, isRequestError, unexpectedError } from "./errors.js";
 import { applyConfig, modelDiscoveryPreferences, modelOption, thinkingLevelOption, } from "./config.js";
@@ -92,37 +95,18 @@ export class PiSession {
     get busy() {
         return this.activeTurn !== undefined || this.configReserved || this.closing;
     }
-    /**
-     * The `_session/loaded_turn/query` answer — the authoritative
-     * founding-turn terminal classification for a loaded session (see
-     * `packages/pi-acp/src/loaded-turn.ts`):
-     *
-     * - `running` when a turn is executing in this process right now (the
-     *   client then waits for the `_session/loaded_turn/ended` push — the
-     *   watch flag is armed here so the turn's finish sends it),
-     * - `completed` when the session journal's last message entry is an
-     *   assistant message (pi persists every complete LLM message
-     *   atomically at `message_end`, so a completed turn always leaves an
-     *   assistant leaf and the replay's trailing assistant message is the
-     *   turn's FINAL message — authoritative, never a quiet-gap guess),
-     * - `interrupted` otherwise (the journal shows an interrupted or
-     *   abandoned turn — no turn is running, so re-issue is safe).
-     */
-    loadedTurnStatus() {
+    turnState() {
         const turn = this.activeTurn;
-        if (turn !== undefined && !turn.completed && !this.closing) {
-            this.loadedTurnReportedRunning = true;
-            return "running";
-        }
-        const leaf = this.manager.getLeafEntry();
-        if (leaf?.type === "custom" && leaf.customType === "eido.command.v1")
-            return leaf.data?.status === "cancelled" ? "interrupted" : "completed";
-        if (leaf !== undefined &&
-            leaf.type === "message" &&
-            leaf.message.role === "assistant") {
-            return "completed";
-        }
-        return "interrupted";
+        return turn && !turn.completed ? {version: 1, id: turn.eidoId, status: "running"}
+            : savedTurnState(this.manager.getBranch());
+    }
+    loadedTurnStatus() {
+        const state = this.turnState();
+        if (state.status === "running") this.loadedTurnReportedRunning = true;
+        return state.status === "running" ? "running" : state.status === "completed" ? "completed" : "interrupted";
+    }
+    publishTurnState(state = this.turnState()) {
+        this.enqueue({sessionUpdate: "session_info_update", _meta: {eidoTurn: state}});
     }
     configOptions() {
         return [thinkingLevelOption(this.pi), modelOption(this.pi, this.availableModels, this.modelPreferences)];
@@ -134,6 +118,9 @@ export class PiSession {
         this.modelPreferences = preferences;
     }
     activeTurnSignal() { return this.activeTurn?.controller.signal; }
+    reportCommandError(error) {
+        if (this.activeTurn && !this.activeTurn.completed) this.activeTurn.commandError = error;
+    }
     emitMcpDiagnostic(text) {
         if (this.disposed)
             return;
@@ -195,6 +182,7 @@ export class PiSession {
     }
     async replay(entries) {
         for (const update of this.historyUpdates(entries)) this.enqueue(update);
+        this.publishTurnState();
         try {
             await this.drain();
         }
@@ -229,6 +217,15 @@ export class PiSession {
     finish(turn, outcome) {
         if (turn.completed)
             return;
+        const state = {version: 1, id: turn.eidoId, status: terminalTurnStatus(outcome)};
+        try {
+            appendEidoEntry(this.manager, TURN_RECORD, state);
+        } catch (error) {
+            // A result that cannot be retained is not a recoverable success.
+            outcome = {error: unexpectedError(error)};
+            state.status = "failed";
+        }
+        this.publishTurnState(state);
         turn.diagnosticOpen = false;
         turn.completed = true;
         turn.removeRequestAbort?.();
@@ -456,6 +453,7 @@ export class PiSession {
             await this.drain();
             if (turn.completed)
                 return;
+            if (turn.commandError) throw adapterError("command_error");
             const terminal = terminalAssistant(messages);
             const stopReason = stopReasonFor(terminal, turn.controller.signal.aborted);
             this.discardOrphanedSteering();
@@ -476,7 +474,7 @@ export class PiSession {
             try {
                 await this.drain();
                 this.discardOrphanedSteering();
-                this.finish(turn, { error: classifyPreflight(error) });
+                this.finish(turn, { error: turn.commandError ? adapterError("command_error") : classifyPreflight(error) });
             }
             catch {
                 this.notificationFailure();
@@ -526,7 +524,10 @@ export class PiSession {
         const settlement = new Promise((res) => {
             resolveSettlement = res;
         });
+        const eidoId = randomUUID();
+        appendEidoEntry(this.manager, TURN_RECORD, {version: 1, id: eidoId, status: "running"});
         const turn = {
+            eidoId,
             controller: new AbortController(),
             settlement,
             resolveSettlement,
@@ -539,6 +540,7 @@ export class PiSession {
             startMessageIndex,
         };
         this.activeTurn = turn;
+        this.publishTurnState();
         const requestSignal = opts.requestSignal;
         if (requestSignal) {
             const abortFromRequest = () => this.abortTurn(turn);

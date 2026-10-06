@@ -1,6 +1,8 @@
 mod connection;
 mod diff;
 mod eido_fs;
+mod eido_turn;
+pub use eido_turn::*;
 pub use eido_fs::*;
 mod mention;
 mod terminal;
@@ -2299,6 +2301,7 @@ pub struct AcpThread {
     pending_terminal_output: HashMap<acp::TerminalId, Vec<Vec<u8>>>,
     pending_terminal_exit: HashMap<acp::TerminalId, acp::TerminalExitStatus>,
     had_error: bool,
+    eido_turn: EidoTurnState,
     /// The user's unsent prompt text, persisted so it can be restored when reloading the thread.
     draft_prompt: Option<Vec<acp::ContentBlock>>,
     /// The initial scroll position for the thread view, set during session registration.
@@ -2571,6 +2574,7 @@ impl AcpThread {
             pending_terminal_output: HashMap::default(),
             pending_terminal_exit: HashMap::default(),
             had_error: false,
+            eido_turn: EidoTurnState::default(),
             draft_prompt: None,
             ui_scroll_position: None,
             streaming_text_buffer: None,
@@ -2743,6 +2747,8 @@ impl AcpThread {
     pub fn is_cancelling(&self) -> bool {
         self.running_turn.is_none() && self.cancelling_turn.is_some()
     }
+
+    pub fn eido_turn(&self) -> &EidoTurnState { &self.eido_turn }
 
     pub fn had_error(&self) -> bool {
         self.had_error
@@ -2934,6 +2940,15 @@ impl AcpThread {
                 cx.notify();
             }
             acp::SessionUpdate::SessionInfoUpdate(info_update) => {
+                if let Some(state) = info_update.meta.as_ref().and_then(|meta| meta.get("eidoTurn"))
+                    .and_then(|value| serde_json::from_value::<EidoTurnState>(value.clone()).ok())
+                    .filter(|state| state.version == 1)
+                {
+                    self.had_error = state.status == EidoTurnStatus::Failed;
+                    self.eido_turn = state;
+                    cx.emit(AcpThreadEvent::StatusChanged);
+                    cx.notify();
+                }
                 if let MaybeUndefined::Value(title) = info_update.title {
                     let had_provisional = self.provisional_title.take().is_some();
                     let title: SharedString = title.into();
@@ -4143,6 +4158,7 @@ impl AcpThread {
     ) -> BoxFuture<'static, Result<Option<acp::PromptResponse>>> {
         self.clear_completed_plan_entries(cx);
         self.had_error = false;
+        self.eido_turn = EidoTurnState {version: 1, id: Some(Uuid::new_v4().to_string()), status: EidoTurnStatus::Running};
 
         let (tx, rx) = oneshot::channel();
         let cancel_task = self.cancel_inner(RequestPermissionOutcome::InterruptedByFollowUp, cx);
@@ -4193,6 +4209,7 @@ impl AcpThread {
 
                 let Ok(response) = response else {
                     if is_same_turn {
+                        this.eido_turn.status = EidoTurnStatus::Interrupted;
                         cx.emit(AcpThreadEvent::StatusChanged);
                     }
                     // tx dropped, just return
@@ -4205,6 +4222,11 @@ impl AcpThread {
 
                 match response {
                     Ok(r) => {
+                        this.eido_turn.status = match r.stop_reason {
+                            acp::StopReason::EndTurn => EidoTurnStatus::Completed,
+                            acp::StopReason::Cancelled => EidoTurnStatus::Cancelled,
+                            _ => EidoTurnStatus::Failed,
+                        };
                         Self::flush_streaming_text(&mut this.streaming_text_buffer, cx);
 
                         if r.stop_reason == acp::StopReason::MaxTokens {
@@ -4296,6 +4318,7 @@ impl AcpThread {
                         Ok(Some(r))
                     }
                     Err(e) => {
+                        this.eido_turn.status = EidoTurnStatus::Failed;
                         if is_same_turn {
                             cx.emit(AcpThreadEvent::StatusChanged);
                         }
@@ -5184,6 +5207,12 @@ impl AcpThread {
     }
 
     pub fn emit_load_error(&mut self, error: LoadError, cx: &mut Context<Self>) {
+        // A lost connection provides no settlement evidence for a live turn.
+        if self.eido_turn.status == EidoTurnStatus::Running {
+            self.eido_turn.status = EidoTurnStatus::Interrupted;
+            self.had_error = false;
+            cx.emit(AcpThreadEvent::StatusChanged);
+        }
         cx.emit(AcpThreadEvent::LoadError(error));
     }
 
@@ -11613,6 +11642,39 @@ mod tests {
         repeated.await;
         assert_eq!(request.await.unwrap().unwrap().stop_reason, acp::StopReason::Cancelled);
         assert_eq!(thread.read_with(cx, |thread, _| thread.status()), ThreadStatus::Idle);
+    }
+
+    #[gpui::test]
+    async fn test_eido_turn_outcome_restores_failure_and_retains_cancellation(cx: &mut TestAppContext) {
+        init_test(cx);
+        let project = Project::test(FakeFs::new(cx.executor()), [], cx).await;
+        let connection = Rc::new(FakeAgentConnection::new().on_user_message(|_, _, _| {
+            async move { Ok(acp::PromptResponse::new(acp::StopReason::Cancelled)) }.boxed_local()
+        }));
+        let thread = cx.update(|cx| connection.new_session(project, PathList::new(&[Path::new(path!("/test"))]), cx)).await.unwrap();
+        for (status, failed) in [("failed", true), ("completed", false), ("interrupted", false)] {
+            thread.update(cx, |thread, cx| {
+                thread.handle_session_update(acp::SessionUpdate::SessionInfoUpdate(
+                    acp::SessionInfoUpdate::new().meta(acp::Meta::from_iter([("eidoTurn".into(),
+                        serde_json::json!({"version":1,"id":"restored","status":status}))]))), cx).unwrap();
+                assert_eq!(thread.had_error(), failed);
+                assert_eq!(thread.eido_turn().id.as_deref(), Some("restored"));
+            });
+        }
+        thread.update(cx, |thread, cx| {
+            thread.handle_session_update(acp::SessionUpdate::SessionInfoUpdate(
+                acp::SessionInfoUpdate::new().meta(acp::Meta::from_iter([("eidoTurn".into(),
+                    serde_json::json!({"version":2,"status":"completed"}))]))), cx).unwrap();
+            assert_eq!(thread.eido_turn().status, EidoTurnStatus::Interrupted, "unknown versions must not erase recovery evidence");
+        });
+        let request = thread.update(cx, |thread, cx| thread.send_raw("cancel fixture", cx));
+        assert_eq!(thread.read_with(cx, |thread, _| thread.eido_turn().status), EidoTurnStatus::Running);
+        thread.update(cx, |thread, cx| {
+            thread.emit_load_error(LoadError::Other("Connection closed".into()), cx);
+            assert_eq!(thread.eido_turn().status, EidoTurnStatus::Interrupted);
+        });
+        request.await.unwrap();
+        assert_eq!(thread.read_with(cx, |thread, _| thread.eido_turn().status), EidoTurnStatus::Cancelled);
     }
 
     /// Tests that when a follow-up message is sent during generation,

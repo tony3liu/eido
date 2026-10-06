@@ -12,6 +12,7 @@ mod eido_verification;
 mod eido_queue;
 mod eido_review_store;
 mod eido_task_windows;
+pub mod eido_task;
 mod eido_session_store;
 pub mod draft_prompt_store;
 mod entry_view_state;
@@ -558,6 +559,7 @@ pub fn init(
     _is_eval: bool,
     cx: &mut App,
 ) {
+    eido_session_store::init(cx);
     eido_access::init(cx);
     eido_review_store::init(cx);
     agent::ThreadStore::init_global(cx);

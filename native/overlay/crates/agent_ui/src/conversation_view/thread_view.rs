@@ -12074,6 +12074,30 @@ impl ThreadView {
             )
     }
 
+    fn render_eido_task_state(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if self.agent_id.as_ref() != "eido-pi" { return None; }
+        let thread = self.thread.read(cx);
+        let status = thread.eido_turn().status;
+        let count = thread.action_log().read(cx).changed_buffers(cx).count();
+        let label = if thread.is_cancelling() { "Stopping · waiting for the current operation" }
+            else if thread.is_waiting_for_confirmation() { "Waiting for input" }
+            else if thread.status() == ThreadStatus::Generating { "Running" }
+            else { status.label() };
+        let mut row = h_flex().gap_2().px_4().py_1().flex_wrap()
+            .child(Label::new(label).size(LabelSize::Small).color(match status {
+                acp_thread::EidoTurnStatus::Failed => Color::Error,
+                acp_thread::EidoTurnStatus::Interrupted => Color::Warning,
+                _ => Color::Muted,
+            }));
+        if count > 0 {
+            row = row.child(Label::new(format!("Awaiting review · {count} {}", if count == 1 {"file"} else {"files"})).size(LabelSize::Small).color(Color::Warning));
+        }
+        if status == acp_thread::EidoTurnStatus::Interrupted {
+            row = row.child(Label::new("Check history and changes before sending again.").size(LabelSize::Small).color(Color::Muted));
+        }
+        Some(row.into_any_element())
+    }
+
     fn render_verification(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let conversation = self.conversation.read(cx);
         let root = self.thread.read(cx).parent_session_id().is_none();
@@ -13153,6 +13177,7 @@ impl Render for ThreadView {
             .child(conversation)
             .children(self.render_multi_root_callout(cx))
             .children(self.render_activity_bar(window, cx))
+            .when_some(self.render_eido_task_state(cx), |this, state| this.child(state))
             .when_some(self.render_verification(cx), |this, evidence| this.child(evidence))
             .when_some(self.render_review_recovery(cx), |this, recovery| this.child(recovery))
             .when_some(self.render_session_notices(cx), |this, notices| {

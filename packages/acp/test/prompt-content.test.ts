@@ -79,8 +79,8 @@ test('ACP embeds editor context and passes images through templates, skills, rel
     await send(first, 'attachment-delivery');
     assert.equal(checked, 1, 'the original attachment identity prevents duplicate inference');
     assert.equal((await send([text('/skill:picture'), image])).stopReason, 'end_turn');
-    await send([text('/session'), image]);
-    await send([text('/text-only'), image]);
+    await assert.rejects(send([text('/session'), image]));
+    await assert.rejects(send([text('/text-only'), image]));
     assert.equal(checked, 2, 'text-only commands cannot silently discard attachments');
     await assert.rejects(send([{type: 'audio', data: 'AA==', mimeType: 'audio/wav'}]), /audio attachments/);
     await connection.agent.request(methods.agent.session.close, {sessionId: task.sessionId});

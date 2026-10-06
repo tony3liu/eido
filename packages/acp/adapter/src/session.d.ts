@@ -57,26 +57,19 @@ export declare class PiSession {
     private loadedTurnReportedRunning;
     constructor(options: PiSessionOptions);
     get busy(): boolean;
-    /**
-     * The `_session/loaded_turn/query` answer — the authoritative
-     * founding-turn terminal classification for a loaded session (see
-     * `packages/pi-acp/src/loaded-turn.ts`):
-     *
-     * - `running` when a turn is executing in this process right now (the
-     *   client then waits for the `_session/loaded_turn/ended` push — the
-     *   watch flag is armed here so the turn's finish sends it),
-     * - `completed` when the session journal's last message entry is an
-     *   assistant message (pi persists every complete LLM message
-     *   atomically at `message_end`, so a completed turn always leaves an
-     *   assistant leaf and the replay's trailing assistant message is the
-     *   turn's FINAL message — authoritative, never a quiet-gap guess),
-     * - `interrupted` otherwise (the journal shows an interrupted or
-     *   abandoned turn — no turn is running, so re-issue is safe).
-     */
+/** Loaded-turn settlement evidence from Eido's journal records.
+ * Running requires an active in-process turn. Completed requires a successful
+ * ACP settlement or an explicit legacy command result. All other states map to
+ * interrupted for wire compatibility; interruption never authorizes replay.
+ */
     loadedTurnStatus(): LoadedTurnStatus;
+    turnState(): import("./turn-state.js").TurnState;
+    publishTurnState(state?: import("./turn-state.js").TurnState): void;
     configOptions(): import("@agentclientprotocol/sdk").SessionConfigOption[];
     publishAvailableModels(models: readonly Model<Api>[]): Promise<void>;
     activeTurnSignal(): AbortSignal | undefined;
+    reportCommandError(error: Error): void;
+    historyUpdates(entries: readonly SessionEntry[]): SessionUpdate[];
     emitMcpDiagnostic(text: string): void;
     enqueue(update: SessionUpdate): void;
     private startPump;

@@ -9,6 +9,20 @@ pub(crate) type Save = Shared<Task<Result<(), String>>>;
 struct Pending(HashMap<(String, String), (String, Save)>);
 impl Global for Pending {}
 
+/// Finish outstanding snapshots when the app exits, even for unloaded tasks.
+pub(crate) fn init(cx: &mut App) {
+    cx.on_app_quit(|cx| {
+        let saves = cx.try_global::<Pending>().map(|pending| {
+            pending.0.values().map(|(_, save)| save.clone()).collect::<Vec<_>>()
+        }).unwrap_or_default();
+        async move {
+            for save in saves {
+                if let Err(error) = save.await { log::error!("Could not save task state: {error}"); }
+            }
+        }
+    }).detach();
+}
+
 /// Preserve the latest snapshot across view/window lifetimes, including while
 /// its database write is pending. This is a cache of the existing KVP record.
 pub(crate) fn read(namespace: &str, key: &str, cx: &App) -> anyhow::Result<Option<String>> {
