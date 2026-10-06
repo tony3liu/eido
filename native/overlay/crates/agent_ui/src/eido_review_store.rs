@@ -4,7 +4,7 @@ use agent_client_protocol::schema::v1 as acp;
 use anyhow::{Context as _, Result};
 use db::kvp::KeyValueStore;
 use futures::{StreamExt, channel::{mpsc, oneshot}};
-use gpui::{App, AsyncApp, Context, Entity, WeakEntity};
+use gpui::{App, AppContext as _, AsyncApp, Context, Entity, WeakEntity};
 use serde::{Deserialize, Serialize};
 use std::{cell::RefCell, collections::HashMap, path::PathBuf, rc::Rc, time::Duration};
 use util::ResultExt as _;
@@ -58,6 +58,17 @@ struct State {
 enum Write {
     Snapshot(String),
     Flush(oneshot::Sender<()>),
+}
+
+fn capture_resolutions(thread: &AcpThread, state: &Rc<RefCell<State>>) -> bool {
+    let mut state = state.borrow_mut();
+    if state.restoring { return false; }
+    let mut changed = false;
+    for file in std::mem::take(&mut state.conflicts) {
+        if thread.review_path_is_blocked(&file.path) { state.conflicts.push(file); }
+        else { state.archived.push(file); changed = true; }
+    }
+    changed
 }
 
 fn notify(thread: &WeakEntity<AcpThread>, message: String, cx: &mut AsyncApp) {
@@ -117,21 +128,31 @@ fn attach_with_owners(thread: &mut AcpThread, key: String, owners: Owners, cx: &
     let db = KeyValueStore::global(cx);
     let saved = db.scoped(NAMESPACE).read(&key)
         .and_then(|raw| raw.map(|raw| serde_json::from_str::<SavedReview>(&raw).map_err(Into::into)).transpose());
-    // One writer preserves order even when review changes arrive during a DB write.
-    cx.spawn({
+    // Shutdown stops foreground dispatch. Keep database work independent from
+    // the UI; failures are reported back while the app is running.
+    let (errors, mut failures) = mpsc::unbounded();
+    cx.background_spawn({
         let key = key.clone();
-        let state = state.clone();
-        async move |thread, cx| {
+        async move {
             while let Some(message) = receiver.next().await {
                 match message {
                     Write::Snapshot(payload) => {
                         if let Err(error) = db.scoped(NAMESPACE).write(key.clone(), payload).await {
-                            state.borrow_mut().last_payload = None;
-                            notify(&thread, format!("Pending review could not be saved: {error}. Keep this task open."), cx);
+                            log::error!("Pending review could not be saved: {error}");
+                            let _ = errors.unbounded_send(error.to_string());
                         }
                     }
                     Write::Flush(done) => { let _ = done.send(()); }
                 }
+            }
+        }
+    }).detach();
+    cx.spawn({
+        let state = state.clone();
+        async move |thread, cx| {
+            while let Some(error) = failures.next().await {
+                state.borrow_mut().last_payload = None;
+                notify(&thread, format!("Pending review could not be saved: {error}. Keep this task open."), cx);
             }
         }
     }).detach();
@@ -143,37 +164,28 @@ fn attach_with_owners(thread: &mut AcpThread, key: String, owners: Owners, cx: &
     let resolved = cx.observe_self({
         let state = state.clone(); let sender = sender.clone(); let log = log.clone();
         move |thread, cx| {
-            let mut state_mut = state.borrow_mut();
-            if state_mut.restoring { return; }
-            let mut changed = false;
-            for file in std::mem::take(&mut state_mut.conflicts) {
-                if thread.review_path_is_blocked(&file.path) { state_mut.conflicts.push(file); }
-                else { state_mut.archived.push(file); changed = true; }
-            }
-            drop(state_mut);
-            if changed { capture(&log, &state, &sender, cx); }
+            if capture_resolutions(thread, &state) { capture(&log, &state, &sender, cx); }
         }
     });
     thread.retain_review_subscription(resolved);
     let release = cx.on_release({
         let state = state.clone(); let sender = sender.clone(); let log = log.clone();
-        move |_, cx| { capture(&log, &state, &sender, cx); }
+        move |thread, cx| {
+            capture_resolutions(thread, &state);
+            capture(&log, &state, &sender, cx);
+        }
     });
     thread.retain_review_subscription(release);
-    // Normal quit waits for queued diff updates and the final DB transaction.
+    // Capture while the app can still be read, then only await background I/O.
+    // A diff still being computed retains its last consistent checkpoint.
     let quit = cx.on_app_quit({
         let state = state.clone(); let sender = sender.clone(); let log = log.downgrade();
-        move |_, cx| {
-            let state = state.clone(); let sender = sender.clone(); let log = log.clone();
-            cx.spawn(async move |_, cx| {
-                for _ in 0..100 {
-                    let ready = cx.update(|cx| log.upgrade().is_none_or(|log| capture(&log, &state, &sender, cx)));
-                    if ready { break; }
-                    cx.background_executor().timer(Duration::from_millis(10)).await;
-                }
-                let (done, wait) = oneshot::channel();
-                if sender.unbounded_send(Write::Flush(done)).is_ok() { let _ = wait.await; }
-            })
+        move |thread, cx| {
+            capture_resolutions(thread, &state);
+            if let Some(log) = log.upgrade() { capture(&log, &state, &sender, cx); }
+            let (done, wait) = oneshot::channel();
+            let _ = sender.unbounded_send(Write::Flush(done));
+            async move { let _ = wait.await; }
         }
     });
     thread.retain_review_subscription(quit);
@@ -310,6 +322,45 @@ mod tests {
 
     fn saved(key: &str, cx: &TestAppContext) -> Vec<SavedFile> {
         cx.read(|cx| serde_json::from_str::<SavedReview>(&KeyValueStore::global(cx).scoped(NAMESPACE).read(key).unwrap().unwrap()).unwrap().files)
+    }
+
+    #[gpui::test]
+    async fn test_eido_quit_persists_review_without_foreground_dispatch(cx: &mut TestAppContext) {
+        crate::conversation_view::tests::init_test(cx);
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree("/reviews", serde_json::json!({"conflict.txt":"new manual content\n"})).await;
+        let previous = SavedReview { parent: None, files: vec![SavedFile {
+            path: "/reviews/conflict.txt".into(), base: "".into(), current: "old agent work\n".into(),
+            disk_mtime: None, sources: vec![],
+        }], archived: vec![] };
+        cx.read(KeyValueStore::global).scoped(NAMESPACE)
+            .write("quit".into(), serde_json::to_string(&previous).unwrap()).await.unwrap();
+        let project = Project::test(fs.clone(), [Path::new("/reviews")], cx).await;
+        let thread = session(project, cx).await;
+        thread.update(cx, |thread, cx| attach(thread, "quit".into(), cx));
+        cx.run_until_parked();
+        let path = PathBuf::from("/reviews/unsaved.txt");
+        thread.update(cx, |thread, cx| thread.create_text_file(path.clone(), "agent work\n".into(), cx)).await.unwrap();
+        cx.run_until_parked();
+        let log = thread.read_with(cx, |thread, _| thread.action_log().clone());
+        cx.update(|cx| {
+            let buffer = log.read(cx).changed_buffers(cx).next().unwrap().0;
+            // Update provenance and quit in the same app callback. An async UI
+            // observer cannot persist this before shutdown begins.
+            log.update(cx, |log, cx| log.buffer_edited_by(buffer, action_log::EditSource {
+                session_id: "last-contributor".into(), title: "Final review".into(),
+            }, cx));
+            thread.update(cx, |thread, cx| thread.keep_current_review(Path::new("/reviews/conflict.txt"), cx));
+            cx.shutdown();
+            let raw = KeyValueStore::global(cx).scoped(NAMESPACE).read("quit").unwrap().unwrap();
+            let saved: SavedReview = serde_json::from_str(&raw).unwrap();
+            assert_eq!(saved.files[0].current, "agent work\n");
+            assert!(saved.files[0].sources.iter().any(|source| source.0 == "last-contributor"));
+            assert_eq!(saved.archived.len(), 1);
+            assert_eq!(saved.archived[0].current, "old agent work\n");
+        });
+        assert!(fs.read_file_sync(&path).is_err());
+        assert_eq!(fs.read_file_sync("/reviews/conflict.txt").unwrap(), b"new manual content\n");
     }
 
     #[gpui::test]
