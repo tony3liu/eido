@@ -226,10 +226,10 @@ def main():
             'telemetry': {'metrics': False, 'diagnostics': False},
             'auto_update': False,
             'disable_ai': False,
-            'enable_language_server': False,
             'auto_install_extensions': {'html': False},
             'node': {'path': env['EIDO_NODE'], 'ignore_system_version': False},
         })
+        configuration.setdefault('enable_language_server', False)
         configuration.setdefault('agent_servers', {})['eido-pi'] = {
             'type': 'custom',
             'command': env['EIDO_NODE'],
