@@ -270,7 +270,7 @@ def main():
             cargo_command = 'test'
             targets = ['-p', 'acp_thread', '--lib', 'test_eido_']
             if command == 'test-native':
-                targets = ['-p', 'acp_thread', '-p', 'agent_servers', '-p', 'settings', '-p', 'agent_ui', '-p', 'workspace', '-p', 'gpui_platform', '-p', 'extensions_ui', '--lib', 'test_eido_', '--features', ','.join(BUILD_FEATURES)]
+                targets = ['-p', 'acp_thread', '-p', 'action_log', '-p', 'agent_servers', '-p', 'settings', '-p', 'agent_ui', '-p', 'workspace', '-p', 'gpui_platform', '-p', 'extensions_ui', '--lib', 'test_eido_', '--features', ','.join(BUILD_FEATURES)]
             env.pop('EIDO_ROOT', None)
         if command == 'build':
             targets += ['--features', ','.join(BUILD_FEATURES)]

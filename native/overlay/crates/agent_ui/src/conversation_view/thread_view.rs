@@ -3262,7 +3262,9 @@ impl ThreadView {
         let thread = &self.thread;
         let telemetry = ActionLogTelemetry::from(thread.read(cx));
         let action_log = thread.read(cx).action_log().clone();
-        let has_changes = action_log.read(cx).changed_buffers(cx).next().is_some();
+        let preserved = action_log.read(cx).changed_buffers(cx).any(|(buffer, _)| {
+            action_log.read(cx).review_rejection_reason(buffer.read(cx).remote_id(), cx).is_some()
+        });
 
         action_log
             .update(cx, |action_log, cx| {
@@ -3270,7 +3272,14 @@ impl ThreadView {
             })
             .detach();
 
-        if has_changes {
+        if preserved {
+            if let Some(workspace) = self.workspace.upgrade() {
+                workspace.update(cx, |workspace, cx| {
+                    let toast = StatusToast::new("Some files were preserved. Review overlapping edits manually, or wait for the diff to finish updating.", cx, |this, _| this);
+                    workspace.toggle_status_toast(toast, cx);
+                });
+            }
+        } else if action_log.read(cx).has_pending_undo() {
             if let Some(workspace) = self.workspace.upgrade() {
                 workspace.update(cx, |workspace, cx| {
                     crate::ui::show_undo_reject_toast(workspace, action_log, cx);
@@ -3624,6 +3633,8 @@ impl ThreadView {
                             });
 
                         let file_stats = DiffStats::single_file(diff.read(cx));
+                        let reason = action_log.read(cx).review_rejection_reason(buffer.read(cx).remote_id(), cx);
+                        let overlap = action_log.read(cx).review_has_external_overlap(buffer.read(cx).remote_id(), cx);
 
                         let buttons = self.render_edited_files_buttons(
                             index,
@@ -3657,6 +3668,11 @@ impl ThreadView {
                                     .child(file_icon)
                                     .children(file_name)
                                     .children(file_path)
+                                    .when_some(reason, |this, reason| this.child(
+                                        h_flex().id(("review-protection", index))
+                                            .child(Label::new(if overlap { "Manual review" } else { "Updating" }).size(LabelSize::XSmall).color(Color::Warning))
+                                            .tooltip(Tooltip::text(reason))
+                                    ))
                                     .child(
                                         DiffStat::new(
                                             "file",
@@ -3702,6 +3718,8 @@ impl ThreadView {
         editor_bg_color: Hsla,
         cx: &Context<Self>,
     ) -> impl IntoElement {
+        let reason = action_log.read(cx).review_rejection_reason(buffer.read(cx).remote_id(), cx);
+        let overlap = action_log.read(cx).review_has_external_overlap(buffer.read(cx).remote_id(), cx);
         h_flex()
             .id("edited-buttons-container")
             .visible_on_hover("edited-code")
@@ -3731,7 +3749,8 @@ impl ThreadView {
             .child(
                 Button::new(("reject-file", index), "Reject")
                     .label_size(LabelSize::Small)
-                    .disabled(pending_edits)
+                    .disabled(pending_edits || reason.is_some())
+                    .when_some(reason, |this, reason| this.tooltip(Tooltip::text(reason)))
                     .on_click({
                         let buffer = buffer.clone();
                         let action_log = action_log.clone();
@@ -3754,7 +3773,7 @@ impl ThreadView {
                     }),
             )
             .child(
-                Button::new(("keep-file", index), "Keep")
+                Button::new(("keep-file", index), if overlap { "Keep Current" } else { "Keep" })
                     .label_size(LabelSize::Small)
                     .disabled(pending_edits)
                     .on_click({

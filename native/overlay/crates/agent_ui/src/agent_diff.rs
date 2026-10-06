@@ -21,6 +21,7 @@ use gpui::{
 
 use language::{Buffer, Capability, OffsetRangeExt, Point};
 use multi_buffer::PathKey;
+use notifications::status_toast::StatusToast;
 use project::{Project, ProjectItem, ProjectPath};
 use settings::{Settings, SettingsStore};
 use std::{
@@ -417,8 +418,12 @@ fn reject_edits_in_ranges(
     let action_log = thread.read(cx).action_log().clone();
     let telemetry = ActionLogTelemetry::from(thread.read(cx));
     let mut undo_buffers = Vec::new();
+    let mut preserved = false;
 
     for (buffer, ranges) in ranges_by_buffer {
+        if action_log.read(cx).review_rejection_reason(buffer.read(cx).remote_id(), cx).is_some() {
+            preserved = true;
+        }
         action_log
             .update(cx, |action_log, cx| {
                 let (task, undo_info) =
@@ -427,6 +432,14 @@ fn reject_edits_in_ranges(
                 task
             })
             .detach_and_log_err(cx);
+    }
+    if preserved {
+        if let Some(workspace) = workspace.upgrade() {
+            workspace.update(cx, |workspace, cx| {
+                let toast = StatusToast::new("Some files were preserved. Review overlapping edits manually, or wait for the diff to finish updating.", cx, |this, _| this);
+                workspace.toggle_status_toast(toast, cx);
+            });
+        }
     }
     if !undo_buffers.is_empty() {
         action_log.update(cx, |action_log, _cx| {
@@ -959,15 +972,21 @@ impl editor::Addon for AgentDiffAddon {
         _: &Window,
         cx: &App,
     ) -> Option<AnyElement> {
-        let sources = self.thread.read(cx).action_log().read(cx).edit_sources(buffer.remote_id(), cx);
-        if sources.is_empty() { return None; }
+        let log = self.thread.read(cx).action_log().read(cx);
+        let sources = log.edit_sources(buffer.remote_id(), cx);
+        let reason = log.review_rejection_reason(buffer.remote_id(), cx);
+        let warning = reason.map(|reason| h_flex().id("review-protection").child(
+            Label::new(if log.review_has_external_overlap(buffer.remote_id(), cx) { "Manual review required" } else { "Review updating" })
+                .size(LabelSize::Small).color(Color::Warning)
+        ).tooltip(Tooltip::text(reason)));
+        if sources.is_empty() { return warning.map(IntoElement::into_any_element); }
         let label = if sources.len() == 1 {
             format!("Edited by {}", truncate_and_trailoff(&sources[0].title, 24))
         } else {
             format!("Edited by {} agents", sources.len())
         };
         let workspace = self.workspace.clone();
-        Some(PopoverMenu::new("edit-sources")
+        Some(h_flex().gap_2().children(warning).child(PopoverMenu::new("edit-sources")
             .trigger_with_tooltip(Button::new("edit-sources-label", label).label_size(LabelSize::Small),
                 Tooltip::text("Agents that edited this file in this task. Select one to read its conversation. This does not assign individual lines."))
             .menu(move |window, cx| {
@@ -997,7 +1016,7 @@ impl editor::Addon for AgentDiffAddon {
                     }
                     menu
                 }))
-            }).into_any_element())
+            })).into_any_element())
     }
 }
 

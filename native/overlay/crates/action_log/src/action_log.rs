@@ -24,6 +24,8 @@ pub struct PerBufferUndo {
     pub buffer: WeakEntity<Buffer>,
     pub edits_to_restore: Vec<(Range<Anchor>, String)>,
     pub status: UndoBufferStatus,
+    /// In unsaved review mode, never undo over edits made since the rejection.
+    pub rejected_version: Option<clock::Global>,
 }
 
 /// Tracks the buffer status for undo purposes
@@ -63,6 +65,7 @@ pub struct ReviewCheckpoint {
     pub current: String,
     pub disk_mtime: Option<(u64, u32)>,
     pub sources: Vec<EditSource>,
+    pub has_external_overlap: bool,
 }
 
 /// Tracks actions performed by tools in a thread
@@ -134,6 +137,7 @@ impl ActionLog {
             let current = tracked.snapshot.as_rope().to_string();
             if base == current { continue; }
             result.push(ReviewCheckpoint { path, base, current,
+                has_external_overlap: tracked.has_external_overlap,
                 disk_mtime: file.disk_state().mtime().and_then(|mtime| mtime.to_seconds_and_nanos_for_persistence()),
                 sources: tracked.edit_sources.values().cloned().collect(),
             });
@@ -164,6 +168,7 @@ impl ActionLog {
         tracked.unreviewed_edits = Patch::new(language::line_diff(&saved.base, &saved.current)
             .into_iter().map(|(old, new)| Edit { old, new }).collect());
         tracked.edit_sources = saved.sources.into_iter().map(|source| (source.session_id.clone(), source)).collect();
+        tracked.has_external_overlap = saved.has_external_overlap;
         tracked.schedule_diff_update(ChangeAuthor::Agent, cx);
         cx.notify();
         Ok(())
@@ -278,12 +283,14 @@ impl ActionLog {
                 }
                 TrackedBuffer {
                     buffer: buffer.clone(),
+                    has_external_overlap: false,
                     edit_sources: BTreeMap::default(),
                     diff_base,
                     unreviewed_edits,
                     snapshot: text_snapshot,
                     status,
                     version: buffer.read(cx).version(),
+                    scheduled_version: buffer.read(cx).version(),
                     diff,
                     diff_update: diff_update_tx,
                     _open_lsp_handle: open_lsp_handle,
@@ -314,7 +321,7 @@ impl ActionLog {
                     return;
                 };
                 let buffer_version = buffer.read(cx).version();
-                if !buffer_version.changed_since(&tracked_buffer.version) {
+                if !buffer_version.changed_since(&tracked_buffer.scheduled_version) {
                     return;
                 }
                 self.handle_buffer_edited(buffer, cx);
@@ -436,22 +443,31 @@ impl ActionLog {
                 let unreviewed_edits = tracked_buffer.unreviewed_edits.clone();
                 let edits = diff_snapshots(&old_snapshot, &new_snapshot);
                 async move {
-                    if let ChangeAuthor::User = author {
+                    let conflict = if let ChangeAuthor::User = author {
                         apply_non_conflicting_edits(
                             &unreviewed_edits,
                             edits,
                             &mut base_text,
                             new_snapshot.as_rope(),
-                        );
-                    }
+                        )
+                    } else { false };
 
-                    (Arc::from(base_text.to_string().as_str()), base_text)
+                    (Arc::from(base_text.to_string().as_str()), base_text, conflict)
                 }
             });
 
             anyhow::Ok(rebase)
         })??;
-        let (new_base_text, new_diff_base) = rebase.await;
+        let (new_base_text, new_diff_base, conflict) = rebase.await;
+        if conflict {
+            this.update(cx, |this, _| {
+                if !this.save_on_review {
+                    if let Some(tracked) = this.tracked_buffers.get_mut(buffer) {
+                        tracked.has_external_overlap = true;
+                    }
+                }
+            })?;
+        }
 
         Self::update_diff(
             this,
@@ -615,6 +631,9 @@ impl ActionLog {
             tracked_buffer.diff_base = new_diff_base;
             tracked_buffer.snapshot = buffer_snapshot;
             tracked_buffer.unreviewed_edits = unreviewed_edits;
+            if tracked_buffer.unreviewed_edits.is_empty() {
+                tracked_buffer.has_external_overlap = false;
+            }
             cx.notify();
             anyhow::Ok(())
         })?
@@ -639,6 +658,11 @@ impl ActionLog {
         }
         if record_file_read_time {
             self.update_file_read_time(&buffer, cx);
+        }
+        // Capture foreign edits before a new agent write can advance our version.
+        // Buffer notifications are deferred and multiple tasks can write in one update.
+        if self.tracked_buffers.get(&buffer).is_some_and(|tracked| tracked.scheduled_version != buffer.read(cx).version()) {
+            self.handle_buffer_edited(buffer.clone(), cx);
         }
         self.track_buffer_internal(buffer, false, cx);
     }
@@ -700,6 +724,24 @@ impl ActionLog {
             .unwrap_or_default()
     }
 
+    /// A task cannot safely reject a hunk that now includes another writer's work.
+    /// Keep Current remains available after the diff settles for explicit resolution.
+    pub fn review_rejection_reason(&self, buffer_id: text::BufferId, cx: &App) -> Option<&'static str> {
+        if self.save_on_review { return None; }
+        let (buffer, tracked) = self.tracked_buffers.iter()
+            .find(|(buffer, _)| buffer.read(cx).remote_id() == buffer_id)?;
+        if tracked.snapshot.version() != &buffer.read(cx).version() {
+            Some("Review is updating. Wait for the current diff before reviewing.")
+        } else if tracked.has_external_overlap {
+            Some("Overlapping edits were made after this task. Review the file manually, then choose Keep Current. Reject will preserve this file.")
+        } else { None }
+    }
+
+    pub fn review_has_external_overlap(&self, buffer_id: text::BufferId, cx: &App) -> bool {
+        self.tracked_buffers.iter().find(|(buffer, _)| buffer.read(cx).remote_id() == buffer_id)
+            .is_some_and(|(_, tracked)| tracked.has_external_overlap)
+    }
+
     fn buffer_edited_impl(
         &mut self,
         buffer: Entity<Buffer>,
@@ -750,7 +792,7 @@ impl ActionLog {
             linked_action_log.update(cx, |log, cx| log.will_delete_buffer(buffer.clone(), cx));
         }
 
-        if has_linked_action_log && let Some(tracked_buffer) = self.tracked_buffers.get(&buffer) {
+        if has_linked_action_log && let Some(tracked_buffer) = self.tracked_buffers.get_mut(&buffer) {
             tracked_buffer.schedule_diff_update(ChangeAuthor::Agent, cx);
         }
 
@@ -767,6 +809,9 @@ impl ActionLog {
         let Some(tracked_buffer) = self.tracked_buffers.get_mut(&buffer) else {
             return;
         };
+        if !self.save_on_review && tracked_buffer.snapshot.version() != &buffer.read(cx).version() {
+            return;
+        }
 
         let mut metrics = ActionLogMetrics::for_buffer(buffer.read(cx));
         match tracked_buffer.status {
@@ -820,6 +865,9 @@ impl ActionLog {
                 {
                     tracked_buffer.status = TrackedBufferStatus::Modified;
                 }
+                if tracked_buffer.unreviewed_edits.is_empty() {
+                    tracked_buffer.has_external_overlap = false;
+                }
                 tracked_buffer.schedule_diff_update(ChangeAuthor::User, cx);
             }
         }
@@ -835,6 +883,9 @@ impl ActionLog {
         telemetry: Option<ActionLogTelemetry>,
         cx: &mut Context<Self>,
     ) -> (Task<Result<()>>, Option<PerBufferUndo>) {
+        if let Some(reason) = self.review_rejection_reason(buffer.read(cx).remote_id(), cx) {
+            return (Task::ready(Err(anyhow::anyhow!(reason))), None);
+        }
         let Some(tracked_buffer) = self.tracked_buffers.get_mut(&buffer) else {
             return (Task::ready(Ok(())), None);
         };
@@ -861,6 +912,7 @@ impl ActionLog {
 
                     undo_info = Some(PerBufferUndo {
                         buffer: buffer.downgrade(),
+                        rejected_version: (!self.save_on_review).then(|| buffer.read(cx).version()),
                         edits_to_restore: vec![(
                             Anchor::min_for_buffer(buffer_id)..Anchor::max_for_buffer(buffer_id),
                             agent_content,
@@ -1004,6 +1056,7 @@ impl ActionLog {
                 if !edits_to_restore.is_empty() {
                     undo_info = Some(PerBufferUndo {
                         buffer: buffer.downgrade(),
+                        rejected_version: (!self.save_on_review).then(|| buffer.read(cx).version()),
                         edits_to_restore,
                         status: UndoBufferStatus::Modified,
                     });
@@ -1029,6 +1082,9 @@ impl ActionLog {
         cx: &mut Context<Self>,
     ) {
         self.tracked_buffers.retain(|buffer, tracked_buffer| {
+            if !self.save_on_review && tracked_buffer.snapshot.version() != &buffer.read(cx).version() {
+                return true;
+            }
             let mut metrics = ActionLogMetrics::for_buffer(buffer.read(cx));
             metrics.add_edits(tracked_buffer.unreviewed_edits.edits());
             if let Some(telemetry) = telemetry.as_ref() {
@@ -1041,6 +1097,7 @@ impl ActionLog {
                         tracked_buffer.status = TrackedBufferStatus::Modified;
                     }
                     tracked_buffer.unreviewed_edits.clear();
+                    tracked_buffer.has_external_overlap = false;
                     tracked_buffer.diff_base = tracked_buffer.snapshot.as_rope().clone();
                     tracked_buffer.schedule_diff_update(ChangeAuthor::User, cx);
                     true
@@ -1118,6 +1175,9 @@ impl ActionLog {
             let Some(buffer) = per_buffer_undo.buffer.upgrade() else {
                 continue;
             };
+            if per_buffer_undo.rejected_version.as_ref().is_some_and(|version| *version != buffer.read(cx).version()) {
+                continue;
+            }
 
             buffer.update(cx, |buffer, cx| {
                 let mut valid_edits = Vec::new();
@@ -1135,7 +1195,7 @@ impl ActionLog {
                 }
             });
 
-            if !self.tracked_buffers.contains_key(&buffer) {
+            if !self.save_on_review || !self.tracked_buffers.contains_key(&buffer) {
                 self.buffer_edited(buffer.clone(), cx);
             }
 
@@ -1280,7 +1340,7 @@ fn apply_non_conflicting_edits(
     let mut new_edits = edits.into_iter().peekable();
     let mut applied_delta = 0i32;
     let mut rebased_delta = 0i32;
-    let mut has_made_changes = false;
+    let mut has_conflict = false;
 
     while let Some(mut new_edit) = new_edits.next() {
         let mut conflict = false;
@@ -1298,6 +1358,7 @@ fn apply_non_conflicting_edits(
                 rebased_delta += old_edit.new_len() as i32 - old_edit.old_len() as i32;
             } else {
                 conflict = true;
+                has_conflict = true;
                 if new_edits
                     .peek()
                     .is_some_and(|next_edit| next_edit.old.overlaps(&old_edit.new))
@@ -1330,10 +1391,9 @@ fn apply_non_conflicting_edits(
                 &new_text.chunks_in_range(new_bytes).collect::<String>(),
             );
             applied_delta += new_edit.new_len() as i32 - new_edit.old_len() as i32;
-            has_made_changes = true;
         }
     }
-    has_made_changes
+    has_conflict
 }
 
 fn diff_snapshots(
@@ -1400,11 +1460,14 @@ enum TrackedBufferStatus {
 
 pub struct TrackedBuffer {
     buffer: Entity<Buffer>,
+    has_external_overlap: bool,
     edit_sources: BTreeMap<SharedString, EditSource>,
     diff_base: Rope,
     unreviewed_edits: Patch<u32>,
     status: TrackedBufferStatus,
     version: clock::Global,
+    // Queued diff observations do not mean the agent has read the new version.
+    scheduled_version: clock::Global,
     diff: Entity<BufferDiff>,
     snapshot: text::BufferSnapshot,
     diff_update: mpsc::UnboundedSender<(ChangeAuthor, text::BufferSnapshot)>,
@@ -1433,7 +1496,8 @@ impl TrackedBuffer {
             .is_some()
     }
 
-    fn schedule_diff_update(&self, author: ChangeAuthor, cx: &App) {
+    fn schedule_diff_update(&mut self, author: ChangeAuthor, cx: &App) {
+        self.scheduled_version = self.buffer.read(cx).version();
         self.diff_update
             .unbounded_send((author, self.buffer.read(cx).text_snapshot()))
             .ok();
@@ -1468,6 +1532,167 @@ mod tests {
             let settings_store = SettingsStore::test(cx);
             cx.set_global(settings_store);
         });
+    }
+
+    async fn eido_review_pair(cx: &mut TestAppContext) -> (Entity<Buffer>, Entity<ActionLog>, Entity<ActionLog>) {
+        init_test(cx);
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(path!("/reviews"), json!({"shared.txt": "one\nmiddle\ntwo\n"})).await;
+        let project = Project::test(fs, [path!("/reviews").as_ref()], cx).await;
+        let buffer = project.update(cx, |project, cx| {
+            let path = project.find_project_path(path!("/reviews/shared.txt"), cx).unwrap();
+            project.open_buffer(path, cx)
+        }).await.unwrap();
+        let a = cx.new(|_| ActionLog::new(project.clone()));
+        let b = cx.new(|_| ActionLog::new(project));
+        for log in [&a, &b] {
+            log.update(cx, |log, cx| {
+                log.set_save_on_review(false, cx);
+                log.buffer_read(buffer.clone(), cx);
+            });
+        }
+        (buffer, a, b)
+    }
+
+    fn eido_edit(log: &Entity<ActionLog>, buffer: &Entity<Buffer>, row: u32, text: &str, cx: &mut App) {
+        log.update(cx, |log, cx| log.buffer_read(buffer.clone(), cx));
+        buffer.update(cx, |buffer, cx| {
+            buffer.edit([(Point::new(row, 0)..Point::new(row, buffer.line_len(row)), text)], None, cx);
+        });
+        log.update(cx, |log, cx| log.buffer_edited(buffer.clone(), cx));
+    }
+
+    #[gpui::test(iterations = 10)]
+    async fn test_eido_review_disjoint_tasks_before_diff_settles(cx: &mut TestAppContext) {
+        let (buffer, a, b) = eido_review_pair(cx).await;
+        // Both writes occur before queued buffer notifications or diff work runs.
+        cx.update(|cx| {
+            eido_edit(&a, &buffer, 0, "task A", cx);
+            eido_edit(&b, &buffer, 2, "task B", cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(b.read_with(cx, |log, cx| log.review_checkpoint(cx).unwrap()[0].base.clone()), "task A\nmiddle\ntwo\n");
+        a.update(cx, |log, cx| log.reject_all_edits(None, cx)).await;
+        cx.run_until_parked();
+        assert_eq!(buffer.read_with(cx, |buffer, _| buffer.text()), "one\nmiddle\ntask B\n");
+        b.update(cx, |log, cx| log.reject_all_edits(None, cx)).await;
+        cx.run_until_parked();
+        assert_eq!(buffer.read_with(cx, |buffer, _| buffer.text()), "one\nmiddle\ntwo\n");
+    }
+
+    #[gpui::test(iterations = 10)]
+    async fn test_eido_review_overlapping_task_is_not_rejected(cx: &mut TestAppContext) {
+        let (buffer, a, b) = eido_review_pair(cx).await;
+        cx.update(|cx| eido_edit(&a, &buffer, 0, "task A", cx));
+        cx.run_until_parked();
+        cx.update(|cx| eido_edit(&b, &buffer, 0, "task B", cx));
+        cx.run_until_parked();
+        let rejected = a.update(cx, |log, cx| log.reject_edits_in_ranges(
+            buffer.clone(), vec![Anchor::min_max_range_for_buffer(buffer.read(cx).remote_id())], None, cx,
+        ).0).await;
+        assert!(rejected.is_err(), "Overlapping task edits require manual review");
+        assert_eq!(buffer.read_with(cx, |buffer, _| buffer.text()), "task B\nmiddle\ntwo\n");
+        assert_eq!(a.read_with(cx, |log, cx| log.changed_buffers(cx).count()), 1);
+    }
+
+    #[gpui::test(iterations = 10)]
+    async fn test_eido_review_preserves_manual_edit_before_diff_settles(cx: &mut TestAppContext) {
+        let (buffer, a, _) = eido_review_pair(cx).await;
+        cx.update(|cx| eido_edit(&a, &buffer, 0, "task A", cx));
+        cx.run_until_parked();
+        let rejected = cx.update(|cx| {
+            buffer.update(cx, |buffer, cx| buffer.edit([(0..6, "human correction")], None, cx));
+            a.update(cx, |log, cx| log.reject_edits_in_ranges(
+                buffer.clone(), vec![Anchor::min_max_range_for_buffer(buffer.read(cx).remote_id())], None, cx,
+            ).0)
+        }).await;
+        assert!(rejected.is_err(), "A stale diff must never revert a newer edit");
+        cx.run_until_parked();
+        assert_eq!(buffer.read_with(cx, |buffer, _| buffer.text()), "human correction\nmiddle\ntwo\n");
+        let rejected = a.update(cx, |log, cx| log.reject_edits_in_ranges(
+            buffer.clone(), vec![Anchor::min_max_range_for_buffer(buffer.read(cx).remote_id())], None, cx,
+        ).0).await;
+        assert!(rejected.is_err(), "Settled overlapping edits still require manual review");
+        a.update(cx, |log, cx| log.keep_all_edits(None, cx));
+        cx.run_until_parked();
+        assert_eq!(a.read_with(cx, |log, cx| log.changed_buffers(cx).count()), 0);
+        assert_eq!(buffer.read_with(cx, |buffer, _| buffer.text()), "human correction\nmiddle\ntwo\n");
+    }
+
+    #[gpui::test(iterations = 10)]
+    async fn test_eido_review_overlap_survives_checkpoint_restore(cx: &mut TestAppContext) {
+        let (buffer, a, b) = eido_review_pair(cx).await;
+        cx.update(|cx| eido_edit(&a, &buffer, 0, "task A", cx));
+        cx.run_until_parked();
+        cx.update(|cx| eido_edit(&b, &buffer, 0, "task B", cx));
+        cx.run_until_parked();
+        let saved_a = a.read_with(cx, |log, cx| log.review_checkpoint(cx).unwrap().remove(0));
+        let saved_b = b.read_with(cx, |log, cx| log.review_checkpoint(cx).unwrap().remove(0));
+        assert!(saved_a.has_external_overlap);
+        assert!(!saved_b.has_external_overlap);
+        let project = a.read_with(cx, |log, _| log.project.clone());
+        drop(a);
+        drop(b);
+        cx.run_until_parked();
+        let a = cx.new(|_| ActionLog::new(project.clone()));
+        let b = cx.new(|_| ActionLog::new(project));
+        a.update(cx, |log, cx| log.restore_review_checkpoint(buffer.clone(), saved_a, cx)).unwrap();
+        b.update(cx, |log, cx| log.restore_review_checkpoint(buffer.clone(), saved_b, cx)).unwrap();
+        cx.run_until_parked();
+        a.update(cx, |log, cx| log.reject_all_edits(None, cx)).await;
+        cx.run_until_parked();
+        assert_eq!(buffer.read_with(cx, |buffer, _| buffer.text()), "task B\nmiddle\ntwo\n");
+        b.update(cx, |log, cx| log.reject_all_edits(None, cx)).await;
+        cx.run_until_parked();
+        assert_eq!(buffer.read_with(cx, |buffer, _| buffer.text()), "task A\nmiddle\ntwo\n");
+        a.update(cx, |log, cx| log.keep_all_edits(None, cx));
+        cx.run_until_parked();
+        assert!(a.read_with(cx, |log, cx| log.review_checkpoint(cx).unwrap().is_empty()));
+    }
+
+    #[gpui::test(iterations = 10)]
+    async fn test_eido_review_undo_preserves_later_manual_edit(cx: &mut TestAppContext) {
+        let (buffer, a, _) = eido_review_pair(cx).await;
+        cx.update(|cx| eido_edit(&a, &buffer, 0, "task A", cx));
+        cx.run_until_parked();
+        a.update(cx, |log, cx| log.reject_all_edits(None, cx)).await;
+        cx.run_until_parked();
+        buffer.update(cx, |buffer, cx| buffer.edit([(0..3, "human correction")], None, cx));
+        a.update(cx, |log, cx| log.undo_last_reject(cx)).await;
+        cx.run_until_parked();
+        assert_eq!(buffer.read_with(cx, |buffer, _| buffer.text()), "human correction\nmiddle\ntwo\n");
+    }
+
+    #[gpui::test(iterations = 10)]
+    async fn test_eido_review_undo_restores_pending_review(cx: &mut TestAppContext) {
+        let (buffer, a, _) = eido_review_pair(cx).await;
+        cx.update(|cx| eido_edit(&a, &buffer, 0, "task A", cx));
+        cx.run_until_parked();
+        a.update(cx, |log, cx| log.reject_all_edits(None, cx)).await;
+        cx.run_until_parked();
+        a.update(cx, |log, cx| log.undo_last_reject(cx)).await;
+        cx.run_until_parked();
+        assert_eq!(buffer.read_with(cx, |buffer, _| buffer.text()), "task A\nmiddle\ntwo\n");
+        assert_eq!(a.read_with(cx, |log, cx| log.changed_buffers(cx).count()), 1);
+        a.update(cx, |log, cx| log.reject_all_edits(None, cx)).await;
+        cx.run_until_parked();
+        assert_eq!(buffer.read_with(cx, |buffer, _| buffer.text()), "one\nmiddle\ntwo\n");
+    }
+
+    #[gpui::test(iterations = 10)]
+    async fn test_eido_review_early_keep_does_not_consume_newer_changes(cx: &mut TestAppContext) {
+        let (buffer, a, _) = eido_review_pair(cx).await;
+        cx.update(|cx| eido_edit(&a, &buffer, 0, "task A", cx));
+        cx.run_until_parked();
+        cx.update(|cx| {
+            eido_edit(&a, &buffer, 2, "more work", cx);
+            a.update(cx, |log, cx| log.keep_all_edits(None, cx));
+        });
+        cx.run_until_parked();
+        assert_eq!(a.read_with(cx, |log, cx| log.changed_buffers(cx).count()), 1);
+        a.update(cx, |log, cx| log.reject_all_edits(None, cx)).await;
+        cx.run_until_parked();
+        assert_eq!(buffer.read_with(cx, |buffer, _| buffer.text()), "one\nmiddle\ntwo\n");
     }
 
     #[gpui::test(iterations = 10)]

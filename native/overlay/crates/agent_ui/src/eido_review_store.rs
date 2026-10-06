@@ -19,11 +19,14 @@ struct SavedFile {
     current: String,
     disk_mtime: Option<(u64, u32)>,
     sources: Vec<(String, String)>,
+    #[serde(default)]
+    has_external_overlap: bool,
 }
 
 impl From<ReviewCheckpoint> for SavedFile {
     fn from(file: ReviewCheckpoint) -> Self {
         Self { path: file.path, base: file.base, current: file.current, disk_mtime: file.disk_mtime,
+            has_external_overlap: file.has_external_overlap,
             sources: file.sources.into_iter().map(|s| (s.session_id.to_string(), s.title.to_string())).collect() }
     }
 }
@@ -31,6 +34,7 @@ impl From<ReviewCheckpoint> for SavedFile {
 impl From<SavedFile> for ReviewCheckpoint {
     fn from(file: SavedFile) -> Self {
         Self { path: file.path, base: file.base, current: file.current, disk_mtime: file.disk_mtime,
+            has_external_overlap: file.has_external_overlap,
             sources: file.sources.into_iter().map(|(session_id, title)| EditSource {session_id: session_id.into(), title: title.into()}).collect() }
     }
 }
@@ -325,7 +329,7 @@ mod tests {
         fs.insert_tree("/reviews", serde_json::json!({"conflict.txt":"new manual content\n"})).await;
         let previous = SavedReview { parent: None, files: vec![SavedFile {
             path: "/reviews/conflict.txt".into(), base: "".into(), current: "old agent work\n".into(),
-            disk_mtime: None, sources: vec![],
+            disk_mtime: None, sources: vec![], has_external_overlap: false,
         }], archived: vec![] };
         cx.read(KeyValueStore::global).scoped(NAMESPACE)
             .write("quit".into(), serde_json::to_string(&previous).unwrap()).await.unwrap();
@@ -483,7 +487,7 @@ mod tests {
         let db = cx.read(KeyValueStore::global);
         let parent_key = serde_json::to_string(&("parent", vec![PathBuf::from("/reviews")])).unwrap();
         db.scoped(NAMESPACE).write(parent_key, serde_json::to_string(&SavedReview::default()).unwrap()).await.unwrap();
-        let file = SavedFile { path: "/reviews/rejected.txt".into(), base: "".into(), current: "rejected work".into(), disk_mtime: None, sources: vec![] };
+        let file = SavedFile { path: "/reviews/rejected.txt".into(), base: "".into(), current: "rejected work".into(), disk_mtime: None, sources: vec![], has_external_overlap: false };
         db.scoped(NAMESPACE).write("child".into(), serde_json::to_string(&SavedReview { parent: Some("parent".into()), files: vec![file], archived: vec![] }).unwrap()).await.unwrap();
         let thread = session(project, cx).await;
         thread.update(cx, |thread, cx| attach(thread, "child".into(), cx));
@@ -495,9 +499,20 @@ mod tests {
     }
 
     #[test]
+    fn test_eido_review_overlap_persistence_and_legacy_default() {
+        let old = r#"{"path":"/reviews/shared.txt","base":"one","current":"two","disk_mtime":null,"sources":[]}"#;
+        let mut file: SavedFile = serde_json::from_str(old).unwrap();
+        assert!(!file.has_external_overlap);
+        file.has_external_overlap = true;
+        let checkpoint: ReviewCheckpoint = serde_json::from_str::<SavedFile>(&serde_json::to_string(&file).unwrap()).unwrap().into();
+        assert!(checkpoint.has_external_overlap);
+        assert!(SavedFile::from(checkpoint).has_external_overlap);
+    }
+
+    #[test]
     fn test_eido_child_recovery_absorbs_accepted_hunks_and_preserves_pending_hunks() {
         let file = SavedFile { path: "/reviews/file".into(), base: "one\nmiddle\ntwo\n".into(),
-            current: "ONE\nmiddle\nTWO\n".into(), disk_mtime: None, sources: vec![] };
+            current: "ONE\nmiddle\nTWO\n".into(), disk_mtime: None, sources: vec![], has_external_overlap: false };
         let mut parent = file.clone();
         parent.base = "ONE\nmiddle\ntwo\n".into();
         let result = reconcile_with_ancestor(&file, &[parent]).unwrap().unwrap();
