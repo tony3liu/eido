@@ -24,7 +24,7 @@ type ProjectResult = { runId: string; stage: string; checks: unknown[]; url?: st
 const serverScript = fileURLToPath(new URL("../../../scripts/preview-server.mjs", import.meta.url));
 type Input = { path: string; hash: string; differsFromDisk: boolean };
 type Run = {
-  runId: string; fingerprint: string; entry?: string; files: Input[]; capturedAt: string;
+  runId: string; cwd: string; toolCallId: string; fingerprint: string; entry?: string; files: Input[]; capturedAt: string;
   project: boolean; commands?: Command[]; server?: Command & { path?: string }; dependencies: Dependencies;
   directory: string; terminalId?: string; url?: string; stopped?: boolean; cleanup?: string;
 };
@@ -57,6 +57,7 @@ export function createPreview(cwd: string, storage: string, sessionId: string, c
   }
 
   async function freshness(run: Run, signal?: AbortSignal) {
+    const checkedAt = new Date().toISOString();
     const changed: string[] = [], unavailable: string[] = [];
     const deadline = AbortSignal.timeout(run.project ? 15_000 : 5000);
     const bounded = signal ? AbortSignal.any([signal, deadline]) : deadline;
@@ -83,11 +84,11 @@ export function createPreview(cwd: string, storage: string, sessionId: string, c
     }
     signal?.throwIfAborted();
     return { state: unavailable.length ? "unknown" : changed.length ? "stale" : "current",
-      checkedAt: new Date().toISOString(), changed, unavailable };
+      checkedAt, changed, unavailable };
   }
 
   function description(run: Run) {
-    return { runId: run.runId, fingerprint: run.fingerprint, url: run.url, capturedAt: run.capturedAt,
+    return { runId: run.runId, toolCallId: run.toolCallId, cwd: run.cwd, fingerprint: run.fingerprint, url: run.url, capturedAt: run.capturedAt,
       files: run.files, includesUnsavedBuffers: true,
       dependencies: { paths: run.dependencies.roots, entries: run.dependencies.entries.length, bytes: run.dependencies.bytes },
       commands: run.commands, server: run.server, processCleanup: run.cleanup,
@@ -147,6 +148,8 @@ export function createPreview(cwd: string, storage: string, sessionId: string, c
       acceptance: "Not assessed. Browser observations and explicit acceptance criteria are required." };
   }
 
+  const details = (value: Record<string, unknown>) => ({eidoVerification: {version: 1, ...value}});
+
   const tool = defineTool({
     name: "preview", label: "Development preview", executionMode: "sequential",
     description: "Start, inspect or stop task-owned project verification from current editor buffers, including unsaved/new files. Always list explicit text files (max 512, 16 MiB total). For static HTML/CSS/JS use an HTML entry. For projects supply sequential commands (check/build) and/or server {command,args,path}; commands run without an implicit shell in a private copy, not an OS sandbox. Select installed dependency/asset directories with dependencies (copied, max 256 MiB); dependencies must not include source files. Nothing is installed or copied back automatically. Supply complete source/config/test inputs. Server must bind HOST/PORT from the environment or {port} in args; path starts with /. macOS/Linux process groups and lsof are required for server ownership. Timeout per check defaults to 60s, max 300s. Start returns command outcomes; zero exits and HTTP reachability are not functional acceptance. Use bundled browser tools to observe/interact, then status to check freshness. Restart after edits. Stop when finished.",
@@ -165,9 +168,14 @@ export function createPreview(cwd: string, storage: string, sessionId: string, c
     }),
     async execute(toolCallId, params, signal) {
       signal?.throwIfAborted();
-      if (params.action === "stop") { await stop(); return { content: [text({ service: "stopped", runId: active?.runId })], details: {} }; }
+      if (params.action === "stop") {
+        await stop();
+        const value = active ? await status(active, signal) : {service: "not_started"};
+        return {content: [text(value)], details: active ? details(value) : {}};
+      }
       if (params.action === "status") {
-        return { content: [text(active ? await status(active, signal) : { service: "not_started" })], details: {} };
+        const value = active ? await status(active, signal) : {service: "not_started"};
+        return {content: [text(value)], details: active ? details(value) : {}};
       }
       const project = !!(params.commands?.length || params.server);
       if (!params.files?.length || (!project && !params.entry)) throw new Error("Start requires files and either an HTML entry, commands, or a server.");
@@ -200,7 +208,7 @@ export function createPreview(cwd: string, storage: string, sessionId: string, c
       if (project && entry) throw new Error("Use server.path for a project server, or omit commands/server for a static HTML entry.");
       const files = [...inputs].sort(([a], [b]) => a.localeCompare(b)).map(([path, file]) => ({ path, hash: hash(file.content), differsFromDisk: file.differsFromDisk }));
       const runId = randomUUID();
-      const run: Run = { runId, entry, files, capturedAt: new Date().toISOString(),
+      const run: Run = { runId, cwd: root, toolCallId, entry, files, capturedAt: new Date().toISOString(),
         project, commands: params.commands, server: params.server, dependencies: {roots: [], entries: [], bytes: 0}, fingerprint: "",
         directory: join(storage, hash(sessionId), runId) };
       await mkdir(run.directory, { recursive: true, mode: 0o700 });
@@ -224,6 +232,10 @@ export function createPreview(cwd: string, storage: string, sessionId: string, c
       if (captured.state !== "current") throw new Error("Inputs changed during capture. Read the files and start a new preview.");
       await stop();
       active = run;
+      await client.notify(methods.client.session.update, {sessionId, update: {
+        sessionUpdate: "tool_call_update", toolCallId,
+        rawOutput: details({...description(run), service: "starting", freshness: captured}),
+      }});
       try {
         signal?.throwIfAborted();
         // Keep ownership of a late create response so cancellation can release it.
@@ -253,7 +265,7 @@ export function createPreview(cwd: string, storage: string, sessionId: string, c
               if (result.stage !== "serving") await stop();
               const value = await status(run, signal);
               await writeFile(join(run.directory, "started.json"), JSON.stringify(value, null, 2), { mode: 0o600 });
-              return { content: [text(value)], details: {}, ...(result.stage === "failed" ? {isError: true} : {}) };
+              return { content: [text(value)], details: details(value), ...(result.stage === "failed" ? {isError: true} : {}) };
             }
           }
           const ready = !project && output.output.match(/EIDO_PREVIEW_READY (\{[^\r\n]+\})/);
@@ -263,13 +275,23 @@ export function createPreview(cwd: string, storage: string, sessionId: string, c
             run.url = `http://127.0.0.1:${data.port}/${runId}/${entry!.split("/").map(encodeURIComponent).join("/")}`;
             const result = await status(run, signal);
             await writeFile(join(run.directory, "started.json"), JSON.stringify(result, null, 2), { mode: 0o600 });
-            return { content: [text(result)], details: {} };
+            return { content: [text(result)], details: details(result) };
           }
           if (output.exitStatus) throw new Error(`Preview exited before becoming ready: ${output.output}`);
           await delay(100, undefined, { signal });
         }
         throw new Error(`Preview did not finish startup within ${timeout / 1000} seconds.`);
-      } catch (error) { await stop(); throw error; }
+      } catch (error) {
+        await stop();
+        if (signal?.aborted) {
+          const value = {...description(run), service: "stopped", cancelled: true,
+            ...(run.project ? {project: await projectResult(run)} : {}),
+            freshness: {...captured, state: "unknown"}};
+          return {content: [text(value)], details: details(value), isError: true};
+        }
+        const value = {...await status(run), error: error instanceof Error ? error.message : String(error)};
+        return {content: [text(value)], details: details(value), isError: true};
+      }
     },
   });
 
@@ -290,7 +312,8 @@ export function createPreview(cwd: string, storage: string, sessionId: string, c
       observedUrl, toolSucceeded: !event.isError, ...(run.project ? { project: await projectResult(run) } : {}), freshness: await freshness(run),
       acceptance: "Observation only; not an automatic pass.", recordedAt: new Date().toISOString() };
     await appendFile(join(run.directory, "evidence.jsonl"), JSON.stringify({ ...evidence, observed }) + "\n", { mode: 0o600 });
-    return { content: [...event.content, text({ previewEvidence: evidence })] };
+    return { content: [...event.content, text({ previewEvidence: evidence })],
+      details: {...event.details as Record<string, unknown>, ...details({...evidence, observation: true})} };
   }
   const path = "<inline:eido-preview>";
   const extension: Extension = {

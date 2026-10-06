@@ -150,6 +150,20 @@ test("pi starts a preview, discovers failure, edits buffers and rechecks a new c
     assert.match(await response.text(), /Count: 1/);
     assert.equal((await fetch(new URL("../settings.json", repaired.url))).status, 404);
     assert.ok(h.updates.some(update => JSON.stringify(update).includes('"type":"terminal"')));
+    const verification = (h.updates as any[]).filter(update => update.rawOutput?.eidoVerification)
+      .map(update => update.rawOutput.eidoVerification);
+    assert.ok(verification.some(value => value.runId === first.runId && value.freshness.state === 'stale'));
+    assert.ok(verification.some(value => value.runId === repaired.runId && value.observation === true && value.toolSucceeded === true));
+    assert.ok(verification.every(value => value.version === 1 && value.cwd === h.cwd));
+    // The same structured records survive pi's JSONL and ACP replay; no UI-only store.
+    const persisted = (await readdir(join(h.cwd, 'sessions'), {recursive:true})).filter(path => path.endsWith('.jsonl'));
+    const messages = (await Promise.all(persisted.map(path => readFile(join(h.cwd, 'sessions', path), 'utf8'))))
+      .flatMap(text => text.trim().split('\n').map(line => JSON.parse(line)))
+      .filter(entry => entry.type === 'message' && entry.message.role === 'toolResult' && entry.message.details?.eidoVerification);
+    assert.ok(messages.some(entry => entry.message.details.eidoVerification.runId === repaired.runId));
+    const {replayEntry} = await import('../node_modules/@automatalabs/pi-acp/dist/replay.js');
+    assert.ok(messages.flatMap(entry => replayEntry(entry)).some(update =>
+      update.sessionUpdate === "tool_call_update" && (update.rawOutput as {eidoVerification?: {runId?: string}})?.eidoVerification?.runId === repaired.runId));
     h.buffers.set(join(h.cwd, "index.html"), source(3));
     assert.equal((await h.prompt(a.sessionId)).stopReason, "end_turn");
     const b = await h.newTask();
@@ -186,6 +200,11 @@ test("preview cancellation releases a terminal returned after cancellation", { t
     await h.cancel(a.sessionId);
     finish();
     assert.equal((await pending).stopReason, "cancelled");
+    const cancelled = (h.updates as any[]).findLast(update => update.rawOutput?.eidoVerification?.cancelled);
+    assert.ok(cancelled, 'Cancellation must retain a structured result for native history');
+    assert.equal(cancelled.rawOutput.eidoVerification.freshness.state, 'unknown');
+    const journals = (await readdir(join(h.cwd, 'sessions'), {recursive:true})).filter(path => path.endsWith('.jsonl'));
+    assert.match((await Promise.all(journals.map(path => readFile(join(h.cwd, 'sessions', path), 'utf8')))).join('\n'), /"cancelled":true/);
     assert.ok([...h.terminals.values()].every(t => t.exited && t.released));
     assert.equal((await h.prompt(b.sessionId)).stopReason, "end_turn");
   } finally { finish(); await h.dispose(); }

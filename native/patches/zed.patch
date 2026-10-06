@@ -628,7 +628,25 @@ diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thr
  mod mention;
  mod terminal;
  pub use ::terminal::HeadlessTerminal;
-@@ -2270,6 +2272,10 @@
+@@ -69,9 +71,16 @@
+ /// Extracts a tool name from the legacy ACP metadata field.
+ pub fn tool_name_from_meta(meta: &Option<acp::Meta>) -> Option<SharedString> {
+     meta.as_ref()
+-        .and_then(|meta| meta.get(TOOL_NAME_META_KEY))
++        .and_then(|meta| meta.get(TOOL_NAME_META_KEY).or_else(|| meta.get("toolName")))
+         .and_then(|value| value.as_str())
+         .map(|name| SharedString::from(name.to_owned()))
++}
++
++#[test]
++fn test_eido_pi_tool_name_metadata_supports_live_and_replayed_calls() {
++    assert_eq!(tool_name_from_meta(&Some(acp::Meta::from_iter([("toolName".into(), "preview".into())]))).as_deref(), Some("preview"));
++    assert_eq!(tool_name_from_meta(&Some(acp::Meta::from_iter([("tool_name".into(), "read".into()), ("toolName".into(), "preview".into())]))).as_deref(), Some("read"));
++    assert!(tool_name_from_meta(&None).is_none());
+ }
+ 
+ /// Creates ACP metadata containing the legacy tool-name field.
+@@ -2270,6 +2279,10 @@
      project: Entity<Project>,
      action_log: Entity<ActionLog>,
      _git_store_subscription: Subscription,
@@ -639,7 +657,7 @@ diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thr
      update_last_checkpoint_if_changed_task: Option<Task<Result<()>>>,
      shared_buffers: HashMap<Entity<Buffer>, BufferSnapshot>,
      turn_id: u32,
-@@ -2333,7 +2339,15 @@
+@@ -2333,7 +2346,15 @@
  }
  
  #[derive(Debug)]
@@ -655,7 +673,7 @@ diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thr
      StatusChanged,
      PromptUpdated,
      NewEntry,
-@@ -2493,7 +2507,8 @@
+@@ -2493,7 +2514,8 @@
                  | AcpThreadEvent::AvailableCommandsUpdated(_)
                  | AcpThreadEvent::ModeUpdated(_)
                  | AcpThreadEvent::ConfigOptionsUpdated(_)
@@ -665,7 +683,7 @@ diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thr
              });
  
          let git_store = project.read(cx).git_store().clone();
-@@ -2516,6 +2531,10 @@
+@@ -2516,6 +2538,10 @@
              work_dirs,
              action_log,
              _git_store_subscription,
@@ -676,7 +694,7 @@ diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thr
              update_last_checkpoint_if_changed_task: None,
              shared_buffers: Default::default(),
              entries: Default::default(),
-@@ -2550,6 +2569,38 @@
+@@ -2550,6 +2576,38 @@
          }
      }
  
@@ -715,7 +733,7 @@ diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thr
      pub fn parent_session_id(&self) -> Option<&acp::SessionId> {
          self.parent_session_id.as_ref()
      }
-@@ -2776,6 +2827,20 @@
+@@ -2776,6 +2834,20 @@
          }
  
          false
@@ -736,7 +754,7 @@ diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thr
      }
  
      pub fn handle_session_update(
-@@ -3936,7 +4001,7 @@
+@@ -3936,7 +4008,7 @@
          message: Vec<acp::ContentBlock>,
          cx: &mut Context<Self>,
      ) -> BoxFuture<'static, Result<Option<acp::PromptResponse>>> {
@@ -745,7 +763,7 @@ diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thr
      }
  
      /// Sends a prompt without displaying a user-message bubble for it.
-@@ -3948,13 +4013,30 @@
+@@ -3948,13 +4020,30 @@
          message: Vec<acp::ContentBlock>,
          cx: &mut Context<Self>,
      ) -> BoxFuture<'static, Result<Option<acp::PromptResponse>>> {
@@ -777,7 +795,7 @@ diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thr
          cx: &mut Context<Self>,
      ) -> BoxFuture<'static, Result<Option<acp::PromptResponse>>> {
          let language_registry = self.project.read(cx).languages().clone();
-@@ -3963,7 +4045,13 @@
+@@ -3963,7 +4052,13 @@
          for chunk in &message {
              block.append_prompt(chunk.clone(), &language_registry, path_style, cx);
          }
@@ -792,7 +810,7 @@ diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thr
          let git_store = self.project.read(cx).git_store().clone();
  
          let client_user_message_ids = self.connection.client_user_message_ids(cx);
-@@ -4566,19 +4654,45 @@
+@@ -4566,19 +4661,45 @@
          reuse_shared_snapshot: bool,
          cx: &mut Context<Self>,
      ) -> Task<Result<String, acp::Error>> {
@@ -839,7 +857,7 @@ diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thr
                  Ok::<_, acp::Error>(project.open_buffer(path, cx))
              })?;
  
-@@ -4597,14 +4711,15 @@
+@@ -4597,14 +4718,15 @@
              let snapshot = if let Some(snapshot) = snapshot {
                  snapshot
              } else {
@@ -862,7 +880,7 @@ diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thr
                  snapshot
              };
  
-@@ -4644,10 +4759,60 @@
+@@ -4644,10 +4766,60 @@
          content: String,
          cx: &mut Context<Self>,
      ) -> Task<Result<()>> {
@@ -923,7 +941,7 @@ diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thr
              let load = project.update(cx, |project, cx| {
                  let path = project
                      .project_path_for_absolute_path(&path, cx)
-@@ -4656,11 +4821,18 @@
+@@ -4656,11 +4828,18 @@
              });
              let buffer = load?.await?;
              let snapshot = this.update(cx, |this, cx| {
@@ -947,7 +965,7 @@ diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thr
              let edits = cx
                  .background_executor()
                  .spawn(async move {
-@@ -4674,6 +4846,9 @@
+@@ -4674,6 +4853,9 @@
                  })
                  .await;
  
@@ -957,7 +975,7 @@ diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thr
              if should_update_agent_location {
                  project.update(cx, |project, cx| {
                      project.set_agent_location(
-@@ -4691,10 +4866,16 @@
+@@ -4691,10 +4873,16 @@
  
              let format_on_save = cx.update(|cx| {
                  action_log.update(cx, |action_log, cx| {
@@ -974,7 +992,7 @@ diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thr
                      buffer.start_transaction();
                      buffer.edit(edits, None, cx);
                      buffer.end_transaction_with_source(BufferEditSource::Agent, cx);
-@@ -4702,13 +4883,24 @@
+@@ -4702,13 +4890,24 @@
                      let settings =
                          language::language_settings::LanguageSettings::for_buffer(buffer, cx);
  
@@ -1005,7 +1023,7 @@ diff --git a/crates/acp_thread/src/acp_thread.rs b/crates/acp_thread/src/acp_thr
  
              if format_on_save {
                  let format_task = project.update(cx, |project, cx| {
-@@ -6930,6 +7122,213 @@
+@@ -6930,6 +7129,213 @@
              "zero\none\ntwo\nthree\nfour\nfive\n"
          );
          request.await.unwrap();
@@ -6945,7 +6963,7 @@ diff --git a/crates/agent_ui/src/agent_registry_ui.rs b/crates/agent_ui/src/agen
 diff --git a/crates/agent_ui/src/agent_ui.rs b/crates/agent_ui/src/agent_ui.rs
 --- a/crates/agent_ui/src/agent_ui.rs
 +++ b/crates/agent_ui/src/agent_ui.rs
-@@ -1,31 +1,24 @@
+@@ -1,31 +1,25 @@
 -mod agent_configuration;
  pub mod agent_connection_store;
  mod agent_diff;
@@ -6961,6 +6979,7 @@ diff --git a/crates/agent_ui/src/agent_ui.rs b/crates/agent_ui/src/agent_ui.rs
  mod diagnostics;
 +mod eido_access;
 +mod eido_pi_ui;
++mod eido_verification;
 +mod eido_queue;
 +mod eido_review_store;
  pub mod draft_prompt_store;
@@ -6981,7 +7000,7 @@ diff --git a/crates/agent_ui/src/agent_ui.rs b/crates/agent_ui/src/agent_ui.rs
  pub mod terminal_thread_metadata_store;
  #[cfg(any(test, feature = "test-support"))]
  pub mod test_support;
-@@ -45,36 +38,27 @@
+@@ -45,36 +39,27 @@
  use agent_settings::{AgentProfileId, AgentSettings};
  use command_palette_hooks::CommandPaletteFilter;
  use editor::{Editor, SelectionEffects, scroll::Autoscroll};
@@ -7024,7 +7043,7 @@ diff --git a/crates/agent_ui/src/agent_ui.rs b/crates/agent_ui/src/agent_ui.rs
  pub use crate::inline_assistant::InlineAssistant;
  pub use crate::message_editor::MessageEditorEvent;
  pub use crate::thread_metadata_store::ThreadId;
-@@ -184,7 +168,6 @@
+@@ -184,7 +169,6 @@
  }
  
  pub const DEFAULT_THREAD_TITLE: &str = "New Agent Thread";
@@ -7032,7 +7051,7 @@ diff --git a/crates/agent_ui/src/agent_ui.rs b/crates/agent_ui/src/agent_ui.rs
  
  #[derive(Clone, Copy, Debug, Eq, PartialEq)]
  pub enum AgentThreadSource {
-@@ -532,21 +515,6 @@
+@@ -532,21 +516,6 @@
      }
  }
  
@@ -7054,7 +7073,7 @@ diff --git a/crates/agent_ui/src/agent_ui.rs b/crates/agent_ui/src/agent_ui.rs
  pub(crate) fn humanize_token_count(count: u64) -> String {
      match count {
          0..=999 => count.to_string(),
-@@ -577,224 +545,26 @@
+@@ -577,224 +546,26 @@
      }
  }
  
@@ -7287,7 +7306,7 @@ diff --git a/crates/agent_ui/src/agent_ui.rs b/crates/agent_ui/src/agent_ui.rs
      CommandPaletteFilter::update_global(cx, |filter, _| {
          use editor::actions::{
              AcceptEditPrediction, AcceptNextLineEditPrediction, AcceptNextWordEditPrediction,
-@@ -816,474 +586,36 @@
+@@ -816,474 +587,36 @@
              TypeId::of::<zed_actions::assistant::CreateSkillFromUrl>(),
          ];
  
@@ -11130,10 +11149,11 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
      pub turn_fields: TurnFields,
      pub discarded_partial_edits: HashSet<acp::ToolCallId>,
      pub is_loading_contents: bool,
-@@ -621,6 +625,12 @@
+@@ -621,6 +625,13 @@
      pub in_flight_prompt: Option<Vec<acp::ContentBlock>>,
      pub _subscriptions: Vec<Subscription>,
      pub message_editor: Entity<MessageEditor>,
++    eido_verification: crate::eido_verification::State,
 +    pub(crate) eido_pi_ui: crate::eido_pi_ui::PiUiState,
 +    eido_editor_instance: String,
 +    eido_editor_revision: u64,
@@ -11143,7 +11163,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
      pub add_context_menu_handle: PopoverMenuHandle<ContextMenu>,
      pub thinking_effort_menu_handle: PopoverMenuHandle<ContextMenu>,
      pub fast_mode_menu_handle: PopoverMenuHandle<ContextMenu>,
-@@ -799,11 +809,22 @@
+@@ -799,11 +810,22 @@
          window: &mut Window,
          cx: &mut Context<Self>,
      ) -> Self {
@@ -11167,7 +11187,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
  
          let mut should_auto_submit = false;
          let mut show_external_source_prompt_warning = false;
-@@ -818,7 +839,11 @@
+@@ -818,7 +840,11 @@
                  &placeholder,
                  editor::EditorMode::AutoHeight {
                      min_lines: AgentSettings::get_global(cx).message_editor_min_lines,
@@ -11180,7 +11200,28 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
                  },
                  window,
                  cx,
-@@ -879,7 +904,9 @@
+@@ -861,7 +887,19 @@
+         if let Some(project) = project.upgrade() {
+             subscriptions.push(cx.subscribe(&project, {
+                 let resolver = code_span_resolver.clone();
+-                move |_this: &mut Self, _project, event: &project::Event, cx| {
++                move |this: &mut Self, project, event: &project::Event, cx| {
++                    match event {
++                        project::Event::BufferEdited { .. } => this.eido_verification.changed(None),
++                        project::Event::WorktreeUpdatedEntries(id, changes) => {
++                            if let Some(tree) = project.read(cx).worktree_for_id(*id, cx) {
++                                let root = tree.read(cx).abs_path();
++                                for (path, _, _) in changes.iter() { this.eido_verification.changed(Some(root.join(path.as_std_path()))); }
++                            }
++                        }
++                        project::Event::WorktreeRemoved(_) | project::Event::WorktreePathsChanged { .. } => this.eido_verification.changed(None),
++                        _ => {}
++                    }
++                    if matches!(event, project::Event::BufferEdited { .. } | project::Event::WorktreePathsChanged { .. }) { cx.notify(); }
+                     if matches!(
+                         event,
+                         project::Event::WorktreeAdded(_)
+@@ -879,7 +917,9 @@
              let metadata = ThreadMetadataStore::try_global(cx)
                  .and_then(|store| store.read(cx).entry(root_thread_id).cloned());
              let initial_title = if parent_session_id.is_none() {
@@ -11191,7 +11232,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
              } else {
                  thread.read(cx).title()
              }
-@@ -956,6 +983,7 @@
+@@ -956,6 +996,7 @@
          }
  
          subscriptions.push(cx.observe(&message_editor, |this, editor, cx| {
@@ -11199,7 +11240,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
              let is_empty = editor.read(cx).text(cx).is_empty();
              let draft_contents_task = if is_empty {
                  None
-@@ -981,6 +1009,8 @@
+@@ -981,6 +1022,8 @@
  
          let mut this = Self {
              root_thread_id,
@@ -11208,7 +11249,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
              session_id,
              parent_session_id,
              focus_handle: cx.focus_handle(),
-@@ -1021,6 +1051,8 @@
+@@ -1021,6 +1064,8 @@
              should_be_following: false,
              editing_message: None,
              message_queue: MessageQueue::default(),
@@ -11217,11 +11258,12 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
              turn_fields: TurnFields::default(),
              discarded_partial_edits: HashSet::default(),
              is_loading_contents: false,
-@@ -1034,6 +1066,12 @@
+@@ -1034,6 +1079,13 @@
              hovered_edited_file_buttons: None,
              in_flight_prompt: None,
              message_editor,
 +            eido_pi_ui: Default::default(),
++            eido_verification: Default::default(),
 +            eido_editor_instance: uuid::Uuid::new_v4().to_string(),
 +            eido_editor_revision: 0,
 +            eido_last_editor_text: None,
@@ -11230,7 +11272,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
              add_context_menu_handle: PopoverMenuHandle::default(),
              thinking_effort_menu_handle: PopoverMenuHandle::default(),
              fast_mode_menu_handle: PopoverMenuHandle::default(),
-@@ -1052,6 +1090,8 @@
+@@ -1052,6 +1104,8 @@
              thread_search_visible: false,
          };
  
@@ -11239,7 +11281,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
          this.sync_generating_indicator(cx);
          this.sync_editor_mode(cx);
          this.sync_existing_elicitation_states(window, cx);
-@@ -1248,6 +1288,25 @@
+@@ -1248,6 +1302,25 @@
              editor
          } else {
              self.message_editor.clone()
@@ -11265,7 +11307,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
          }
      }
  
-@@ -1477,7 +1536,166 @@
+@@ -1477,7 +1550,166 @@
          }
      }
  
@@ -11432,7 +11474,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
          let thread = &self.thread;
  
          if self.is_loading_contents {
-@@ -1504,7 +1722,7 @@
+@@ -1504,7 +1736,7 @@
  
          let text = message_editor.read(cx).text(cx);
          let text = text.trim();
@@ -11441,7 +11483,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
              let connection = thread.read(cx).connection().clone();
              let can_login = !connection.auth_methods().is_empty();
              // Does the agent have a specific logout command? Prefer that in case they need to reset internal state.
-@@ -1662,6 +1880,17 @@
+@@ -1662,6 +1894,17 @@
          window: &mut Window,
          cx: &mut Context<Self>,
      ) {
@@ -11459,7 +11501,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
          let session_id = self.thread.read(cx).session_id().clone();
          let parent_session_id = self.thread.read(cx).parent_session_id().cloned();
          let agent_telemetry_id = self.thread.read(cx).connection().telemetry_id();
-@@ -1681,9 +1910,10 @@
+@@ -1681,9 +1924,10 @@
  
          let side = crate::agent_sidebar_side(cx);
  
@@ -11471,7 +11513,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
              };
  
              let generation = this.update(cx, |this, cx| {
-@@ -1753,7 +1983,9 @@
+@@ -1753,7 +1997,9 @@
                      side = side
                  );
  
@@ -11482,7 +11524,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
                      thread.send_command(contents, cx)
                  } else {
                      thread.send(contents, cx)
-@@ -1785,11 +2017,19 @@
+@@ -1785,11 +2031,19 @@
                  turn_time_ms,
                  side = side
              );
@@ -11504,7 +11546,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
                  this.update(cx, |this, cx| {
                      this.handle_thread_error(err, cx);
                  })
-@@ -1811,6 +2051,10 @@
+@@ -1811,6 +2065,10 @@
      }
  
      pub fn interrupt_and_send(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -11515,7 +11557,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
          let thread = &self.thread;
  
          if self.is_loading_contents {
-@@ -2104,6 +2348,76 @@
+@@ -2104,6 +2362,76 @@
          .detach_and_log_err(cx);
      }
  
@@ -11592,7 +11634,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
      pub fn add_to_queue(
          &mut self,
          content: Vec<acp::ContentBlock>,
-@@ -2143,6 +2457,9 @@
+@@ -2143,6 +2471,9 @@
          self.message_queue.enqueue(QueueEntry {
              id,
              content,
@@ -11602,7 +11644,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
              tracked_buffers,
              steer: false,
              editor,
-@@ -2201,6 +2518,7 @@
+@@ -2201,6 +2532,7 @@
                      entry.content = content;
                      entry.tracked_buffers = tracked_buffers;
                  }
@@ -11610,7 +11652,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
                  cx.notify();
              })?;
  
-@@ -2215,6 +2533,7 @@
+@@ -2215,6 +2547,7 @@
          cx: &mut Context<Self>,
      ) -> Option<QueueEntry> {
          let removed = self.message_queue.remove(id);
@@ -11618,7 +11660,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
          if removed.is_some() {
              self.sync_queue_flag_to_native_thread(cx);
          }
-@@ -2227,7 +2546,8 @@
+@@ -2227,7 +2560,8 @@
          cx.notify();
      }
  
@@ -11628,7 +11670,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
          if let Some(native_thread) = self.as_native_thread(cx) {
              // By default queued messages wait for the turn to fully complete.
              // Only a "steering" front message ends the turn at the next boundary.
-@@ -2244,6 +2564,11 @@
+@@ -2244,6 +2578,11 @@
          window: &mut Window,
          cx: &mut Context<Self>,
      ) {
@@ -11640,7 +11682,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
          let is_generating = self.thread.read(cx).status() == acp_thread::ThreadStatus::Generating;
          if let Some(entry) = self.message_queue.send_now(id, is_generating) {
              self.dispatch_queued_entry(entry, window, cx);
-@@ -2259,14 +2584,18 @@
+@@ -2259,14 +2598,18 @@
          window: &mut Window,
          cx: &mut Context<Self>,
      ) {
@@ -11661,7 +11703,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
  
          // A queued message can itself be a built-in command (e.g. the user typed
          // `/compact` while a turn was generating). Detect that so we run it as a
-@@ -2289,6 +2618,7 @@
+@@ -2289,6 +2632,7 @@
  
          let should_be_following = self.should_be_following;
          let contents_task = cx.spawn_in(window, async move |_this, cx| {
@@ -11669,7 +11711,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
              cancelled.await;
              if should_be_following {
                  workspace
-@@ -2301,7 +2631,7 @@
+@@ -2301,7 +2645,7 @@
              Ok(Some((content, tracked_buffers)))
          });
  
@@ -11678,7 +11720,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
      }
  
      pub fn move_queued_message_to_main_editor(
-@@ -4350,7 +4680,7 @@
+@@ -4350,7 +4694,7 @@
          )
      }
  
@@ -11687,7 +11729,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
          &mut self,
          window: &mut Window,
          cx: &mut Context<Self>,
-@@ -4370,8 +4700,20 @@
+@@ -4370,8 +4714,20 @@
          };
  
          let max_content_width = AgentSettings::get_global(cx).max_content_width;
@@ -11709,7 +11751,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
  
          h_flex()
              .py_2()
-@@ -4381,8 +4723,9 @@
+@@ -4381,8 +4737,9 @@
              .map(|this| {
                  if has_messages {
                      this.on_action(cx.listener(Self::expand_message_editor))
@@ -11721,7 +11763,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
                          .when(editor_expanded, |this| this.h(vh(0.8, window)))
                  } else {
                      this.flex_1().size_full()
-@@ -4399,6 +4742,9 @@
+@@ -4399,6 +4756,9 @@
                      .flex_grow_0()
                      .justify_between()
                      .gap_2()
@@ -11731,7 +11773,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
                      .child(
                          v_flex()
                              .relative()
-@@ -4407,6 +4753,10 @@
+@@ -4407,6 +4767,10 @@
                              .when(fills_container, |this| this.flex_1())
                              .pt_1()
                              .pr_2p5()
@@ -11742,7 +11784,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
                              .child(self.message_editor.clone())
                              .when(has_messages, |this| {
                                  this.child(
-@@ -4441,6 +4791,9 @@
+@@ -4441,6 +4805,9 @@
                                  )
                              }),
                      )
@@ -11752,7 +11794,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
                      .child(
                          h_flex()
                              .w_full()
-@@ -4464,6 +4817,9 @@
+@@ -4464,6 +4831,9 @@
                                      .flex_wrap()
                                      .gap_1()
                                      .children(self.render_token_usage(cx))
@@ -11762,7 +11804,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
                                      .children(self.profile_selector.clone())
                                      .map(|this| match self.config_options_view.clone() {
                                          Some(config_view) => this.child(config_view),
-@@ -4528,11 +4884,18 @@
+@@ -4528,11 +4898,18 @@
              .id("message_queue_list")
              .max_h_40()
              .overflow_y_scroll()
@@ -11782,7 +11824,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
                      (Color::Accent, "Next in Queue")
                  } else {
                      (Color::Muted, "In Queue")
-@@ -4571,7 +4934,7 @@
+@@ -4571,7 +4948,7 @@
                              .min_w(min_width)
                              .justify_end()
                              .child(
@@ -11791,7 +11833,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
                                      .icon_size(IconSize::Small)
                                      .tooltip(|_window, cx| {
                                          Tooltip::with_meta(
-@@ -4595,6 +4958,7 @@
+@@ -4595,6 +4972,7 @@
                              .child(
                                  Button::new(("send_now_focused", index), "Send Now")
                                      .label_size(LabelSize::Small)
@@ -11799,7 +11841,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
                                      .style(ButtonStyle::Outlined)
                                      .key_binding(
                                          KeyBinding::for_action_in(
-@@ -4615,7 +4979,7 @@
+@@ -4615,7 +4993,7 @@
                              .min_w(min_width)
                              .justify_end()
                              .child(
@@ -11808,7 +11850,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
                                      .icon_size(IconSize::Small)
                                      .tooltip({
                                          let focus_handle = focus_handle.clone();
-@@ -4638,7 +5002,7 @@
+@@ -4638,7 +5016,7 @@
                                      })),
                              )
                              .child(
@@ -11817,7 +11859,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
                                      .icon_size(IconSize::Small)
                                      .tooltip({
                                          let focus_handle = focus_handle.clone();
-@@ -4667,8 +5031,9 @@
+@@ -4667,8 +5045,9 @@
                                  ))
                              })
                              .child(
@@ -11828,7 +11870,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
                                      .when(is_next, |this| this.style(ButtonStyle::Outlined))
                                      .when(is_next && message_editor.is_empty(cx), |this| {
                                          let action: Box<dyn gpui::Action> = if can_fast_track {
-@@ -6261,6 +6626,11 @@
+@@ -6261,6 +6640,11 @@
                                                  s.border_color(focus_border.opacity(0.8))
                                              })
                                      })
@@ -11840,7 +11882,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
                                      .text_xs()
                                      .child(editor.clone().into_any_element())
                              )
-@@ -7278,7 +7648,7 @@
+@@ -7278,7 +7662,7 @@
  
      pub(crate) fn sync_editor_mode(&mut self, cx: &mut Context<Self>) {
          let has_messages = self.list_state.item_count() > 0;
@@ -11849,7 +11891,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
  
          if !has_messages {
              self.editor_expanded = false;
-@@ -7299,7 +7669,11 @@
+@@ -7299,7 +7683,11 @@
          } else {
              EditorMode::AutoHeight {
                  min_lines: AgentSettings::get_global(cx).message_editor_min_lines,
@@ -11862,7 +11904,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
              }
          };
          self.message_editor.update(cx, |editor, cx| {
-@@ -7326,6 +7700,7 @@
+@@ -7326,6 +7714,7 @@
      }
  
      fn render_generating(&self, confirmation: bool, cx: &App) -> impl IntoElement {
@@ -11870,7 +11912,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
          let show_stats = AgentSettings::get_global(cx).show_turn_stats;
          let elapsed_label = show_stats
              .then(|| {
-@@ -7378,15 +7753,23 @@
+@@ -7378,15 +7767,23 @@
                      )
                  } else if is_blocked_on_terminal_command {
                      this
@@ -11900,7 +11942,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
              .when_some(elapsed_label, |this, elapsed| {
                  this.child(
                      Label::new(elapsed)
-@@ -7505,7 +7888,7 @@
+@@ -7505,7 +7902,7 @@
              }
          }
  
@@ -11909,7 +11951,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
  
          v_flex()
              .id(("thinking-block", chunk_ix))
-@@ -7532,7 +7915,7 @@
+@@ -7532,7 +7929,7 @@
                                  div()
                                      .text_size(self.tool_name_font_size())
                                      .text_color(cx.theme().colors().text_muted)
@@ -11918,7 +11960,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
                              ),
                      )
                      .child(
-@@ -7961,6 +8344,14 @@
+@@ -7961,6 +8358,14 @@
              working_dir,
              is_expanded,
          )
@@ -11933,7 +11975,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
          .elapsed(time_elapsed)
          .running(!command_finished && !needs_confirmation)
          .on_toggle_expand(cx.listener({
-@@ -10082,6 +10473,11 @@
+@@ -10082,6 +10487,11 @@
              .into_any_element()
          };
  
@@ -11945,7 +11987,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
          let gradient_overlay = {
              div()
                  .absolute()
-@@ -10089,24 +10485,11 @@
+@@ -10089,24 +10499,11 @@
                  .right_0()
                  .w_12()
                  .h_full()
@@ -11975,7 +12017,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
          };
  
          h_flex()
-@@ -10693,6 +11076,9 @@
+@@ -10693,6 +11090,9 @@
                  let model = thread.model()?;
                  Some(model.name().0)
              });
@@ -11985,7 +12027,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
          let thread_title = thread
              .as_ref()
              .and_then(|t| t.read(cx).title())
-@@ -10775,6 +11161,7 @@
+@@ -10775,6 +11175,7 @@
                  h_flex()
                      .group(&card_header_id)
                      .h_8()
@@ -11993,7 +12035,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
                      .p_1()
                      .w_full()
                      .justify_between()
-@@ -10798,25 +11185,24 @@
+@@ -10798,25 +11199,24 @@
                                      .gap_1p5()
                                      .justify_between()
                                      .child(
@@ -12033,10 +12075,60 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
                                                          .color(Color::Muted)
                                                          .truncate(),
                                                  )
-@@ -11648,6 +12034,44 @@
+@@ -11648,6 +12048,94 @@
              )
      }
  
++    fn render_verification(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
++        let conversation = self.conversation.read(cx);
++        let root = self.thread.read(cx).parent_session_id().is_none();
++        let threads = conversation.threads.values().filter(|thread| root || **thread == self.thread)
++            .map(|thread| thread.read(cx));
++        let rows = crate::eido_verification::rows(threads);
++        if rows.is_empty() { return None; }
++        let total = rows.len();
++        let mut content = v_flex().gap_1().px_4().py_2().border_t_1().border_color(cx.theme().colors().border_variant)
++            .child(h_flex().gap_2().child(Button::new("verification-toggle", format!("Verification · {total} {}", if total == 1 {"run"} else {"runs"}))
++                .label_size(LabelSize::Small).start_icon(Icon::new(if self.eido_verification.expanded {IconName::ChevronDown} else {IconName::ChevronRight}))
++                .on_click(cx.listener(|this, _, _, cx| {this.eido_verification.expanded = !this.eido_verification.expanded; cx.notify();}))));
++        let mut results = v_flex().id("verification-results").max_h(px(220.)).overflow_y_scroll().gap_1();
++        for (index, row) in rows.into_iter().take(if self.eido_verification.expanded {total} else {1}).enumerate() {
++            let current = self.eido_verification.freshness(&row.evidence);
++            let session_id = row.session_id; let tool_id = row.tool_call_id;
++            results = results.child(v_flex().gap_0p5()
++                .child(h_flex().gap_2().flex_wrap()
++                    .child(Label::new(row.status).size(LabelSize::Small))
++                    .child(Label::new(current).size(LabelSize::Small).color(if current == "Inputs changed" {Color::Warning} else {Color::Muted}))
++                    .child(Button::new(("verification-output", index), "View Result").label_size(LabelSize::Small)
++                        .on_click(cx.listener(move |this, _, window, cx| {
++                            if this.thread.read(cx).session_id() == &session_id {
++                                this.eido_reveal_verification(&tool_id, cx);
++                            } else if let Some(server) = this.server_view.upgrade() {
++                                server.update(cx, |server, cx| {
++                                    server.navigate_to_thread(session_id.clone(), window, cx);
++                                    if let Some(view) = server.thread_view(&session_id) {
++                                        view.update(cx, |view, cx| view.eido_reveal_verification(&tool_id, cx));
++                                    }
++                                });
++                            }
++                        }))))
++                .when(self.eido_verification.expanded, |this| this.child(Label::new(format!("{} · {} · {}", row.source, row.evidence.captured_at, row.evidence.run_id)).size(LabelSize::XSmall).color(Color::Muted))));
++        }
++        content = content.child(results);
++        if self.eido_verification.expanded {
++            content = content.child(Label::new("Results cover captured inputs only. Checks and browser observations do not establish full acceptance. Re-run verification after edits; preview status rechecks available inputs.").size(LabelSize::XSmall).color(Color::Muted));
++        }
++        Some(content.into_any_element())
++    }
++
++    fn eido_reveal_verification(&mut self, tool_id: &acp::ToolCallId, cx: &mut Context<Self>) {
++        if let Some((entry_ix, _)) = self.thread.read(cx).tool_call(tool_id) {
++            self.entry_view_state.update(cx, |state, _| state.expand_tool_call(tool_id.clone()));
++            self.list_state.scroll_to(ListOffset {item_ix: entry_ix, offset_in_item: px(0.)});
++            cx.notify();
++        }
++    }
++
 +    fn render_review_recovery(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
 +        let copies = self.thread.read(cx).review_copies();
 +        if copies.is_empty() { return None; }
@@ -12078,7 +12170,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
      fn render_session_notices(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
          let notices = self.thread.read(cx).notices();
          if notices.is_empty() {
-@@ -12293,6 +12717,31 @@
+@@ -12293,6 +12781,31 @@
                          .size_full()
                          .child(self.render_entries(cx))
                          .vertical_scrollbar_for(&list_state, window, cx)
@@ -12110,7 +12202,7 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
                          .into_any()
                  } else {
                      this.into_any()
-@@ -12607,9 +13056,14 @@
+@@ -12607,9 +13120,15 @@
                      .flatten(),
                  |this, bar| this.child(bar),
              )
@@ -12121,11 +12213,12 @@ diff --git a/crates/agent_ui/src/conversation_view/thread_view.rs b/crates/agent
              .child(conversation)
              .children(self.render_multi_root_callout(cx))
              .children(self.render_activity_bar(window, cx))
++            .when_some(self.render_verification(cx), |this, evidence| this.child(evidence))
 +            .when_some(self.render_review_recovery(cx), |this, recovery| this.child(recovery))
              .when_some(self.render_session_notices(cx), |this, notices| {
                  this.child(notices)
              })
-@@ -12631,7 +13085,9 @@
+@@ -12631,7 +13150,9 @@
              )
              .children(self.render_token_limit_callout(cx))
              .children(self.render_request_elicitations(cx))
