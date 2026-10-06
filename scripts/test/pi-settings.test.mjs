@@ -55,7 +55,7 @@ test('runtime controls save sparse pi settings, validate values and reject stale
   assert.equal(before.find(field=>field.path==='images.autoResize').effective,true);
   const expected=Object.fromEntries(before.map(field=>[field.path,field.value]));
   const changes={'transport':'sse','images.blockImages':true,'retry.baseDelayMs':100,'thinkingBudgets.low':2048,
-    'branchSummary.reserveTokens':4096,'branchSummary.skipPrompt':true};
+    'branchSummary.reserveTokens':4096,'branchSummary.skipPrompt':true,'steeringMode':'all','followUpMode':'one-at-a-time'};
   const result=await f.bridge.execute({operation:'runtime',changes,expected});
   for(const [path,value] of Object.entries(changes)) assert.equal(result.runtime.find(field=>field.path===path).effective,value);
   let stored=await f.get(f.target,'settings.json');
@@ -63,7 +63,7 @@ test('runtime controls save sparse pi settings, validate values and reject stale
   assert.equal(stored.retry.provider.maxRetries,7);
   assert.equal(stored.customSetting.retain,true);
   const saved=await readFile(join(f.target,'settings.json'),'utf8');
-  for(const changes of [{'transport':'invalid'},{'images.blockImages':1},{'retry.maxRetries':-1},{'retry.maxRetries':1.5},{'eido.fullAccess':true},{'thinkingBudgets.low':Infinity}]) {
+  for(const changes of [{'transport':'invalid'},{'steeringMode':'invalid'},{'followUpMode':2},{'images.blockImages':1},{'retry.maxRetries':-1},{'retry.maxRetries':1.5},{'eido.fullAccess':true},{'thinkingBudgets.low':Infinity}]) {
     await assert.rejects(f.bridge.execute({operation:'runtime',changes,expected}));
     assert.equal(await readFile(join(f.target,'settings.json'),'utf8'),saved);
   }

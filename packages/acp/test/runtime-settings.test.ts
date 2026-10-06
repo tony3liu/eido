@@ -1,11 +1,72 @@
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
-import {mkdtemp, writeFile, rm, realpath} from 'node:fs/promises';
+import {mkdir, mkdtemp, writeFile, rm, realpath} from 'node:fs/promises';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import {client, methods} from '@agentclientprotocol/sdk';
 import {startEidoAgent} from '../src/server.ts';
-import {fixtureModel} from './fixture-model.ts';
+import {call, fixtureModel, type FixtureStep} from './fixture-model.ts';
+
+test('global pi queue modes control actual consumption and reload in an open task', {timeout:30_000}, async () => {
+  const dir = await realpath(await mkdtemp(join(tmpdir(), 'eido-queue-modes-')));
+  const configure = (mode:string) => writeFile(join(dir, 'settings.json'), JSON.stringify({
+    defaultProvider:'eido-fixture', defaultModel:'scripted', cacheWarming:'off', compaction:{enabled:false},
+    steeringMode:mode, followUpMode:mode,
+  }));
+  await configure('one-at-a-time');
+  await mkdir(join(dir, 'extensions'));
+  await writeFile(join(dir, 'extensions/queue.js'), `export default pi => pi.registerTool({
+    name:'queue_followups', label:'Queue fixture', description:'Queue two fixture follow-ups',
+    parameters:{type:'object',properties:{prefix:{type:'string'}},required:['prefix']},
+    async execute(_id,args) {
+      pi.sendUserMessage(args.prefix+'-1',{deliverAs:'followUp'});
+      pi.sendUserMessage(args.prefix+'-2',{deliverAs:'followUp'});
+      return {content:[{type:'text',text:'Follow-ups queued'}]};
+    }
+  });`);
+  const steps:FixtureStep[] = [];
+  const model = await fixtureModel(dir, steps);
+  const toAgent = new TransformStream(), toClient = new TransformStream();
+  const server = await startEidoAgent(dir, join(dir,'sessions'), {readable:toAgent.readable,writable:toClient.writable}, model.runtime);
+  const connection = client({name:'queue-modes-test'})
+    .onRequest(methods.client.session.requestPermission, () => ({outcome:{outcome:'selected',optionId:'allow_once'}}))
+    .connect({readable:toClient.readable,writable:toAgent.writable});
+  try {
+    await connection.agent.request(methods.agent.initialize,{protocolVersion:1,clientCapabilities:{}});
+    const {sessionId} = await connection.agent.request(methods.agent.session.new,{cwd:dir,mcpServers:[]});
+    const send = (text:string) => connection.agent.request(methods.agent.session.prompt,{sessionId,prompt:[{type:'text',text}]});
+    const expectBoundary = (prefix:string, count:number):FixtureStep => context => {
+      const messages = context.messages.filter(message => message.role === 'user')
+        .map(message => JSON.stringify(message.content));
+      assert.equal(messages.filter(message => message.includes(prefix)).length, count);
+      return 'Boundary consumed.';
+    };
+    for (const mode of ['one-at-a-time','all']) {
+      await configure(mode);
+      await send('/reload');
+      const prefix = `steering-${mode}`;
+      let started!:()=>void, release!:()=>void;
+      const began = new Promise<void>(resolve => {started=resolve;});
+      const gate = new Promise<void>(resolve => {release=resolve;});
+      steps.push(async () => {started(); await gate; return 'Initial response.';}, expectBoundary(prefix,mode==='all'?2:1));
+      if (mode==='one-at-a-time') steps.push(expectBoundary(prefix,2));
+      const turn = send('Wait while two steering messages are queued.');
+      try {
+        await began;
+        for (const suffix of [1,2]) await connection.agent.request('_session/steering',{
+          sessionId,prompt:[{type:'text',text:`${prefix}-${suffix}`}],_meta:{eidoDeliveryId:`${prefix}-${suffix}`},
+        });
+      } finally {release();}
+      assert.equal((await turn).stopReason,'end_turn');
+      assert.equal(model.requests(),steps.length);
+      const followUp = `followup-${mode}`;
+      steps.push(() => call('queue_followups',{prefix:followUp}), () => 'Initial turn finished.', expectBoundary(followUp,mode==='all'?2:1));
+      if (mode==='one-at-a-time') steps.push(expectBoundary(followUp,2));
+      assert.equal((await send('Queue two follow-ups using the fixture tool.')).stopReason,'end_turn');
+      assert.equal(model.requests(),steps.length);
+    }
+  } finally {await server.agent.dispose();connection.close();server.connection.close();await rm(dir,{recursive:true,force:true});}
+});
 
 test('pi reload applies request transport, thinking budgets, timeout and retry behavior', {timeout:30_000}, async () => {
   const dir=await realpath(await mkdtemp(join(tmpdir(),'eido-runtime-settings-')));

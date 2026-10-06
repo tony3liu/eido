@@ -200,7 +200,7 @@ impl PiSettingsView {
         let mut section = v_flex().gap_3().pt_4().border_t_1().border_color(cx.theme().colors().border_variant)
             .child(Label::new("Agent Runtime"))
             .child(Label::new("Global pi settings. Leave numeric fields blank or choose Use pi default to inherit pi behavior.").size(LabelSize::Small).color(Color::Muted));
-        for group in ["Images", "Context", "Recovery", "Requests", "Thinking Budgets", "Tools"] {
+        for group in ["Messages", "Images", "Context", "Recovery", "Requests", "Thinking Budgets", "Tools"] {
             let open = self.runtime_open.contains(group);
             section = section.child(h_flex().child(Button::new(SharedString::from(format!("pi-runtime-group-{group}")), group)
                 .start_icon(Icon::new(if open { IconName::ChevronDown } else { IconName::ChevronRight }))
@@ -208,7 +208,9 @@ impl PiSettingsView {
                     if !view.runtime_open.remove(group) { view.runtime_open.insert(group.into()); } cx.notify();
                 }))));
             if !open { continue; }
-            if group == "Requests" {
+            if group == "Messages" {
+                section = section.child(Label::new("Choose how pi consumes pending messages at its next processing boundary. Steering adjusts an active turn; follow-ups wait for it to finish. This does not reorder Eido's task queue. Use /reload to apply changes to an open task.").size(LabelSize::Small).color(Color::Muted));
+            } else if group == "Requests" {
                 section = section.child(Label::new("Transport support depends on the provider. Cache warming makes additional requests and may increase usage.").size(LabelSize::Small).color(Color::Muted));
             } else if group == "Thinking Budgets" {
                 section = section.child(Label::new("Token budgets apply to models that support them. The conversation's thinking level selects the budget.").size(LabelSize::Small).color(Color::Muted));
@@ -290,7 +292,12 @@ fn runtime_text(value: &Value) -> String {
     if value.is_null() { String::new() } else { value.as_str().map(str::to_owned).unwrap_or_else(|| value.to_string()) }
 }
 fn runtime_choice(value: &Value) -> String {
-    match value { Value::Null => "Use pi default".into(), Value::Bool(true) => "On".into(), Value::Bool(false) => "Off".into(), _ => runtime_text(value) }
+    match value {
+        Value::Null => "Use pi default".into(), Value::Bool(true) => "On".into(), Value::Bool(false) => "Off".into(),
+        Value::String(value) if value == "one-at-a-time" => "One at a time".into(),
+        Value::String(value) if value == "all" => "All pending messages".into(),
+        _ => runtime_text(value),
+    }
 }
 
 fn field(label: &str, element: impl IntoElement) -> gpui::AnyElement {
