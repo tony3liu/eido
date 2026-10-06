@@ -14,6 +14,7 @@ actions!(
     eido,
     [
         FocusComposer,
+        NewConversation,
         Submit,
         ToggleWorkbench,
         Split,
@@ -67,6 +68,12 @@ pub fn attach(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<W
     workspace.register_action(|workspace, _: &FocusComposer, window, cx| {
         if let Some(panel) = workspace.panel::<AgentPanel>(cx) {
             panel.update(cx, |panel, cx| panel.eido_focus_composer(window, cx));
+        }
+    });
+    workspace.register_action(|workspace, _: &NewConversation, window, cx| {
+        if let Some(panel) = workspace.panel::<AgentPanel>(cx) {
+            workspace.set_eido_layout(EidoLayout::Workbench, cx);
+            panel.update(cx, |panel, cx| panel.eido_new_thread(window, cx));
         }
     });
     workspace.register_action(|workspace, _: &Submit, _, cx| {
@@ -368,6 +375,15 @@ impl Render for Toolbar {
             .h_full()
             .px_3()
             .gap_2()
+            .child(
+                Button::new("eido-new-conversation", "New Conversation")
+                    .label_size(LabelSize::Small)
+                    .start_icon(Icon::new(IconName::Plus).size(IconSize::Small))
+                    .tooltip(Tooltip::text("Start a new conversation and keep the current task"))
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.dispatch(&NewConversation, window, cx)
+                    })),
+            )
             .child(div().flex_1())
             .child(
                 h_flex()
