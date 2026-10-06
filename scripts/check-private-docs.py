@@ -10,7 +10,7 @@ from pathlib import PurePosixPath
 PRIVATE_DIRECTORIES = {"local-docs", ".local", "private-docs", "internal-docs"}
 DOCUMENT_EXTENSIONS = {".md", ".markdown", ".mdx", ".doc", ".docx", ".docm"}
 LEGAL_NOTICES = {"license.md", "licence.md", "copying.md", "notice.md", "copyright.md"}
-PUBLIC_PRODUCT_DOCUMENTS = {"README.md"}
+PUBLIC_PRODUCT_DOCUMENTS = {"README.md", "README.zh-CN.md"}
 
 
 def git(*args):

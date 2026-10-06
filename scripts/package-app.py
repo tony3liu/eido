@@ -197,7 +197,8 @@ def build():
     copy_file(ROOT / 'packages/acp/package.json', runtime / 'packages/acp/package.json')
     copy_tree(ROOT / 'packages/acp/adapter', runtime / 'packages/acp/adapter',
               lambda path: path.suffix == '.js' or path.name in {'package.json', 'LICENSE'})
-    (runtime / 'package.json').write_text(json.dumps({'name': 'eido-runtime', 'private': True, 'type': 'module'}))
+    (runtime / 'package.json').write_text(json.dumps({'name': 'eido-runtime', 'private': True, 'type': 'module',
+                                                  'license': 'GPL-3.0-or-later'}))
     for name in RUNTIME_FILES:
         copy_file(ROOT / name, runtime / name)
     count = copy_dependencies(ROOT, runtime) + copy_dependencies(ROOT / 'packages/acp', runtime / 'packages/acp')
@@ -230,6 +231,8 @@ def build():
     copy_file(executable, contents / 'MacOS/eido')
     run(['strip', '-S', contents / 'MacOS/eido'])
     copy_file(ROOT / 'native/branding/Eido.icns', resources / 'Eido.icns')
+    for name in ('LICENSE', 'NOTICE'):
+        copy_file(ROOT / name, resources / 'licenses' / name)
     for file in (ROOT / 'native').glob('LICENSE*'):
         copy_file(file, resources / 'licenses' / file.name)
     for file in source.glob('*'):

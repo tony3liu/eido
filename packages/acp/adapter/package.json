@@ -3,7 +3,7 @@
   "version": "0.9.4",
   "private": true,
   "type": "module",
-  "license": "Apache-2.0",
+  "license": "GPL-3.0-or-later AND Apache-2.0",
   "main": "src/lib.js",
   "types": "src/lib.d.ts"
 }

@@ -15,6 +15,7 @@
 
 # Public product introduction; all private development documents remain local.
 !/README.md
+!/README.zh-CN.md
 
 # Required upstream license/attribution documents are not development notes.
 !**/[Ll][Ii][Cc][Ee][Nn][Ss][Ee].[Mm][Dd]

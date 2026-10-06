@@ -1,3 +1,4 @@
+// Adapted for Eido on 2026-10-06 from @automatalabs/pi-acp 0.9.4 (Apache-2.0). See ../LICENSE and the repository NOTICE.
 import { RequestError } from "@agentclientprotocol/sdk";
 export type ErrorKind = "command_error" | "auth_error" | "rate_limit" | "billing_error" | "provider_error" | "invalid_model" | "empty_prompt" | "session_busy" | "invalid_config_value" | "invalid_config_type" | "unknown_config_option" | "invalid_cwd" | "invalid_system_prompt" | "unknown_session" | "session_already_open" | "session_terminated" | "session_corrupt" | "session_not_forkable" | "mcp_init_error" | "unsupported_mcp_transport" | "extension_setup_error" | "child_cleanup_error" | "invalid_cursor" | "unknown_auth_method" | "notification_error" | "internal_error";
 export interface DiagnosticLike {

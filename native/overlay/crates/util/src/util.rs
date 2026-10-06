@@ -1,3 +1,6 @@
+// Modified for Eido on 2026-10-06. Upstream util code retains Apache-2.0;
+// Eido-authored additions are GPL-3.0-or-later. See the repository NOTICE.
+
 #[cfg(test)]
 extern crate self as util;
 

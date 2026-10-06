@@ -1,3 +1,4 @@
+// Adapted for Eido on 2026-10-06 from @automatalabs/pi-acp 0.9.4 (Apache-2.0). See ../LICENSE and the repository NOTICE.
 import { type AgentContext, type PromptRequest, type PromptResponse, type SessionUpdate } from "@agentclientprotocol/sdk";
 import type { AgentSession, SessionEntry, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
 import type { Api, Model } from "@earendil-works/pi-ai";

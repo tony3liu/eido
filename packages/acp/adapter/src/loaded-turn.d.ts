@@ -1,3 +1,4 @@
+// Adapted for Eido on 2026-10-06 from @automatalabs/pi-acp 0.9.4 (Apache-2.0). See ../LICENSE and the repository NOTICE.
 /** Loaded-turn settlement evidence from Eido's journal records.
  * Running requires an active in-process turn. Completed requires a successful
  * ACP settlement or an explicit legacy command result. All other states map to

@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="340" viewBox="0 0 1200 340" fill="none">
+  <title>Eido — AI development workspace</title>
+  <desc>Eido brand mark and wordmark on a light background. Version 0.0.1 beta.</desc>
+  <rect x="1" y="1" width="1198" height="338" rx="24" fill="#F7F9FE" stroke="#E3E9F5"/>
+  <path d="M0 252H1200" stroke="#E3E9F5"/>
+  <g transform="translate(78 66) scale(.19)">
+    <path d="M256 246H448V778H256Z" fill="#4B6DF3"/>
+    <path d="M496 246H770V360H496Z" fill="#A2B4FA"/>
+    <path d="M496 455H706V569H496Z" fill="#7894F7"/>
+    <path d="M496 664H770V778H496Z" fill="#557AF5"/>
+  </g>
+  <text x="282" y="122" fill="#66728C" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="13" font-weight="600" letter-spacing="3">AI DEVELOPMENT WORKSPACE</text>
+  <text x="276" y="199" fill="#1B2440" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="78" font-weight="600" letter-spacing="-3">Eido</text>
+  <text x="90" y="300" fill="#4C5872" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="15">Understand. Create. Evolve.</text>
+  <rect x="963" y="278" width="149" height="34" rx="17" fill="#E7ECFC"/>
+  <text x="1037.5" y="300" text-anchor="middle" fill="#4B60A4" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="14" font-weight="600">0.0.1 beta</text>
+</svg>

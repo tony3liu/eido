@@ -1,0 +1,68 @@
+Eido — licensing and acknowledgments
+
+Eido-original code
+Copyright (c) 2026 Eido contributors.
+
+Eido-original code, including Eido-authored additions and modifications to
+upstream code, is licensed under the GNU General Public License, version 3
+or (at your option) any later version (SPDX: GPL-3.0-or-later). See LICENSE.
+This is the primary license used by the Zed editor. Upstream code and
+third-party assets retain their applicable licenses and copyright notices.
+An upstream license notice does not remove the GPL grant for Eido-authored
+additions; this grant does not relicense the underlying upstream code.
+
+Eido is provided without warranty; see the applicable licenses for details.
+
+Zed
+https://github.com/zed-industries/zed
+Integrated version: v1.22.0
+Commit: 76659a55a8c10ed355a070f8764a0b1733e3c115
+
+Thanks to Zed Industries, Inc., the Zed authors, contributors, and community
+for the native editor and GPUI foundation.
+Zed source code is primarily GPL-3.0-or-later. Components explicitly marked
+Apache-2.0, including GPUI and util, retain that license. Consult each
+upstream crate's manifest and source notices for its applicable license.
+Unmodified upstream license texts are preserved in native/LICENSE-GPL and
+native/LICENSE-APACHE. Asset licenses remain in their respective directories.
+
+Eido's editor is a modified version of Zed. Eido modifications through
+2026-10-06 are maintained in native/overlay and the preparation/build scripts;
+native/removed-paths.json records files removed from the upstream source.
+These changes add Eido branding, the agent workbench, pi integration, global
+configuration, and editing, review, and recovery interactions. The resulting
+editor is distributed under GPL-3.0-or-later, with applicable upstream notices
+and Apache-2.0 component terms preserved.
+
+pi
+https://github.com/earendil-works/pi
+Integrated @earendil-works/pi package version: 1.0.2
+License: MIT, as declared in the upstream package manifests.
+
+Thanks to Mario Zechner, the pi authors, contributors, and community for
+the coding agent and its extensible runtime. pi is used through its public
+interfaces; Eido does not modify pi's source or distributed files. pi code
+retains its MIT license and upstream copyright and permission notices.
+
+pi-acp adapter
+https://www.npmjs.com/package/@automatalabs/pi-acp
+Integrated version: 0.9.4
+Copyright 2026 Automata Labs.
+License for upstream code: Apache-2.0, preserved in packages/acp/adapter/LICENSE.
+Eido's adapter includes adaptations of this code and Eido-authored additions;
+the latter are covered by Eido's GPL-3.0-or-later grant above.
+
+Forks and redistribution
+
+Forking or modifying Eido does not remove the applicable upstream terms.
+When conveying copies, retain required license texts, copyright, attribution,
+disclaimer and modification notices, and upstream NOTICE files where supplied.
+Convey GPL-covered modified works under the GPL and provide the Corresponding
+Source when distributing binaries, using a method permitted by GPL section 6.
+MIT requires retention of its copyright and permission notice. Apache-2.0
+also requires marking modified files and preserving applicable notices.
+Other bundled dependencies and assets retain their own licenses.
+
+This notice records attribution and licensing scope; it adds no restrictions
+and does not replace or modify the applicable license texts. Acknowledgment
+does not imply endorsement by the upstream projects or their contributors.

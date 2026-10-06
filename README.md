@@ -1,37 +1,127 @@
-# Eido
+<p align="center">
+  <img src="native/branding/eido-readme.svg" alt="Eido — AI development workspace, 0.0.1 beta" width="100%">
+</p>
 
-**Understand your code. Create with AI. Stay in control.**
+<h1 align="center">From intent to code you can trust.</h1>
 
-Eido brings AI conversations, code editing, change review, and task history into one workspace. Describe what you want to build or fix, work with the agent, and inspect the result in your editor.
+<p align="center">
+  An AI workspace for understanding code, building with an agent,<br>
+  and reviewing every change that matters.
+</p>
 
-## Eido 0.0.1 beta
+<p align="center">
+  <strong>English</strong> · <a href="README.zh-CN.md">简体中文</a>
+</p>
 
-The first beta is an early macOS preview for trying Eido on real projects. Its core workflow is ready for small-scale testing; some capabilities are still being completed. There is no public download available yet.
+<p align="center">
+  <a href="#the-eido-experience">Experience</a> ·
+  <a href="#your-first-task">Getting started</a> ·
+  <a href="#about-this-beta">Beta scope</a> ·
+  <a href="#help-shape-the-next-version">Feedback</a> ·
+  <a href="#acknowledgments-and-licensing">Open source</a>
+</p>
 
-## Work from idea to reviewed change
+---
 
-- **Give your task context.** Describe your goal and use `@` to reference code in the conversation.
-- **Edit alongside the agent.** Read and change files in the native editor while keeping your conversation and draft close at hand.
-- **Review the result.** Inspect proposed changes, accept or reject them, and restore accepted file operations where available.
-- **Continue your work.** Return to previous tasks and keep their conversations and review context together.
+Eido keeps the conversation and the code in the same place. Describe what you want to achieve, give the agent the context it needs, and work through the result in your editor. Your task, proposed changes, and review decisions stay connected as you move between planning and implementation.
 
-Use **Workbench** for the conversation, **Code** for the editor, or **Split** to work with both. Switching views preserves your conversation and draft.
+**Eido 0.0.1 beta is the first macOS preview.** It is available for early, small-scale testing on real projects. Public distribution is not available yet.
 
-## Start using the beta
+## The Eido experience
 
-1. Open **Eido** from Applications and open a project folder.
-2. Configure your model and authentication in the global settings. Your existing configuration is preserved when updating.
-3. Describe a small task, such as explaining a module, fixing a bug, or adding a focused feature.
-4. Review the changes, run the relevant checks, and decide what to keep.
+### Start with the intent
 
-Model, thinking, and **Agent Access** controls sit beside the conversation input. Start with **Ask Before Actions** while getting familiar with the workflow. **Full Access** lets the agent decide how to use enabled tools without asking for each action.
+Ask a question about unfamiliar code, describe a bug, or outline a feature. Use `@` to bring relevant code into the conversation and keep the task grounded in your project.
 
-## What to expect in this beta
+> **Try a focused first task**<br>
+> “Explain how this module works, identify the cause of this bug, and propose a small fix with a way to check it.”
 
-Start with focused coding tasks: understand unfamiliar code, fix a bug, add a feature, and review the result. Proposed file deletions and binary changes stay in review until you accept them. Recovery support helps you return to interrupted work.
+### Work alongside the agent
 
-Smart code assistance depends on the language support you configure. Coverage across languages and plugins, browser and desktop workflows, and performance on large projects are still being improved. This beta is intended for early feedback, with broader everyday use as the next step.
+Read files, make your own edits, and review the agent’s progress without leaving the workspace. Choose the view that fits the moment:
 
-## Help shape Eido
+| View | Best for |
+| :--- | :--- |
+| **Workbench** | Planning a task, following the conversation, and coordinating the work. |
+| **Code** | Reading, navigating, and editing your project. |
+| **Split** | Keeping the conversation and the code visible together. |
 
-Use the beta on a small, version-controlled project first. When something gets in your way, share what you were trying to do, what you expected, and what happened. A short example or screenshot is often enough to help us improve the next version.
+Switching views preserves your conversation and draft, so you can change focus without losing your train of thought.
+
+### Make the changes yours
+
+Inspect proposed changes in the native review interface and decide what to accept or reject. Proposed file deletions and binary changes remain in review until you accept them. Supported accepted file operations can be restored, subject to checks that protect subsequent edits.
+
+Review is part of the workflow: understand the change, check the result, and keep what belongs in your project.
+
+### Return with context
+
+Revisit earlier tasks with their conversations and review context. Continue interrupted work without starting the discussion from scratch. Eido also includes recovery support for task state and supported file operations.
+
+## Your first task
+
+**1. Open a project**<br>
+Launch **Eido** from Applications and open a project folder. A small project with version history is a good place to begin.
+
+**2. Choose how you work**<br>
+Configure your model and authentication in global settings. Model, thinking, and **Agent Access** controls are available beside the conversation input.
+
+**3. Give the task a clear outcome**<br>
+Describe what should change and how you will know it works. Reference the relevant code, then let the agent investigate and propose a solution.
+
+**4. Review and verify**<br>
+Inspect the changes, run the relevant checks, and decide what to keep. Continue the conversation when the result needs refinement.
+
+### You set the level of access
+
+| Agent Access | How it works |
+| :--- | :--- |
+| **Ask Before Actions** | The agent asks before actions that require approval. A useful starting point while you learn the workflow. |
+| **Full Access** | The agent decides how to use enabled tools without requesting approval for each action. |
+
+Agent Access applies globally across tasks. Your configuration and work history are kept outside the application bundle and preserved during local updates. Model requests go to the provider you configure.
+
+## About this beta
+
+The first beta focuses on a usable coding loop: **describe → investigate → edit → review → verify**.
+
+| Available to try | Still being refined |
+| :--- | :--- |
+| AI conversations with project context and tool execution. | Complete coverage of supported agent commands and extensions. |
+| Native file editing and code review. | Language support and smart editing setup across projects. |
+| Workbench, Code, and Split views with a shared conversation. | Plugin compatibility and browser and desktop workflows. |
+| Task history, supported file-operation review, and recovery. | Large-project performance and broader upgrade and recovery scenarios. |
+
+Smart code assistance depends on the language support you configure. This preview is intended to surface practical problems and improve the next version; it is not a promise of complete support for every project or plugin.
+
+## Help shape the next version
+
+The most useful feedback starts with a real task. Share it with the person who provided your beta build, including:
+
+- **Your goal** — what you were trying to accomplish.
+- **The friction** — what you expected and what happened instead.
+- **A small example** — steps to reproduce, a screenshot, or the relevant error text.
+- **The version** — Eido **0.0.1 beta**, plus your macOS version.
+
+Please remove credentials and private project information from shared examples.
+
+## Acknowledgments and licensing
+
+Eido builds on the work of **[Zed](https://github.com/zed-industries/zed)** and **[pi](https://github.com/earendil-works/pi)**. Zed provides the native editor foundation; pi powers the coding agent. We thank their authors, contributors, and communities for making these projects available as open source.
+
+Eido respects and preserves the licenses and attribution of both projects. **Eido-original code is licensed under GPL-3.0-or-later**, the same license as Zed's editor code.
+
+| Code | License |
+| :--- | :--- |
+| Eido-original code and Zed editor code | [GPL-3.0-or-later](LICENSE) |
+| Zed components marked Apache-2.0, including GPUI | [Apache-2.0](native/LICENSE-APACHE) |
+| pi | [MIT](https://github.com/earendil-works/pi/blob/main/LICENSE) |
+
+If you fork, modify, or distribute Eido, you must comply with the licenses that apply to each included component. Preserve license texts, copyright and attribution notices, and required modification notices. When distributing GPL-covered binaries, provide the Corresponding Source through a method permitted by the GPL and retain its licensing terms. Other dependencies retain their own licenses; see [NOTICE](NOTICE) for attribution and scope. This summary does not replace the license texts.
+
+---
+
+<p align="center">
+  <strong>Understand. Create. Evolve.</strong><br>
+  <sub>Eido · 0.0.1 beta · macOS preview</sub>
+</p>
