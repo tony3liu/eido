@@ -15,6 +15,7 @@
 
 <p align="center">
   <a href="#eido-的核心体验">核心体验</a> ·
+  <a href="#下载与安装">下载</a> ·
   <a href="#开始你的第一个任务">开始试用</a> ·
   <a href="#关于这个-beta-版本">版本范围</a> ·
   <a href="#一起打磨下一个版本">反馈建议</a> ·
@@ -25,7 +26,14 @@
 
 Eido 将 AI 对话与代码放在一起。描述你想实现的目标，提供必要的上下文，再到编辑器里理解和完善结果。从讨论方案到落地实现，任务、改动与审阅决定始终保持关联。
 
-**Eido 0.0.1 beta 是首个 macOS 预览版本。** 源代码现已公开，当前面向小范围真实项目试用。macOS Apple Silicon 安装包见 [Releases](https://github.com/tony3liu/eido/releases)，此测试版尚未公证。
+**Eido 0.0.1 beta 是首个 macOS 预览版本。** 下载应用，从真实项目中的一个明确任务开始试用。
+
+<p>
+  <a href="https://github.com/tony3liu/eido/releases/download/v0.0.1-beta/Eido-0.0.1-beta-macos-arm64.dmg"><strong>下载 Mac 版 · Apple Silicon</strong></a> ·
+  <a href="https://github.com/tony3liu/eido/releases/tag/v0.0.1-beta">版本说明</a>
+</p>
+
+macOS 13 及以上 · Apple Silicon（M 系列）· 早期测试版
 
 ## Eido 的核心体验
 
@@ -58,6 +66,24 @@ Eido 将 AI 对话与代码放在一起。描述你想实现的目标，提供�
 
 返回之前的任务，查看当时的对话与审阅上下文。继续被打断的工作，不必从头解释。Eido 也为任务状态和支持的文件操作提供恢复能力。
 
+### 将工作延伸到编辑器之外
+
+让 AI 配合代码任务查看网页、操作桌面应用。本版提供 Browser Use 和 Computer Use，已启用工具的使用遵循你选择的 Agent Access。不同网站与应用的适配仍在持续完善。
+
+## 下载与安装
+
+1. 下载 [Eido-0.0.1-beta-macos-arm64.dmg](https://github.com/tony3liu/eido/releases/download/v0.0.1-beta/Eido-0.0.1-beta-macos-arm64.dmg)。
+2. 打开磁盘映像，将 **Eido** 拖入 **Applications**。
+3. 启动 Eido，在全局设置中配置模型与认证信息。
+
+此测试版已做本地签名，尚未通过 Apple 公证。如果 macOS 阻止首次启动，请确认下载来源后，按照 Apple 的[打开未知开发者应用说明](https://support.apple.com/zh-cn/guide/mac-help/mh40616/mac)操作。Release 同时提供 SHA-256 校验文件与源码包。
+
+### 在 Mac 上开启 Computer Use
+
+在 Eido 全局设置中启用 **Computer Use**。应用已内置桌面驱动，驱动路径留空即可使用。
+
+到 **系统设置 → 隐私与安全性**，分别在 **辅助功能** 和 **屏幕与系统音频录制**（部分 macOS 版本名为 **屏幕录制**）中允许 **Eido**，然后重启应用。这两项权限用于操作应用与采集窗口。以前授予独立 Cua Driver 的权限不会自动转移给 Eido。本版暂时需要手动完成这些步骤。
+
 ## 开始你的第一个任务
 
 **1. 打开项目**<br>
@@ -89,14 +115,15 @@ Agent Access 在所有任务之间全局生效。配置与工作历史保存在�
 | :--- | :--- |
 | 带项目上下文的 AI 对话与工具执行。 | Agent 命令与扩展能力的完整覆盖。 |
 | 原生文件编辑与代码审阅。 | 不同项目的语言支持与智能编辑配置。 |
-| 共享对话的 Workbench、Code、Split 三种视图。 | 插件兼容性，以及浏览器和桌面工作流程。 |
+| 共享对话的 Workbench、Code、Split 三种视图。 | Agent 生态中的插件兼容性。 |
 | 任务历史、支持的文件操作审阅与恢复。 | 大项目性能，以及更多升级和恢复场景。 |
+| Browser Use，以及内置桌面驱动的 Computer Use。 | 不同网站与应用的兼容性，以及 macOS 权限引导。 |
 
 智能代码辅助取决于已配置的语言支持。这个预览版本用于发现实际使用中的问题，推动下一版改进；目前不承诺完整适配所有项目或插件。应用界面的文案为英文，本文中的控件名称与界面一致。
 
 ## 一起打磨下一个版本
 
-最有价值的反馈来自一次真实任务。可以向提供 beta 安装包的人反馈，并附上：
+最有价值的反馈来自一次真实任务。欢迎[提交 Issue](https://github.com/tony3liu/eido/issues)，并附上：
 
 - **你的目标**：当时想完成什么。
 - **遇到的阻碍**：预期怎样，实际发生了什么。
