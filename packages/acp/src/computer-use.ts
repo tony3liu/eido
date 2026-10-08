@@ -55,10 +55,11 @@ export function computerUse(handle: McpClientHandle, binding: McpSessionBinding,
   };
   const end = async () => {
     observations.clear();
-    if (!label) return;
+    if (!label) return {content: [notice('The Eido-owned desktop session has already ended.')], structuredContent: {status: 'already_ended'}};
     const result = await rawCall('end_session', {session: label}, AbortSignal.timeout(5000), 5000);
     if (result.isError) throw new Error('Computer Use session cleanup failed. The session may still be active.');
     label = undefined;
+    return result;
   };
   function remember(result: CallToolResult, target: Target) {
     const vision = computerVision(binding.getPi()), data = record(result.structuredContent);
@@ -107,7 +108,7 @@ export function computerUse(handle: McpClientHandle, binding: McpSessionBinding,
     signal.throwIfAborted();
     if (closing) return failure('Computer Use connection is closing.');
     const args = {...record(value)};
-    if (name === 'end_session') {await end(); return {content: [notice('The Eido-owned desktop session has ended.')]};}
+    if (name === 'end_session') return end();
     if (name === 'get_window_state' || name === 'get_desktop_state') {
       const target = name === 'get_desktop_state' ? {desktop: true as const} : explicitTarget(args);
       if (!target) return failure('Observe an exact pid and window_id from list_windows.');

@@ -131,11 +131,12 @@ createInterface({input:process.stdin}).on('line',line=>{
  const m=JSON.parse(line); if(m.id===undefined)return;
  let result={};
  if(m.method==='initialize')result={protocolVersion:'2025-03-26',capabilities:{tools:{}},serverInfo:{name:'Local desktop fixture',version:'1'}};
- if(m.method==='tools/list')result={tools:['get_window_state','press_key','end_session'].map(name=>({name,inputSchema:{type:'object',properties:{session:{type:'string'}},additionalProperties:true}}))};
+ if(m.method==='tools/list')result={tools:['get_window_state','press_key','end_session'].map(name=>({name,inputSchema:{type:'object',properties:{session:{type:'string'}},additionalProperties:true},...(name==='end_session'?{outputSchema:{type:'object',anyOf:[{required:['session','active'],properties:{session:{type:'string'},active:{const:false}}},{required:['status']}]}}:{})}))};
  if(m.method==='tools/call'){
   const {name,arguments:a}=m.params;appendFileSync(${JSON.stringify(log)},JSON.stringify({name,args:a})+'\\n');
   if(name==='get_window_state')result={content:[{type:'image',mimeType:'image/png',data:${JSON.stringify(png)}}],structuredContent:{pid:a.pid,window_id:a.window_id,capture_id:'capture-'+(++snapshot),screenshot_frame_valid:true,elements:[]}};
   else if(name==='press_key'&&a.key==='wait')return;
+  else if(name==='end_session')result={content:[{type:'text',text:'Desktop session ended'}],structuredContent:{session:a.session,active:false}};
   else result={content:[{type:'text',text:'Driver action returned'}],structuredContent:{effect:'unverifiable'}};
  }
  process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:m.id,result})+'\\n');
@@ -176,5 +177,11 @@ createInterface({input:process.stdin}).on('line',line=>{
     assert.equal((await running).stopReason,'cancelled');
     const final=await rows();assert.equal(final.filter(r=>r.name==='end_session').length,3);
     assert.equal(new Set(final.filter(r=>r.name==='end_session').map(r=>r.args.session)).size,3);
+    steps.push(observe,()=>modelCall('mcp__eido_computer__end_session',{}),ctx=>{
+      assert.match(lastToolText(ctx,'mcp__eido_computer__end_session'),/"active":false/);
+      return modelCall('mcp__eido_computer__end_session',{});
+    },ctx=>{assert.match(lastToolText(ctx,'mcp__eido_computer__end_session'),/already_ended/);return 'Explicit cleanup verified.';});
+    assert.equal((await prompt()).stopReason,'end_turn');
+    assert.equal((await rows()).filter(r=>r.name==='end_session').length,4,'explicit and finalizer cleanup must not end a session twice');
   }finally{await server.agent.dispose();conn.close();server.connection.close();await rm(dir,{recursive:true,force:true});}
 });
