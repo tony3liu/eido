@@ -25,7 +25,7 @@
 
 Eido 将 AI 对话与代码放在一起。描述你想实现的目标，提供必要的上下文，再到编辑器里理解和完善结果。从讨论方案到落地实现，任务、改动与审阅决定始终保持关联。
 
-**Eido 0.0.1 beta 是首个 macOS 预览版本。** 源代码现已公开，当前面向小范围真实项目试用，尚未提供安装包公开下载。
+**Eido 0.0.1 beta 是首个 macOS 预览版本。** 源代码现已公开，当前面向小范围真实项目试用。macOS Apple Silicon 安装包见 [Releases](https://github.com/tony3liu/eido/releases)，此测试版尚未公证。
 
 ## Eido 的核心体验
 

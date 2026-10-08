@@ -25,7 +25,7 @@
 
 Eido keeps the conversation and the code in the same place. Describe what you want to achieve, give the agent the context it needs, and work through the result in your editor. Your task, proposed changes, and review decisions stay connected as you move between planning and implementation.
 
-**Eido 0.0.1 beta is the first macOS preview.** It is available for early, small-scale testing on real projects. The source is public; downloadable app releases are not available yet.
+**Eido 0.0.1 beta is the first macOS preview.** It is available for early, small-scale testing on real projects. Download the macOS Apple Silicon app from [Releases](https://github.com/tony3liu/eido/releases). This beta is not notarized.
 
 ## The Eido experience
 
