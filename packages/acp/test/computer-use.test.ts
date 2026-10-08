@@ -16,12 +16,12 @@ const observationId = (r: CallToolResult) => /Eido observation ([\w-]+)\./.exec(
 const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/lpEAAAAASUVORK5CYII=';
 async function fixture() {
   let vision = true, blocked = false, rich = false, clock = 1000, snapshot = 0;
-  let failure: string | undefined, abortAction: (() => void) | undefined, mismatched = false;
+  let failure: string | undefined, abortAction: (() => void) | undefined, mismatched = false, missing = false, menuOnly = false;
   const calls: {name: string; args: Record<string, unknown>}[] = [];
   const pi = {get model() {return {provider: 'fixture', id: vision ? 'vision' : 'text', input: vision ? ['text','image'] : ['text']};},
     settingsManager: {getBlockImages: () => blocked}} as unknown as AgentSession;
   const raw: McpClientHandle = {
-    async listTools() {return {tools: ['get_window_state','get_desktop_state','click','type_text','press_key','hotkey','set_value','end_session','bring_to_front','list_windows'].map(name => ({name,inputSchema:{type:'object',properties:{session:{type:'string'}}}}))};},
+    async listTools() {return {tools: ['get_window_state','get_desktop_state','click','type_text','type_text_chars','press_key','hotkey','set_value','end_session','bring_to_front','list_windows'].map(name => ({name,inputSchema:{type:'object',properties:{session:{type:'string'}}}}))};},
     async callTool(name, value, signal) {
       const args = value as Record<string, unknown>; calls.push({name,args});
       if (name === failure) return {isError: true, content: [{type:'text',text:'Intentional driver failure'}]};
@@ -29,10 +29,13 @@ async function fixture() {
       if (name === 'get_window_state' || name === 'get_desktop_state') {
         snapshot++;
         const content: CallToolResult['content'] = [{type:'text',text:rich?'Recipient: Local group. Input: Test phrase':'Window and menu chrome only'}];
-        if (args.include_screenshot !== false) content.push({type:'image',mimeType:'image/png',data:png});
+        if (args.include_screenshot !== false && !menuOnly && !missing) content.push({type:'image',mimeType:'image/png',data:png});
         return {content,structuredContent:{pid:args.pid,window_id:mismatched ? 999 : args.window_id,window_title:'Generic window',capture_id:`frame-${snapshot}`,screenshot_frame_valid:true,
+          ...(missing ? {background_input:{exact_window:{pid:args.pid,window_id:args.window_id,status:'not_found'}},screenshot_frame_valid:false} : {}),
           elements:[{role:'AXWindow',depth:0,label:'Generic window'},...(rich?[{role:'AXTextField',depth:1,label:'Test phrase',element_token:`s${snapshot.toString(16).padStart(8,'0')}:0`}]:[]),
-            {role:'AXStaticText',depth:1,label:'Generic window'},{role:'AXButton',subrole:'AXCloseButton',depth:1,label:'Close'}]}};
+            {role:'AXStaticText',depth:1,label:'Generic window'},{role:'AXButton',subrole:'AXCloseButton',depth:1,label:'Close'},
+            ...(menuOnly ? [{role:'AXMenuBar',depth:0},{role:'AXMenuBarItem',depth:1,label:'Help'},
+              {role:'AXMenu',depth:2},{role:'AXTextField',depth:3,label:'Search',element_token:'help-search'}] : [])]}};
       }
       return {content:[{type:'text',text:'Input delivered'}],structuredContent:{effect:'unverifiable'}};
     },
@@ -44,7 +47,8 @@ async function fixture() {
   const call = (name: string, args: Record<string, unknown> = {}) => computer.handle.callTool(name,args,signal.signal,1000);
   return {computer,pi,calls,listed,signal,call,observe:()=>call('get_window_state',{pid:7,window_id:10}),
     vision:(v:boolean)=>{vision=v;},blocked:(v:boolean)=>{blocked=v;},rich:(v:boolean)=>{rich=v;},
-    advance:()=>{clock+=61000;},fail:(name?:string)=>{failure=name;},mismatch:()=>{mismatched=true;},onAction:(f:()=>void)=>{abortAction=f;}};
+    advance:()=>{clock+=61000;},fail:(name?:string)=>{failure=name;},mismatch:()=>{mismatched=true;},
+    missing:()=>{missing=true;},menuOnly:()=>{menuOnly=true;},onAction:(f:()=>void)=>{abortAction=f;}};
 }
 
 test('weak AX automatically gets pixels; inputs require a current exact target and return new evidence',async()=>{
@@ -56,6 +60,7 @@ test('weak AX automatically gets pixels; inputs require a current exact target a
   const id=observationId(observed);
   assert.equal((await f.call('press_key',{pid:7,window_id:11,key:'return',eido_observation:id})).isError,true);
   assert.equal((await f.call('press_key',{pid:7,window_id:10,key:'return'})).isError,true);
+  assert.equal((await f.call('type_text_chars',{pid:7,window_id:10,text:'Must not bypass observation'})).isError,true);
   const after=await f.call('press_key',{pid:7,window_id:10,key:'return',eido_observation:id});
   assert.notEqual(after.isError,true);assert.match(text(after),/Post-action observation/);
   assert.notEqual(observationId(after),id);
@@ -109,6 +114,29 @@ test('a capture for a different window invalidates earlier evidence',async()=>{
   assert.equal((await f.call('press_key',{pid:7,window_id:10,key:'return',eido_observation:observationId(old)})).isError,true);
   assert.equal((await f.call('press_key',{pid:7,window_id:10,key:'return',eido_observation:observationId(wrong)})).isError,true);
   assert.equal(f.calls.filter(c=>c.name==='press_key').length,0);
+  await f.computer.finishTurn();
+});
+
+test('a disappeared window and menu search fields cannot authorize application input',async()=>{
+  const f=await fixture();const old=await f.observe();f.missing();
+  const missing=await f.observe();assert.equal(missing.isError,true);
+  assert.equal((await f.call('press_key',{pid:7,window_id:10,key:'return',eido_observation:observationId(old)})).isError,true);
+  assert.equal(f.calls.filter(c=>c.name==='press_key').length,0);
+  await f.computer.finishTurn();
+  const g=await fixture();g.menuOnly();
+  const help=await g.observe();assert.match(text(help),/Application content is not observable/);
+  assert.equal((await g.call('type_text',{pid:7,window_id:10,text:'Recipient',element_token:'help-search'})).isError,true);
+  assert.equal(g.calls.filter(c=>c.name==='type_text').length,0);
+  await g.computer.finishTurn();
+});
+
+test('zoom coordinates and debug image requests keep the driver coordinate contract',async()=>{
+  const f=await fixture();
+  for(const extra of [{from_zoom:true},{debug_image_out:'/tmp/eido-click-check.png'}]) {
+    const obs=await f.observe();
+    assert.notEqual((await f.call('click',{pid:7,window_id:10,x:20,y:30,...extra,eido_observation:observationId(obs)})).isError,true);
+    assert.equal(f.calls.filter(c=>c.name==='click').at(-1)!.args.capture_id,undefined);
+  }
   await f.computer.finishTurn();
 });
 

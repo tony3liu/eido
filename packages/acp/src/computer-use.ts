@@ -5,7 +5,7 @@ import type {McpClientHandle, McpSessionBinding} from '../adapter/src/mcp-bridge
 
 type RecordValue = Record<string, unknown>;
 const record = (value: unknown): RecordValue => value && typeof value === 'object' && !Array.isArray(value) ? value as RecordValue : {};
-const inputTools = new Set(['click', 'double_click', 'right_click', 'drag', 'type_text', 'press_key', 'hotkey', 'set_value', 'scroll', 'invoke_menu', 'set_window_frame']);
+const inputTools = new Set(['click', 'double_click', 'right_click', 'drag', 'type_text', 'type_text_chars', 'press_key', 'hotkey', 'set_value', 'scroll', 'invoke_menu', 'set_window_frame']);
 const notice = (text: string) => ({type: 'text' as const, text});
 
 export function computerVision(session: Pick<AgentSession, 'model' | 'settingsManager'> | undefined) {
@@ -63,14 +63,24 @@ export function computerUse(handle: McpClientHandle, binding: McpSessionBinding,
   };
   function remember(result: CallToolResult, target: Target) {
     const vision = computerVision(binding.getPi()), data = record(result.structuredContent);
-    if (!result.isError && !('desktop' in target) && (data.pid !== target.pid || data.window_id !== target.window_id)) {
+    const exact = record(record(data.background_input).exact_window);
+    if (!result.isError && !('desktop' in target) && (data.pid !== target.pid || data.window_id !== target.window_id
+      || typeof exact.status === 'string' && exact.status !== 'matched')) {
       result = {...result, isError: true, content: [...result.content, notice('The observation did not confirm the requested pid/window_id. Do not act on this result.')]};
     }
     const elements = Array.isArray(data.elements) ? data.elements.map(record) : [];
     // Menus and window chrome do not establish chat content or input focus.
-    const meaningfulAx = elements.some(e => !String(e.role).startsWith('AXMenu') && e.role !== 'AXWindow'
+    // A menu can also contain AXTextField (macOS Help search), so exclude its
+    // descendants as well as the menu nodes themselves.
+    let menuDepth: number | undefined;
+    const meaningfulAx = elements.some(e => {
+      const depth = Number(e.depth);
+      if (menuDepth !== undefined && depth <= menuDepth) menuDepth = undefined;
+      if (String(e.role).startsWith('AXMenu')) menuDepth ??= depth;
+      return menuDepth === undefined && e.role !== 'AXWindow'
       && !/^AX(Close|Zoom|Minimize)Button$/.test(String(e.subrole)) && e.label !== data.window_title
-      && Number(e.depth) > 0 && !!(e.label || e.value) && !e.identifier?.toString().startsWith('_'));
+      && depth > 0 && !!(e.label || e.value) && !e.identifier?.toString().startsWith('_');
+    });
     const visual = vision.enabled && data.screenshot_frame_valid !== false && result.content.some(c => c.type === 'image');
     const obs: Observation = {id: randomUUID(), target, at: now(), signature: vision.signature, visual, meaningfulAx,
       tokens: new Set(elements.map(e => e.element_token).filter((v): v is string => typeof v === 'string')),
@@ -86,7 +96,7 @@ export function computerUse(handle: McpClientHandle, binding: McpSessionBinding,
     const args = 'desktop' in target ? {...requested} : {...requested, ...target, include_screenshot: vision.enabled && requested.include_screenshot !== false};
     const result = await rawCall(name, withSession(name, args), signal, timeout, progress);
     let observed = remember(result, target);
-    if (!result.isError && !('desktop' in target) && vision.enabled && !observed.obs.visual && !observed.obs.meaningfulAx) {
+    if (!observed.result.isError && !('desktop' in target) && vision.enabled && !observed.obs.visual && !observed.obs.meaningfulAx) {
       // A text-only AX request is insufficient for Qt/canvas UIs. Capture once,
       // without the caller's file-only output or AX filters suppressing pixels.
       const image = await rawCall(name, withSession(name, {...target, include_screenshot: true, include_accessibility_tree: true}), signal, timeout, progress);
@@ -130,7 +140,7 @@ export function computerUse(handle: McpClientHandle, binding: McpSessionBinding,
       }
       target = obs.target;
       if (!('desktop' in target)) {args.pid = target.pid; args.window_id = target.window_id;}
-      if (name === 'click' && pixelInput && obs.capture) args.capture_id = obs.capture;
+      if (name === 'click' && pixelInput && obs.capture && args.from_zoom !== true && !args.debug_image_out) args.capture_id = obs.capture;
       delete args.eido_observation;
       observations.clear(); // A single observation never authorizes a batch of inputs.
     }
