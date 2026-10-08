@@ -797,7 +797,21 @@ export function convertMcpContent(content) {
 }
 export function convertMcpResult(result) {
     const { _meta, ...structuredContent } = result;
-    return { content: result.content.map(convertMcpContent), details: structuredContent, structuredContent };
+    const content = result.content.map(convertMcpContent);
+    // MCP servers may provide actionable handles only in structuredContent.
+    // pi's model transcript consumes content, while details are UI metadata.
+    // Keep the original result for Code Mode and expose missing structured data
+    // as text without duplicating servers that already return its JSON.
+    if (result.structuredContent !== undefined) {
+        const encoded = JSON.stringify(result.structuredContent);
+        const included = result.content.some(block => {
+            if (block.type !== "text") return false;
+            try { return JSON.stringify(JSON.parse(block.text)) === encoded; }
+            catch { return false; }
+        });
+        if (!included) content.push({ type: "text", text: encoded });
+    }
+    return { content, details: structuredContent, structuredContent };
 }
 const EMPTY_SCHEMA = Type.Object({});
 const URI_SCHEMA = Type.Object({ uri: Type.String() });

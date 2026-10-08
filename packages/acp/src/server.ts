@@ -8,7 +8,8 @@ import {nativeUiAction} from './native-ui.ts';
 import { runAcp } from "../adapter/src/lib.js";
 import { createAgentSession, ModelRuntime, type AgentSession } from "@earendil-works/pi-coding-agent";
 import { join } from "node:path";
-import type { AgentContext, McpServer, Stream } from "@agentclientprotocol/sdk";
+import { ndJsonStream, type AgentContext, type McpServer, type Stream } from "@agentclientprotocol/sdk";
+import {Readable, Writable} from 'node:stream';
 import { editorTools } from "./editor-tools.ts";
 import { editorQueryTools } from "./editor-query.ts";
 import { createPreview } from "./preview.ts";
@@ -32,8 +33,18 @@ export async function startEidoAgent(agentDir: string, sessionDir: string, strea
   const subagents = createSubagents(agentDir, sessionDir);
   const deliveries = new Map<string, ReturnType<typeof createDeliveryLedger>>();
   const clientReady = new Promise<AgentContext>(resolve => { connectClient = resolve; });
+  // The transport can receive initialize/new while asynchronous Eido setup is
+  // still installing wrappers. Admit requests only after that setup completes.
+  let admitRequests!: () => void;
+  const ready = new Promise<void>(resolve => {admitRequests = resolve;});
+  const transport = stream ?? ndJsonStream(Writable.toWeb(process.stdout) as Parameters<typeof ndJsonStream>[0],
+    Readable.toWeb(process.stdin) as Parameters<typeof ndJsonStream>[1]);
+  const incoming = new TransformStream({async transform(message, controller) {
+    await ready;
+    controller.enqueue(message);
+  }});
   const server = await runAcp({
-    stream,
+    stream: {readable: transport.readable.pipeThrough(incoming), writable: transport.writable},
     deps: {
       ...{eidoClaimSession: sessionOwners(agentDir)},
       agentDir,
@@ -180,5 +191,6 @@ export async function startEidoAgent(agentDir: string, sessionDir: string, strea
   server.agent.newSession = async context => create(await withMcp(context));
   server.agent.loadSession = async context => load(await withMcp(context));
   connectClient(server.connection.client);
+  admitRequests();
   return server;
 }

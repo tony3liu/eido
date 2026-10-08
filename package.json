@@ -15,7 +15,7 @@
     "test": "npm run test:acp && npm run test:runtime && python3 scripts/test/test_native_prepare.py && npm run test:package",
     "test:runtime": "npm --prefix packages/runtime test",
     "setup:acp": "node scripts/setup/acp.mjs",
-    "test:acp": "tsx --test packages/acp/test/acp.test.ts packages/acp/test/pi-commands.test.ts packages/acp/test/pi-component-terminal.test.ts packages/acp/test/subagents.test.ts packages/acp/test/agent-roles.test.ts packages/acp/test/editor-query.test.ts packages/acp/test/editor-files.test.ts packages/acp/test/mcp.test.ts packages/acp/test/prompt-content.test.ts packages/acp/test/default-tools.test.ts packages/acp/test/runtime-settings.test.ts packages/acp/test/pi-network.test.ts packages/acp/test/session-owner.test.ts packages/acp/test/turn-state.test.ts packages/acp/test/codemode.test.ts",
+    "test:acp": "tsx --test packages/acp/test/acp.test.ts packages/acp/test/acp-startup.test.ts packages/acp/test/pi-commands.test.ts packages/acp/test/pi-component-terminal.test.ts packages/acp/test/subagents.test.ts packages/acp/test/agent-roles.test.ts packages/acp/test/editor-query.test.ts packages/acp/test/editor-files.test.ts packages/acp/test/mcp.test.ts packages/acp/test/mcp-structured-result.test.ts packages/acp/test/prompt-content.test.ts packages/acp/test/default-tools.test.ts packages/acp/test/runtime-settings.test.ts packages/acp/test/pi-network.test.ts packages/acp/test/session-owner.test.ts packages/acp/test/turn-state.test.ts packages/acp/test/codemode.test.ts",
     "setup:browser": "node scripts/setup/browser.mjs",
     "check:docs": "python3 scripts/check-private-docs.py staged",
     "native:prepare": "python3 scripts/native.py prepare",
