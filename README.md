@@ -25,7 +25,7 @@
 
 Eido keeps the conversation and the code in the same place. Describe what you want to achieve, give the agent the context it needs, and work through the result in your editor. Your task, proposed changes, and review decisions stay connected as you move between planning and implementation.
 
-**Eido 0.0.1 beta is the first macOS preview.** It is available for early, small-scale testing on real projects. Public distribution is not available yet.
+**Eido 0.0.1 beta is the first macOS preview.** It is available for early, small-scale testing on real projects. The source is public; downloadable app releases are not available yet.
 
 ## The Eido experience
 
@@ -96,7 +96,7 @@ Smart code assistance depends on the language support you configure. This previe
 
 ## Help shape the next version
 
-The most useful feedback starts with a real task. Share it with the person who provided your beta build, including:
+The most useful feedback starts with a real task. Open an issue in the repository, or share it with the person who provided your beta build, including:
 
 - **Your goal** — what you were trying to accomplish.
 - **The friction** — what you expected and what happened instead.
@@ -116,6 +116,7 @@ Eido respects and preserves the licenses and attribution of both projects. **Eid
 | Eido-original code and Zed editor code | [GPL-3.0-or-later](LICENSE) |
 | Zed components marked Apache-2.0, including GPUI | [Apache-2.0](native/LICENSE-APACHE) |
 | pi | [MIT](https://github.com/earendil-works/pi/blob/main/LICENSE) |
+| Cua Driver desktop runtime | [MIT](native/cua/LICENSE-MIT) |
 
 If you fork, modify, or distribute Eido, you must comply with the licenses that apply to each included component. Preserve license texts, copyright and attribution notices, and required modification notices. When distributing GPL-covered binaries, provide the Corresponding Source through a method permitted by the GPL and retain its licensing terms. Other dependencies retain their own licenses; see [NOTICE](NOTICE) for attribution and scope. This summary does not replace the license texts.
 

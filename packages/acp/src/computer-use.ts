@@ -35,8 +35,9 @@ function explicitTarget(args: RecordValue): Target | undefined {
   return Number.isInteger(pid) && Number.isInteger(window) ? {pid: pid as number, window_id: window as number} : undefined;
 }
 
-// A thin adapter around the existing Cua Driver connection. No driver or pi
-// internals are changed. Both direct tools and Code Mode pass this boundary.
+// A thin adapter around the existing Cua Driver connection. Native driver
+// adaptations live in native/cua; pi stays unmodified. Direct tools and Code
+// Mode share this boundary.
 export function computerUse(handle: McpClientHandle, binding: McpSessionBinding, now = Date.now) {
   const rawCall = handle.callTool.bind(handle), rawList = handle.listTools.bind(handle), rawClose = handle.close.bind(handle);
   const observations = new Map<string, Observation>();

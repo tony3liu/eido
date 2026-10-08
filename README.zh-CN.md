@@ -25,7 +25,7 @@
 
 Eido 将 AI 对话与代码放在一起。描述你想实现的目标，提供必要的上下文，再到编辑器里理解和完善结果。从讨论方案到落地实现，任务、改动与审阅决定始终保持关联。
 
-**Eido 0.0.1 beta 是首个 macOS 预览版本。** 当前面向小范围真实项目试用，尚未提供公开下载。
+**Eido 0.0.1 beta 是首个 macOS 预览版本。** 源代码现已公开，当前面向小范围真实项目试用，尚未提供安装包公开下载。
 
 ## Eido 的核心体验
 
@@ -116,6 +116,7 @@ Eido 尊重并保留这两个项目的许可证与署名。**Eido 自有代码�
 | Eido 自有代码与 Zed 编辑器代码 | [GPL-3.0-or-later](LICENSE) |
 | Zed 中标明 Apache-2.0 的组件，包括 GPUI | [Apache-2.0](native/LICENSE-APACHE) |
 | pi | [MIT](https://github.com/earendil-works/pi/blob/main/LICENSE) |
+| Cua Driver 桌面运行时 | [MIT](native/cua/LICENSE-MIT) |
 
 如果你 fork、修改或分发 Eido，需要遵守所包含各组件的许可证：保留许可证全文、版权与署名，以及要求的修改声明。分发受 GPL 约束的二进制程序时，须通过 GPL 允许的方式提供对应源码，并保留其授权条款。其他依赖仍适用各自的许可证；具体归属与范围见 [NOTICE](NOTICE)。本说明不替代许可证全文。
 

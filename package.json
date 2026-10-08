@@ -37,7 +37,10 @@
     "package:app": "python3 scripts/package-app.py",
     "install:app": "python3 scripts/install-app.py",
     "test:package": "python3 scripts/test/test_package_app.py",
-    "test:runtime-install": "node --test packages/runtime/test/lifecycle.test.mjs"
+    "test:runtime-install": "node --test packages/runtime/test/lifecycle.test.mjs",
+    "cua:prepare": "python3 scripts/cua.py prepare",
+    "cua:build": "python3 scripts/cua.py build",
+    "cua:test": "python3 scripts/cua.py test"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.32.0",

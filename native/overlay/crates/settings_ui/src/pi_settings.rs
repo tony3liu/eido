@@ -511,7 +511,7 @@ impl Render for PiSettingsView {
                             .on_click(cx.listener(move |this, _, window, cx| this.request(json!({"operation":"computer-use", "enabled":enabled,
                                 "path":this.cua_path.read(cx).text(cx), "expected":this.data.as_ref().map(|d| &d["computerUseRevision"])}), window, cx)))
                     })))
-                .child(Label::new("Install Cua Driver and grant its macOS permissions before use. View its connection and tools in Extensions.").size(LabelSize::Small).color(Color::Muted)))
+                .child(Label::new("The installed app includes a Computer Use driver. Leave the path empty to use it, or choose your own Cua Driver. Grant the selected host macOS permissions; view its connection and tools in Extensions.").size(LabelSize::Small).color(Color::Muted)))
             .child(v_flex().gap_2().pt_4().border_t_1().border_color(cx.theme().colors().border_variant)
                 .child(Label::new("pi Updates"))
                 .child(Label::new(update_label).size(LabelSize::Small).color(Color::Muted))

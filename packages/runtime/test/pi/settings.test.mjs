@@ -34,6 +34,24 @@ test('Computer Use uses one global executable, reports absence and rejects stale
   assert.deepEqual((await f.get(f.target,'settings.json')).customSetting, {retain:true});
 });
 
+test('bundled desktop runtime owns its MCP child and custom paths retain precedence', async t => {
+  const f = await fixture(t);
+  const root = join(f.target, 'Eido.app/Contents/Resources/runtime');
+  const helper = join(f.target, 'Eido.app/Contents/Helpers/cua-driver-local');
+  await mkdir(join(f.target, 'Eido.app/Contents/Helpers'), {recursive:true});
+  await writeFile(helper, '#!/bin/sh\nexit 0\n', {mode:0o755});
+  await f.put(f.target, 'settings.json', {eido:{computerUse:{enabled:true}}});
+  assert.equal((await computerSettings(f.target, {PATH:''}, root)).executable, helper);
+  const bundled = (await computerMcp(f.target, root))[0];
+  assert.deepEqual(bundled.args, ['mcp','--direct']);
+  assert.deepEqual(bundled.env, [{name:'CUA_DRIVER_EMBEDDED',value:'1'}, {name:'CUA_DRIVER_HOST_BUNDLE_ID',value:'dev.eido.app'}]);
+  await f.put(f.target, 'settings.json', {eido:{computerUse:{enabled:true,path:process.execPath}}});
+  assert.equal((await computerMcp(f.target, root))[0].command, process.execPath);
+  assert.deepEqual((await computerMcp(f.target, root))[0].args, ['mcp']);
+  await f.put(f.target, 'settings.json', {eido:{computerUse:{enabled:false}}});
+  assert.deepEqual(await computerMcp(f.target, root), []);
+});
+
 test("defaults roundtrip uses pi model validation and preserves unrelated settings", async t => {
   const f=await fixture(t);
   const result=await f.bridge.execute({operation:"defaults",provider:"eido-fixture",model:"test-model",thinking:"off"});

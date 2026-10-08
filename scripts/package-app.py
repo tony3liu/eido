@@ -243,6 +243,12 @@ def build():
         shutil.copytree(browsers / directory, resources / 'browsers' / directory, symlinks=True)
     copy_file(executable, contents / 'MacOS/eido')
     run(['strip', '-S', contents / 'MacOS/eido'])
+    spec = importlib.util.spec_from_file_location('eido_cua', ROOT / 'scripts/cua.py')
+    cua = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(cua)
+    copy_file(cua.verified_binary(), contents / 'Helpers/cua-driver-local')
+    run(['strip', '-S', contents / 'Helpers/cua-driver-local'])
+    copy_file(ROOT / 'native/cua/LICENSE-MIT', resources / 'licenses/cua/LICENSE-MIT')
     copy_file(ROOT / 'native/branding/Eido.icns', resources / 'Eido.icns')
     for name in ('LICENSE', 'NOTICE'):
         copy_file(ROOT / name, resources / 'licenses' / name)
@@ -254,14 +260,17 @@ def build():
     version = json.loads((ROOT / 'package.json').read_text())['version']
     (runtime / 'eido-runtime.json').write_text(json.dumps({'version': 1, 'pi': '1.0.4', 'acp': '0.9.4',
         'productVersion': version, 'nativeProfile': 'dev', 'testFeatures': False,
-        'productionPackages': count, 'sourceFingerprint': record['sourceFingerprint']}))
+        'productionPackages': count, 'sourceFingerprint': record['sourceFingerprint'],
+        'computerDriver': json.loads(cua.RECORD.read_text())}))
     with (contents / 'Info.plist').open('wb') as stream:
         plistlib.dump({'CFBundleExecutable': 'eido', 'CFBundleIdentifier': 'dev.eido.app',
             'CFBundleName': 'Eido', 'CFBundleDisplayName': 'Eido', 'CFBundleIconFile': 'Eido.icns',
             'CFBundlePackageType': 'APPL', 'CFBundleShortVersionString': version, 'CFBundleVersion': '1',
             'NSHighResolutionCapable': True, 'NSPrincipalClass': 'NSApplication',
             'NSCameraUsageDescription': 'Eido uses the camera only when an enabled tool requests it.',
-            'NSMicrophoneUsageDescription': 'Eido uses the microphone only when an enabled tool requests it.'}, stream)
+            'NSMicrophoneUsageDescription': 'Eido uses the microphone only when an enabled tool requests it.',
+            'NSScreenCaptureUsageDescription': 'Eido captures the selected application window when you enable Computer Use.',
+            'NSAppleEventsUsageDescription': 'Eido controls applications only when you enable Computer Use.'}, stream)
     # Local ad-hoc signature; this is not an Apple-notarized distribution.
     run(['codesign', '--force', '--deep', '--sign', '-', bundle])
     run(['codesign', '--verify', '--deep', '--strict', bundle])

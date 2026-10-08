@@ -1,0 +1,8 @@
+{
+  "repository": "https://github.com/trycua/cua.git",
+  "tag": "cua-driver-rs-v0.34.0",
+  "commit": "b0968e1b12834e485dda68789541a3cc57664a9f",
+  "version": "0.34.0",
+  "workspace": "libs/cua-driver/rust",
+  "package": "cua-driver"
+}

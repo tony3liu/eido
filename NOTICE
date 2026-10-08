@@ -27,7 +27,7 @@ Unmodified upstream license texts are preserved in native/LICENSE-GPL and
 native/LICENSE-APACHE. Asset licenses remain in their respective directories.
 
 Eido's editor is a modified version of Zed. Eido modifications through
-2026-10-06 are maintained in native/overlay and the preparation/build scripts;
+2026-10-08 are maintained in native/overlay and the preparation/build scripts;
 native/removed-paths.json records files removed from the upstream source.
 These changes add Eido branding, the agent workbench, pi integration, global
 configuration, and editing, review, and recovery interactions. The resulting
@@ -36,7 +36,7 @@ and Apache-2.0 component terms preserved.
 
 pi
 https://github.com/earendil-works/pi
-Integrated @earendil-works/pi package version: 1.0.2
+Integrated @earendil-works/pi package version: 1.0.4
 License: MIT, as declared in the upstream package manifests.
 
 Thanks to Mario Zechner, the pi authors, contributors, and community for
@@ -51,6 +51,18 @@ Copyright 2026 Automata Labs.
 License for upstream code: Apache-2.0, preserved in packages/acp/adapter/LICENSE.
 Eido's adapter includes adaptations of this code and Eido-authored additions;
 the latter are covered by Eido's GPL-3.0-or-later grant above.
+
+Cua Driver
+https://github.com/trycua/cua
+Integrated version: cua-driver-rs-v0.34.0
+Commit: b0968e1b12834e485dda68789541a3cc57664a9f
+License for upstream code: MIT, preserved in native/cua/LICENSE-MIT.
+
+Thanks to the Cua authors and contributors for the desktop automation runtime.
+Eido modifications through 2026-10-08 are maintained in native/cua/overlay.
+They provide session-owned background focus, exact-window keyboard guards,
+and window capture validation. Eido-authored changes use GPL-3.0-or-later;
+underlying upstream code retains its MIT notices. pi remains unmodified.
 
 Forks and redistribution
 
