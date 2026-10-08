@@ -31,6 +31,7 @@ export async function startEidoAgent(agentDir: string, sessionDir: string, strea
   let supportsForms = false;
   let supportsNativeUi = false;
   const subagents = createSubagents(agentDir, sessionDir);
+  const mcp = createMcpConnector(agentDir);
   const deliveries = new Map<string, ReturnType<typeof createDeliveryLedger>>();
   const clientReady = new Promise<AgentContext>(resolve => { connectClient = resolve; });
   // The transport can receive initialize/new while asynchronous Eido setup is
@@ -49,7 +50,7 @@ export async function startEidoAgent(agentDir: string, sessionDir: string, strea
       ...{eidoClaimSession: sessionOwners(agentDir)},
       agentDir,
       sessionDir,
-      connectMcpClient: createMcpConnector(agentDir),
+      connectMcpClient: mcp,
       modelRuntime: runtime,
       createAgentSession: async options => {
         if (!options.cwd || !options.sessionManager) throw new Error("Missing ACP session context.");
@@ -115,7 +116,7 @@ export async function startEidoAgent(agentDir: string, sessionDir: string, strea
         const prompt = created.session.prompt.bind(created.session);
         created.session.prompt = async (...args) => {
           try { return await prompt(...args); } finally {
-            const cleanup = await Promise.allSettled([browser.close(), preview.finishTurn(!!child), shell.finishTurn()]);
+            const cleanup = await Promise.allSettled([mcp.finishTurn(created.session.sessionId), browser.close(), preview.finishTurn(!!child), shell.finishTurn()]);
             const failed = cleanup.find(result => result.status === "rejected");
             if (failed?.status === "rejected") throw failed.reason;
           }
@@ -125,7 +126,7 @@ export async function startEidoAgent(agentDir: string, sessionDir: string, strea
         const abort = created.session.abort.bind(created.session);
         created.session.abort = async () => {
           try { await abort(); } finally {
-            const results = await Promise.allSettled([preview.finishTurn(true), shell.finishTurn(), browser.close()]);
+            const results = await Promise.allSettled([mcp.finishTurn(created.session.sessionId), preview.finishTurn(true), shell.finishTurn(), browser.close()]);
             const failed = results.find(result => result.status === "rejected");
             if (failed?.status === "rejected") throw failed.reason;
           }

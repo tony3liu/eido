@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { AgentSession, BeforeAgentStartEvent, Extension, ExtensionContext, ToolCallEvent, ToolCallEventResult } from "@earendil-works/pi-coding-agent";
+import {computerGuidance} from './computer-use.ts';
 
 export function accessPolicy(agentDir: string, session:()=>AgentSession|undefined, track:(name:string)=>void): Extension {
   const path = "<inline:eido-access>";
@@ -14,6 +15,7 @@ export function accessPolicy(agentDir: string, session:()=>AgentSession|undefine
       event.systemPromptOptions.appendSystemPrompt += fullAccess
         ? "\nEido access mode: Full Access. The user delegates tool and permission decisions to pi. Carry out the requested task autonomously with enabled tools; do not pause for routine confirmations or ask the user to approve tool calls. Choose the necessary actions yourself, verify the outcome, and report genuine missing information or unavailable capabilities. Explicit user constraints still apply."
         : "\nEido access mode: Ask Before Actions. The native client handles tool permission requests.";
+      event.systemPromptOptions.appendSystemPrompt += computerGuidance(session());
     }]], ["tool_call", [async (raw:unknown, rawContext:unknown) => {
       const pi=session(), event=raw as ToolCallEvent, context=rawContext as ExtensionContext;
       const policy=(pi as unknown as Record<symbol, {allows(name:string):boolean;registered():void}|undefined>)?.[Symbol.for('eido.pi.tools')];
