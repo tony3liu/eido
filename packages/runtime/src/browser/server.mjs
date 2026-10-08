@@ -4,6 +4,8 @@ import { JevBrowser } from 'jev-browser';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
+import { computerSettings } from '../computer.mjs';
+import { piDirectory } from '../paths.mjs';
 
 const text = value => ({ content: [{type:'text', text:typeof value === 'string' ? value : JSON.stringify(value)}] });
 const barrier = page => /captcha|verify you are human|security verification|安全验证|人机验证/i.test(`${page.title} ${page.text}`);
@@ -31,7 +33,7 @@ export async function serveBrowser() {
     const snapshot = await b.snapshotText();
     const page = b.lastPage;
     return {url:page.url, title:page.title, status:barrier(page)?'needs_user':'ready',
-      ...(barrier(page)?{message:'User verification required. Use browser_takeover and wait for the user; re-observe before continuing.'}:{}), snapshot};
+      ...(barrier(page)?{message:'Verification required. Use browser_takeover to let the user choose Manual Takeover or Use Computer Use. Wait for their choice and re-observe before continuing.'}:{}), snapshot};
   }
   function register(name, description, schema, execute, concurrent = false) {
     server.registerTool(name,{description,inputSchema:schema},async (args, extra) => {
@@ -80,20 +82,41 @@ export async function serveBrowser() {
   register('browser_screenshot','Capture the actual browser viewport as an image. A vision-capable conversation model is needed to interpret it.',{full_page:z.boolean().optional()},async ({full_page})=>{
     const data=await (await browser()).screenshot({fullPage:!!full_page});return {content:[{type:'image',data:data.toString('base64'),mimeType:'image/png'}]};
   });
-  register('browser_takeover','Pause task browser automation while the user handles login, verification or another manual step in the visible browser. Wait for their response and return a fresh observation. No actions run while the user owns the browser.',{reason:z.string().min(1).max(500)},async ({reason},extra)=>{
+  register('browser_takeover','Pause task browser automation. For a verification barrier, let the user choose Manual Takeover or Use Computer Use for this page. Other manual steps use Manual Takeover. Wait for their response; a Computer Use choice is permission to try, not proof of success. No browser actions run while the user chooses or handles the step.',{reason:z.string().min(1).max(500)},async ({reason},extra)=>{
     const b=await browser();await b.page.bringToFront();owner='user';handoffEpoch++;
     try {
       const token=extra._meta?.progressToken;
       let progress=0;
       const timer=setInterval(()=>{
-        if(token !== undefined) void server.server.notification({method:'notifications/progress',params:{progressToken:token,progress:++progress,message:'Waiting for the user to finish the browser step'}}).catch(()=>{});
+        if(token !== undefined) void server.server.notification({method:'notifications/progress',params:{progressToken:token,progress:++progress,message:'Waiting for the user to choose or finish the browser step'}}).catch(()=>{});
       },10000);
-      let response;
-      try { response=await server.server.elicitInput({mode:'form',message:`Browser paused: ${reason}\nComplete the step in the task browser, then confirm to return control to the agent.`,
-        requestedSchema:{type:'object',properties:{done:{type:'boolean',title:'I have finished the manual step',default:false}},required:['done']}},{signal:extra.signal,timeout:30*60*1000}); } finally {clearInterval(timer);}
-      extra.signal.throwIfAborted();
-      if(response.action!=='accept'||response.content?.done!==true)return text({status:'needs_user',message:'Manual step was not confirmed. Stop and report the blocked task.',observation:await observe(b)});
-      return text({status:'resumed',observation:await observe(b)});
+      const ask=async(message,requestedSchema)=>{
+        const response=await server.server.elicitInput({mode:'form',message,requestedSchema},{signal:extra.signal,timeout:30*60*1000});
+        extra.signal.throwIfAborted();
+        return response;
+      };
+      try {
+        const before=await observe(b);
+        if(before.status==='needs_user') {
+          const choice=await ask(`Verification required on ${new URL(before.url).origin}\n${reason}\nChoose how to handle this step in the current browser window.`,
+            {type:'object',properties:{method:{type:'string',title:'How would you like to continue?',oneOf:[
+              {const:'manual',title:'Manual Takeover',description:'Complete the verification yourself, then return control to the agent.'},
+              {const:'computer_use',title:'Use Computer Use',description:'Let the agent attempt this verification in the current window using Computer Use.'},
+            ]}},required:['method']});
+          if(choice.action!=='accept'||!['manual','computer_use'].includes(choice.content?.method))return text({status:'needs_user',message:'No verification method was confirmed. Stop and report the blocked task.',observation:await observe(b)});
+          if(choice.content.method==='computer_use') {
+            const config=await computerSettings(piDirectory());
+            if(!config.enabled||!config.executable)return text({status:'needs_user',method:'computer_use',message:'Computer Use is unavailable. Enable it in global settings and check its connection in Extensions, or call browser_takeover again to choose Manual Takeover.',observation:await observe(b)});
+            const observation=await observe(b);
+            return text({status:'computer_use_requested',method:'computer_use',target:{url:before.url,title:before.title},observation,
+              message:'The user selected Computer Use for this verification step only. Use the enabled eido_computer tools to observe and identify this existing browser window by its title and URL before acting. If the tools or exact window are unavailable, stop and offer Manual Takeover. Do not open another browser or switch profiles. Do not run Browser Use and Computer Use inputs in parallel. The choice does not confirm verification success. After the attempt, end the desktop session and use browser_snapshot to check the actual page before continuing the original task. If verification remains, call browser_takeover again; do not retry indefinitely.'});
+          }
+        }
+        const response=await ask(`Browser paused: ${reason}\nComplete the step in the task browser, then confirm to return control to the agent.`,
+          {type:'object',properties:{done:{type:'boolean',title:'I have finished the manual step',default:false}},required:['done']});
+        if(response.action!=='accept'||response.content?.done!==true)return text({status:'needs_user',message:'Manual step was not confirmed. Stop and report the blocked task.',observation:await observe(b)});
+        return text({status:'resumed',method:'manual',observation:await observe(b)});
+      } finally {clearInterval(timer);}
     } finally {owner='agent';handoffEpoch++;}
   });
   register('browser_status','Check browser resources and input ownership without launching a browser.',{},async()=>text({browserPath:executable,available:existsSync(executable),open:!!launch,owner}),true);

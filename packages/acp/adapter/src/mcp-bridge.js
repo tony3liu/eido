@@ -450,7 +450,7 @@ export function mapMcpSamplingResult(message, stopSequences = []) {
         stopReason,
     };
 }
-function installClientHandlers(client, binding, token, validator, timeoutMs, sleep) {
+function installClientHandlers(client, binding, token, validator, timeoutMs, sleep, formTimeoutMs = timeoutMs) {
     if (!binding)
         return;
     const diagnostic = (suffix) => binding.emitDiagnostic(`[mcp:${token}] ${suffix}`);
@@ -566,7 +566,7 @@ function installClientHandlers(client, binding, token, validator, timeoutMs, sle
                 });
                 acpRequest.then(() => undefined, () => undefined);
                 return Promise.race([acpRequest, earlyCompletion]);
-            }, extra.signal, binding.sessionSignal, turnSignal, timeoutMs, sleep, (outcome) => {
+            }, extra.signal, binding.sessionSignal, turnSignal, request.params.mode === "form" ? formTimeoutMs : timeoutMs, sleep, (outcome) => {
                 if (!urlKey)
                     return;
                 const entry = urlElicitations.get(urlKey);
@@ -654,7 +654,11 @@ export async function connectDefaultMcpClient(server, signal, timeoutMs, sleep, 
         disabledHandler();
     };
     const transport = createTransport(server, token, sleep, fatal, timeoutMs);
-    installClientHandlers(client, binding, token, validator, timeoutMs, sleep);
+    // Browser handoff waits for a person, independently of network deadlines.
+    // Its progress keeps the outer tool call alive; turn/session cancellation
+    // still settles the incoming request immediately.
+    installClientHandlers(client, binding, token, validator, timeoutMs, sleep,
+        server.name === "eido_browser" ? 30 * 60_000 : timeoutMs);
     const capabilityDiagnostic = (method) => binding?.emitDiagnostic(`[mcp:${token}] ${method}`);
     client.setNotificationHandler(ToolListChangedNotificationSchema, () => {
         const caps = client.getServerCapabilities();
