@@ -59,10 +59,12 @@ test('real component terminal handles split UTF-8, arrow keys and paste, then re
   const t=transport();
   let disposed=0;
   const input:string[]=[];
-  const result=t.start<string>((tui,_theme,_keys,done) => ({
+  const result=t.start<string>((tui,_theme,_keys,done) => {
+    tui.terminal.setProgramStatus({state:'working'});
+    return ({
     render:() => ['PI COMPONENT READY'], invalidate() {}, dispose() {disposed++;},
     handleInput(data) {input.push(data); if(data==='\r') done('accepted'); else tui.requestRender();},
-  }));
+  });});
   await t.waitFor('PI COMPONENT READY');
   const bytes=Buffer.from('蓝');
   t.send(bytes.subarray(0,1)); await delay(5); t.send(bytes.subarray(1));

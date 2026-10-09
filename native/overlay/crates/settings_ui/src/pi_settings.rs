@@ -409,7 +409,7 @@ impl Render for PiSettingsView {
         let model_name = self.models().iter().find(|m| m["id"].as_str() == Some(self.model.as_str())).and_then(|m| m["name"].as_str()).unwrap_or("Select a model").to_owned();
         let credential = self.selected_provider().and_then(|p| p["credential"].as_str()).unwrap_or("none");
         let auth_label = match credential { "oauth" => "OAuth configured", "api_key" => "API key configured", "none" => "No credentials configured", _ => "Environment or custom credentials" };
-        let version = self.data.as_ref().and_then(|d| d["version"].as_str()).unwrap_or("1.0.4");
+        let version = self.data.as_ref().and_then(|d| d["version"].as_str()).unwrap_or("1.1.0");
         let update = self.data.as_ref().map(|d| &d["update"]);
         let update_label = match update.and_then(|u| u["status"].as_str()) {
             Some("up_to_date") => "You are using the latest stable pi release.".to_owned(),

@@ -1,5 +1,5 @@
 // Adapted for Eido from @automatalabs/pi-acp 0.9.4 (Apache-2.0). See ../LICENSE.
-import { mapKind, toContent } from "./translate.js";
+import { mapKind, toContent, toolDurationMeta } from "./translate.js";
 function blocks(content) {
     if (typeof content === "string")
         return [{ type: "text", text: content }];
@@ -56,6 +56,7 @@ function replayMessage(message) {
                 toolCallId: message.toolCallId ?? "",
                 status: message.isError ? "failed" : "completed",
                 content: toContent({ content: message.content }),
+                _meta: toolDurationMeta(message.durationMs),
             };
             if (message.details !== undefined)
                 update.rawOutput = message.details;

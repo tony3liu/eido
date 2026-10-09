@@ -30,6 +30,11 @@ export function contentItems(result) {
 export function toContent(result) {
     return contentItems(result).map((content) => ({ type: "content", content }));
 }
+// Execution timing belongs to ACP metadata, leaving plugin result details intact.
+export function toolDurationMeta(durationMs) {
+    return typeof durationMs === "number" && Number.isFinite(durationMs) && durationMs >= 0
+        ? { eidoToolDurationMs: durationMs } : undefined;
+}
 function translateAssistantEvent(event) {
     switch (event.type) {
         case "text_delta":
@@ -86,6 +91,7 @@ export function translateEvent(event, failedResult) {
                 toolCallId: event.toolCallId,
                 status: event.isError ? "failed" : "completed",
                 content: toContent(result),
+                _meta: toolDurationMeta(event.durationMs),
             };
             if (result.details !== undefined)
                 update.rawOutput = result.details;

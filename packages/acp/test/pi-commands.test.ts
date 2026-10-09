@@ -431,7 +431,7 @@ test("exports use pi formats, refuse overwrite and clean temporary files; change
     assert.equal(exports.length, 1);
     assert.ok(exports[0]?.endsWith(".html"));
     await h.prompt(a.sessionId, "/changelog");
-    assert.match(h.text(a.sessionId), /1\.0\.2/);
+    assert.match(h.text(a.sessionId), /1\.1\.0/);
     assert.equal(h.requests(), 0);
   } finally { await h.dispose(); }
 });
@@ -1523,4 +1523,55 @@ test('task outcome survives reload, distinguishes failure and cancellation, and 
     assert.equal(h.requests(),2);
     assert.equal((await h.entries()).filter(e=>e.customType==='eido.turn.v1'&&e.data.status==='running').length,4);
   } finally {await h.dispose();}
+});
+
+
+test('pi extension cancellation settles after cleanup, survives reload and does not cancel the next turn', {timeout:30_000}, async()=> {
+  const h=await harness([()=> 'First response.',()=> 'Next response.'],{setup:async cwd=>{
+    await mkdir(join(cwd,'extensions'));
+    await writeFile(join(cwd,'extensions/abort-once.js'), `export default pi => {
+      let first=true; pi.on('agent_end', (_event,ctx)=> {if(first){first=false;ctx.abort();}});
+    };`);
+  }});
+  try {
+    const task=await h.newTask();
+    assert.equal((await h.prompt(task.sessionId,'Abort from a pi extension.')).stopReason,'cancelled');
+    const states=()=>h.updates.map(u=>(u.update as any)._meta?.eidoTurn).filter(Boolean);
+    assert.equal(states().at(-1)?.status,'cancelled');
+    assert.equal((await h.prompt(task.sessionId,'Continue after cancellation.')).stopReason,'end_turn');
+    assert.equal(states().at(-1)?.status,'completed');
+    await h.connection.agent.request(methods.agent.session.close,{sessionId:task.sessionId});
+    await h.connection.agent.request(methods.agent.session.load,{sessionId:task.sessionId,cwd:h.cwd,mcpServers:[]});
+    assert.equal(states().at(-1)?.status,'completed');
+  } finally {await h.dispose();}
+});
+
+
+test('pi 1.1.0 busy retries settle once, retain failure and remain cancellable', {timeout:30_000},async()=> {
+  for(const outcome of ['recovered','failed','cancelled']) {
+    const h=await harness([
+      ()=>{throw new Error('servers are currently busy');},
+      ()=>{if(outcome==='failed')throw new Error('server_busy');return 'Recovered after busy response.';},
+      ()=> 'New turn after cancellation.',
+    ], {setup:async cwd=>{
+      const path=join(cwd,'settings.json'),settings=JSON.parse(await readFile(path,'utf8'));
+      settings.retry={enabled:true,maxRetries:1,baseDelayMs:outcome==='cancelled'?5000:10};
+      await writeFile(path,JSON.stringify(settings));
+    }});
+    try {
+      const task=await h.newTask(),pending=h.prompt(task.sessionId,'Exercise upstream busy retry.');
+      const failure=outcome==='failed'?assert.rejects(pending):undefined;
+      if(outcome==='cancelled') {
+        for(let i=0;i<200&&h.requests()<1;i++)await delay(5);
+        await delay(40);
+        await h.connection.agent.notify(methods.agent.session.cancel,{sessionId:task.sessionId});
+      }
+      if(failure)await failure;
+      else assert.equal((await pending).stopReason,outcome==='cancelled'?'cancelled':'end_turn');
+      const terminal=h.updates.map(u=>(u.update as any)._meta?.eidoTurn).filter(s=>s&&s.status!=='running');
+      assert.equal(terminal.length,1);assert.equal(terminal[0].status,outcome==='recovered'?'completed':outcome);
+      assert.equal(h.requests(),outcome==='cancelled'?1:2);
+      if(outcome==='cancelled')assert.equal((await h.prompt(task.sessionId,'Continue normally.')).stopReason,'end_turn');
+    } finally {await h.dispose();}
+  }
 });

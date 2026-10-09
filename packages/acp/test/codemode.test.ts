@@ -18,12 +18,15 @@ test('official Code Mode reads native image snapshots, persists nested provenanc
  const dir=await realpath(await mkdtemp(join(tmpdir(),'eido-codemode-')));
  await writeFile(join(dir,'sample.png'),png);
  await writeFile(join(dir,'settings.json'),JSON.stringify({defaultProvider:'eido-fixture',defaultModel:'scripted',defaultTools:['read','codemode'],compaction:{enabled:false}}));
+ let savedPath='';
  const model=await fixtureModel(dir,[
-  ()=>call('codemode',{code:'const result=await tools.read({path:"sample.png"}); image(result); store("stable",42); text(result.type);'}),
-  ctx=>{const output=lastToolText(ctx,'codemode');assert.match(output,/image/);const path=/Image saved to (.+) \(image\//.exec(output)?.[1];assert.ok(path);
+  ()=>call('codemode',{code:'const result=await tools.read({path:"sample.png"}); text("Before screenshot"); console.log("Console output"); image(result); store("stable",42); text(result.type);'}),
+  ctx=>{const output=lastToolText(ctx,'codemode');assert.match(output,/image/);const path=/Image saved to (.+) \(image\//.exec(output)?.[1];assert.ok(path);savedPath=path;assert.match(output,/Before screenshot/);assert.match(output,/Console output/);
     return call('codemode',{code:`const saved=await tools.read({path:${JSON.stringify(path)}}); image(saved); store("stable",99); throw new Error("intentional store rollback");`});},
   ctx=>{assert.throws(()=>lastToolText(ctx,'codemode'),/intentional store rollback/);return call('codemode',{code:'text(load("stable")); text(typeof process);'});},
   ctx=>{assert.match(lastToolText(ctx,'codemode'),/42/);assert.match(lastToolText(ctx,'codemode'),/undefined/);return 'Code Mode verified.';},
+  ()=>call('codemode',{code:`text("Truncated text "+"x".repeat(50000)); image(await tools.read({path:${JSON.stringify(savedPath)}}));`}),
+  ctx=>{assert.match(lastToolText(ctx,'codemode'),/Image saved to/);return 'Restored screenshot verified.';},
  ]);
  const a=new TransformStream(),b=new TransformStream();
  const server=await startEidoAgent(dir,join(dir,'sessions'),{readable:a.readable,writable:b.writable},model.runtime);
@@ -43,6 +46,16 @@ test('official Code Mode reads native image snapshots, persists nested provenanc
   assert.ok(permissions.some(p=>p._meta?.parentToolCallId===nested._meta.parentToolCallId));
   const entries=(await Promise.all((await readdir(join(dir,'sessions'))).filter(n=>n.endsWith('.jsonl')).map(n=>readFile(join(dir,'sessions',n),'utf8')))).flatMap(t=>t.trim().split('\n').map(line=>JSON.parse(line)));
   const history=entries.flatMap(replayEntry);assert.ok(history.some(u=>u.sessionUpdate==='tool_call'&&u._meta?.parentToolCallId===nested._meta.parentToolCallId));
+  const completed=updates.filter(u=>u.sessionUpdate==='tool_call_update'&&u.status==='completed'&&u._meta?.eidoToolDurationMs!==undefined);
+  assert.ok(completed.length>=2);assert.ok(completed.every(u=>Number.isFinite(u._meta.eidoToolDurationMs)&&u._meta.eidoToolDurationMs>=0));
+  for(const u of completed.filter(u=>!u.toolCallId.includes('/')))assert.equal(history.find(h=>h.sessionUpdate==='tool_call_update'&&h.toolCallId===u.toolCallId)?._meta?.eidoToolDurationMs,u._meta.eidoToolDurationMs);
+  await conn.agent.request(methods.agent.session.close,{sessionId:task.sessionId});
+  const priorUpdates=updates.length;
+  await conn.agent.request(methods.agent.session.load,{sessionId:task.sessionId,cwd:dir,mcpServers:[]});
+  const restored=updates.slice(priorUpdates);
+  for(const u of completed)assert.equal(restored.find(h=>h.sessionUpdate==='tool_call_update'&&h.toolCallId===u.toolCallId)?._meta?.eidoToolDurationMs,u._meta.eidoToolDurationMs);
+  await conn.agent.request(methods.agent.session.prompt,{sessionId:task.sessionId,prompt:[{type:'text',text:'Read the saved screenshot after restoring this session.'}]});
+  assert.equal(snapshots,1);
   const paths=updates.flatMap(u=>u.content??[]).map(c=>c.content?.text??'').join('\n').match(/\/[^\s)]+\.png/g)??[];
   for(const p of paths) {if(p.startsWith('/tmp/')||p.startsWith('/var/'))await rm(p,{force:true}).catch(()=>{});}
  }finally{await server.agent.dispose();conn.close();server.connection.close();await rm(dir,{recursive:true,force:true});}

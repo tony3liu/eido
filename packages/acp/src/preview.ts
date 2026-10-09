@@ -238,7 +238,7 @@ export function createPreview(cwd: string, storage: string, sessionId: string, c
       }
       run.dependencies = await captureDependencies(root, params.dependencies ?? [], join(run.directory, "files"), files.map(file => file.path), signal);
       run.fingerprint = hash(JSON.stringify({ entry, files: files.map(({path, hash}) => ({path, hash})), dependencies: run.dependencies, commands: run.commands, server: run.server }));
-      await writeFile(join(run.directory, "manifest.json"), JSON.stringify({ ...run, sessionId, piVersion: "1.0.4" }, null, 2), { mode: 0o600 });
+      await writeFile(join(run.directory, "manifest.json"), JSON.stringify({ ...run, sessionId, piVersion: "1.1.0" }, null, 2), { mode: 0o600 });
       // Recheck after capture. Multi-file reads are sequential, not an atomic editor transaction.
       const captured = await freshness(run, signal);
       if (captured.state !== "current") throw new Error("Inputs changed during capture. Read the files and start a new preview.");

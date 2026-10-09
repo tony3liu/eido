@@ -55,7 +55,7 @@ test('bundled desktop runtime owns its MCP child and custom paths retain precede
 test("defaults roundtrip uses pi model validation and preserves unrelated settings", async t => {
   const f=await fixture(t);
   const result=await f.bridge.execute({operation:"defaults",provider:"eido-fixture",model:"test-model",thinking:"off"});
-  assert.equal(result.version,"1.0.4");
+  assert.equal(result.version,"1.1.0");
   assert.equal(result.defaultModel,"test-model");
   assert.deepEqual((await f.get(f.target,"settings.json")).customSetting,{retain:true});
   const before=await readFile(join(f.target,"settings.json"),"utf8");
@@ -243,7 +243,7 @@ test("update detection compares registry versions without installing packages", 
     return {ok:true,json:async()=>({name:"@earendil-works/pi-coding-agent",version})};
   };
   assert.equal((await checkPiUpdate(response(bundledVersion))).status,"up_to_date");
-  assert.equal((await checkPiUpdate(response("1.0.5"))).status,"update_available");
+  assert.equal((await checkPiUpdate(response("1.1.1"))).status,"update_available");
   assert.equal((await checkPiUpdate(response("0.99.9"))).status,"ahead");
   const failed=await checkPiUpdate(async()=>{throw new Error("private-network-error")});
   assert.equal(failed.status,"error"); assert.ok(!JSON.stringify(failed).includes("private-network-error"));

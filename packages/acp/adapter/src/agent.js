@@ -142,7 +142,7 @@ export class PiAcpAgent {
             agentInfo: {
                 name: "eido-pi",
                 title: "Eido pi (ACP adapter 0.9.4)",
-                version: "1.0.4",
+                version: "1.1.0",
             },
             agentCapabilities: {
                 loadSession: true,

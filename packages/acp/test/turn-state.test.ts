@@ -26,3 +26,20 @@ test('recovery requires settlement evidence and ignores sidecars, never inferrin
   }
   assert.equal(terminalTurnStatus({error:new Error('cleanup failed')}),'failed');
 });
+
+
+test('official tool duration survives live/replay with arbitrary plugin details and missing legacy timing', async()=> {
+  const {translateEvent}=await import('../adapter/src/translate.js');
+  const {replayEntry}=await import('../adapter/src/replay.js');
+  for(const details of [{durationMs:'plugin-owned',nested:{retained:true}},['array',42],17,null]) {
+    const result={content:[{type:'text' as const,text:'Tool result'}],details};
+    const live=translateEvent({type:'tool_execution_end',toolCallId:'timed',toolName:'plugin-tool',isError:false,result,durationMs:1250.25})[0] as any;
+    const replay=replayEntry({type:'message',message:{role:'toolResult',toolCallId:'timed',toolName:'plugin-tool',isError:false,...result,durationMs:1250.25}} as any)[0] as any;
+    assert.deepEqual(live.rawOutput,details);assert.deepEqual(replay.rawOutput,details);
+    assert.deepEqual(live._meta,{eidoToolDurationMs:1250.25});assert.deepEqual(replay._meta,live._meta);
+  }
+  for(const durationMs of [undefined,-1,NaN,Infinity]) {
+    const replay=replayEntry({type:'message',message:{role:'toolResult',toolCallId:'legacy',content:[],durationMs}} as any)[0] as any;
+    assert.equal(replay._meta,undefined);
+  }
+});

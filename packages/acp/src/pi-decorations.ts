@@ -45,7 +45,7 @@ export function createPiDecorations(pi:AgentSession, state:ReturnType<typeof cre
     const terminal:Terminal={
       start(){},stop(){},drainInput:async()=>{},write(){},
       get columns(){return state.columns();},rows:24,kittyProtocolActive:false,
-      moveBy(){},hideCursor(){},showCursor(){},clearLine(){},clearFromCursor(){},clearScreen(){},setTitle(){},setProgress(){},
+      moveBy(){},hideCursor(){},showCursor(){},clearLine(){},clearFromCursor(){},clearScreen(){},setTitle(){},setProgress(){},setProgramStatus(){},
     };
     class NativeComponentScreen extends TuiMainScreen {
       override requestRender(){request();}

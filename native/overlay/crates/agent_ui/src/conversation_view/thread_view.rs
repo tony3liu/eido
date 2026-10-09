@@ -53,6 +53,15 @@ use super::elicitation::{
 };
 use super::*;
 
+fn eido_tool_duration_label(duration: std::time::Duration) -> String {
+    if duration.as_secs() == 0 {
+        if duration.as_millis() == 0 { "Took <1ms".into() }
+        else { format!("Took {}ms", duration.as_millis()) }
+    } else {
+        format!("Took {}", duration_alt_display(duration))
+    }
+}
+
 const DATA_RETENTION_LEARN_MORE_URL: &str = "https://support.claude.com/en/articles/15425996-data-retention-practices-for-mythos-class-models";
 
 #[derive(Default)]
@@ -8433,7 +8442,7 @@ impl ThreadView {
                 format!("Agent: {title}\nSession: {}\nTerminal: {}\nTool call: {}", thread.session_id(), terminal_data.id(), tool_call.id),
             )
         })
-        .elapsed(time_elapsed)
+        .elapsed(tool_call.duration.unwrap_or(time_elapsed))
         .running(!command_finished && !needs_confirmation)
         .on_toggle_expand(cx.listener({
             let id = tool_call.id.clone();
@@ -8982,7 +8991,10 @@ impl ThreadView {
                         tool_call.label.clone(),
                         window,
                         cx,
-                    ))
+                    )).when_some(tool_call.duration, |this, duration| {
+                        this.child(Label::new(eido_tool_duration_label(duration))
+                            .size(LabelSize::XSmall).color(Color::Muted))
+                    })
                 } else {
                     this.child(
                         h_flex()
@@ -9007,6 +9019,11 @@ impl ThreadView {
                             ))
                             .child(
                                 h_flex()
+                                    .gap_2()
+                                    .when_some(tool_call.duration, |this, duration| {
+                                        this.child(Label::new(eido_tool_duration_label(duration))
+                                            .size(LabelSize::XSmall).color(Color::Muted))
+                                    })
                                     .when(is_collapsible || failed_or_canceled, |this| {
                                         let diff_for_discard = if has_revealed_diff
                                             && is_cancelled_edit

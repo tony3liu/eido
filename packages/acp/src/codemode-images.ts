@@ -13,7 +13,7 @@ export function codemodeImages() {
     for (let i = 0; i < blocks.length - 1; i++) {
       const label = blocks[i], image = blocks[i + 1];
       if (label.type !== 'text' || image.type !== 'image') continue;
-      const match = /^\[Image saved to (.+) \(image\/(?:png|jpeg|gif|webp), [^\n]+\)\]$/.exec(label.text);
+      const match = /(?:^|\n)\[Image saved to ([^\n]+) \(image\/(?:png|jpeg|gif|webp), [^\n]+\)\]$/.exec(label.text);
       if (!match?.[1]) continue;
       const path = resolve(match[1]);
       if (dirname(path) !== resolve(tmpdir()) || !/^pi-codemode-[a-f0-9]{16}\.(?:png|jpg|gif|webp)$/.test(basename(path))) continue;

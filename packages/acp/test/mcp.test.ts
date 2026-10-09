@@ -104,6 +104,13 @@ test('MCP OAuth uses pi PKCE, refreshes rotating credentials once, and never sta
     remote.setMode('scope');await assert.rejects(lane.fetch(remote.url,{method:'GET'}),/authorization requires user interaction/);
     assert.equal(remote.refreshes(),1);assert.equal(remote.browserFlows(),1);
     remote.setMode('normal');
+    const store=credentials(dir).forServer('remote',remote.url);
+    const saved=await store.load();await store.save({...saved!,tokensExpireAt:Date.now()-1000});
+    remote.setMode('reject');
+    const deleted=await lane.fetch(remote.url,{method:'DELETE'});assert.equal(deleted.status,401);
+    assert.equal(remote.refreshes(),1);assert.equal(remote.browserFlows(),1);
+    assert.equal((await store.load())?.tokens?.access_token,saved?.tokens?.access_token);
+    await store.save(saved!);remote.setMode('normal');
     await mkdir(join(dir,'work'));
     await writeFile(join(dir,'settings.json'),JSON.stringify({defaultProvider:'eido-fixture',defaultModel:'scripted',compaction:{enabled:false}}));
     const model=await fixtureModel(dir,[()=>call('mcp__remote__ping'),context=>{assert.match(lastToolText(context,'mcp__remote__ping'),/OAuth fixture reached/);return 'OAuth verified.';}]);
@@ -436,4 +443,25 @@ test('MCP catalog refresh hides removed tools from scripts and reload preserves 
     assert.equal((await h.prompt(task.sessionId)).stopReason,'end_turn');
     assert.deepEqual(remote.calls,['ping','replacement']); assert.equal(remote.initialized(),1); assert.equal(h.model.requests(),4);
   } finally {await h.close(); await remote.close();}
+});
+
+
+test('MCP sign-in cancels stalled discovery, registration and token exchange without late credentials', {timeout:15_000},async()=> {
+  for(const holdPath of ['/.well-known/oauth-protected-resource/mcp','/register','/token']) {
+    const remote=await oauthFixture({holdPath}),dir=await realpath(await mkdtemp(join(tmpdir(),'eido-mcp-stalled-')));
+    let browser:Promise<Response>|undefined;
+    try {
+      await createExtensionCenter(dir).execute({operation:'mcp-save',text:JSON.stringify({mcpServers:{remote:{url:remote.url}}})});
+      const stop=new AbortController();
+      const pending=signIn(dir,'remote',{
+        showAuthorizationUrl(url){browser=fetch(url);},
+        promptForRedirectUrl(signal){return new Promise(resolve=>signal.addEventListener('abort',()=>resolve(undefined),{once:true}));},
+      },stop.signal);
+      const rejected=assert.rejects(pending,/cancelled|abort/i);
+      await remote.heldRequest;stop.abort();
+      await Promise.race([rejected,new Promise((_,reject)=>{const timer=setTimeout(()=>reject(new Error('Cancellation did not interrupt OAuth HTTP request')),2000);timer.unref();})]);
+      await remote.heldClosed;await browser;
+      assert.equal(credentials(dir).tokens('remote',remote.url),undefined);
+    } finally {await remote.close();await rm(dir,{recursive:true,force:true});}
+  }
 });

@@ -15,6 +15,7 @@ export declare function mapKind(toolName: string): ToolKind;
 export declare function fileLocations(args: unknown): ToolCallLocation[] | undefined;
 export declare function contentItems(result: PiResult): ContentBlock[];
 export declare function toContent(result: PiResult): ToolCallContent[];
+export declare function toolDurationMeta(durationMs: unknown): {eidoToolDurationMs: number} | undefined;
 export declare function translateEvent(event: AgentSessionEvent, failedResult?: PiResult): SessionUpdate[];
 export {};
 //# sourceMappingURL=translate.d.ts.map

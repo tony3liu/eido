@@ -11,7 +11,7 @@ pub fn configure() -> Result<Option<PathBuf>> {
     let root = resources.join("runtime");
     if !root.join("eido-runtime.json").is_file() { return Ok(None); }
     let manifest: Value = serde_json::from_slice(&std::fs::read(root.join("eido-runtime.json"))?)?;
-    ensure!(manifest["version"] == 1 && manifest["pi"] == "1.0.4", "Unsupported Eido runtime manifest");
+    ensure!(manifest["version"] == 1 && manifest["pi"] == "1.1.0", "Unsupported Eido runtime manifest");
     let helpers = contents.join("Helpers");
     let node = helpers.join("node");
     ensure!(node.is_file() && root.join("packages/acp/src/cli.js").is_file(), "Bundled agent runtime is incomplete");

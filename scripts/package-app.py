@@ -258,7 +258,7 @@ def build():
         if file.is_file() and LEGAL.match(file.name):
             copy_file(file, resources / 'licenses/zed' / file.name)
     version = json.loads((ROOT / 'package.json').read_text())['version']
-    (runtime / 'eido-runtime.json').write_text(json.dumps({'version': 1, 'pi': '1.0.4', 'acp': '0.9.4',
+    (runtime / 'eido-runtime.json').write_text(json.dumps({'version': 1, 'pi': '1.1.0', 'acp': '0.9.4',
         'productVersion': version, 'nativeProfile': 'dev', 'testFeatures': False,
         'productionPackages': count, 'sourceFingerprint': record['sourceFingerprint'],
         'computerDriver': json.loads(cua.RECORD.read_text())}))

@@ -61,7 +61,7 @@ export async function showPiComponent<T>(pi: AgentSession, client: AgentContext,
     moveBy: lines => write(`\x1b[${Math.abs(lines)}${lines > 0 ? 'B':'A'}`),
     hideCursor: () => write('\x1b[?25l'), showCursor: () => write('\x1b[?25h'),
     clearLine: () => write('\x1b[2K'), clearFromCursor: () => write('\x1b[J'), clearScreen: () => write('\x1b[2J\x1b[H'),
-    setTitle: title => write(`\x1b]0;${title.replace(/[\x00-\x1f\x7f]/g, '')}\x07`), setProgress() {},
+    setTitle: title => write(`\x1b]0;${title.replace(/[\x00-\x1f\x7f]/g, '')}\x07`), setProgress() {}, setProgramStatus() {},
   };
   // Renderer exceptions must fail this view instead of crashing the shared ACP process.
   class ComponentScreen extends TuiMainScreen {

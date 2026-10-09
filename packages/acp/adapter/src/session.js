@@ -9,7 +9,7 @@ import { shutdownPiSession } from "./pi-shutdown.js";
 import { convertPromptContent } from "./prompt-content.js";
 import { replayEntry } from "./replay.js";
 import { stopReasonFor } from "./stop-reason.js";
-import { translateEvent } from "./translate.js";
+import { translateEvent, toolDurationMeta } from "./translate.js";
 import { agentMessages, promptUsage, terminalAssistant, usageUpdate, } from "./usage.js";
 import { installPermissionWrapper } from "./permissions.js";
 import { ChildCleanupFailure } from "./child-process-registry.js";
@@ -83,6 +83,12 @@ export class PiSession {
             };
         };
         this.unsubscribe = this.pi.subscribe((event) => {
+            // Pi may abort from an extension without an ACP cancel request. Retain
+            // evidence on this turn, but settle only after prompt and cleanup finish.
+            if (event.type === "agent_settled" && event.aborted && this.activeTurn?.diagnosticOpen)
+                this.activeTurn.piAborted = true;
+            if (event.type === "tool_execution_end" && event.parentToolCallId && toolDurationMeta(event.durationMs))
+                appendEidoEntry(this.manager, "eido.tool-duration.v1", {toolCallId:event.toolCallId,durationMs:event.durationMs});
             const failedResult = event.type === "tool_execution_end" && event.isError
                 ? this.failedMcpResults.get(event.toolCallId)
                 : undefined;
@@ -175,9 +181,16 @@ export class PiSession {
             .filter(entry => entry.type === 'custom' && entry.customType === 'eido.prompt.v1'
                 && typeof entry.data?.messageId === 'string' && Array.isArray(entry.data?.prompt))
             .map(entry => [entry.data.messageId, entry.data.prompt]));
+        const durations = new Map(this.pi.sessionManager.getEntries()
+            .filter(entry => entry.type === 'custom' && entry.customType === 'eido.tool-duration.v1'
+                && typeof entry.data?.toolCallId === 'string' && toolDurationMeta(entry.data?.durationMs))
+            .map(entry => [entry.data.toolCallId, entry.data.durationMs]));
         return entries.flatMap(entry => {
             const prompt = entry.type === 'message' && entry.message.role === 'user' ? snapshots.get(entry.id) : undefined;
-            return prompt ? prompt.map(content => ({sessionUpdate:'user_message_chunk',messageId:entry.id,content:structuredClone(content)})) : replayEntry(entry);
+            return prompt ? prompt.map(content => ({sessionUpdate:'user_message_chunk',messageId:entry.id,content:structuredClone(content)})) : replayEntry(entry).map(update => {
+                if (update.sessionUpdate !== 'tool_call_update' || !durations.has(update.toolCallId)) return update;
+                return {...update, _meta:{...update._meta,...toolDurationMeta(durations.get(update.toolCallId))}};
+            });
         });
     }
     async replay(entries) {
@@ -444,7 +457,9 @@ export class PiSession {
             return;
         try {
             if (this.childRegistry.childCleanupFailed)
-                turn.cleanup ??= this.cleanupTurn("disposal");
+                turn.cleanup = this.cleanupTurn("disposal");
+            else if (turn.piAborted)
+                turn.cleanup ??= this.cleanupTurn("cancel-only");
             const messages = agentMessages(this.pi).slice(turn.startMessageIndex);
             if (turn.cleanup)
                 await turn.cleanup;
@@ -455,7 +470,7 @@ export class PiSession {
                 return;
             if (turn.commandError) throw adapterError("command_error");
             const terminal = terminalAssistant(messages);
-            const stopReason = stopReasonFor(terminal, turn.controller.signal.aborted);
+            const stopReason = stopReasonFor(terminal, turn.controller.signal.aborted || turn.piAborted);
             this.discardOrphanedSteering();
             this.finish(turn, { response: { stopReason, usage: promptUsage(messages) } });
         }
@@ -469,7 +484,7 @@ export class PiSession {
     async handlePiRejected(turn, error) {
         if (turn.completed)
             return;
-        if (!turn.controller.signal.aborted) {
+        if (!turn.controller.signal.aborted && !turn.piAborted) {
             turn.diagnosticOpen = false;
             try {
                 await this.drain();
@@ -482,6 +497,8 @@ export class PiSession {
             return;
         }
         try {
+            if (turn.piAborted)
+                turn.cleanup ??= this.cleanupTurn("cancel-only");
             if (turn.cleanup)
                 await turn.cleanup;
             const messages = agentMessages(this.pi).slice(turn.startMessageIndex);

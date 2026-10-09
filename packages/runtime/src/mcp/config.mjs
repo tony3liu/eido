@@ -101,17 +101,23 @@ export function authenticatedMcpFetch(server, providerToken, fetcher = fetch) {
   const provider = usesOAuth(config) ? createMcpAuthProvider({serverUrl:server.url, store:credentials(directory).forServer(server.name,server.url), settings:()=>oauthSettings(config), onChallenge:()=>{}})
     : config.auth ? {token:()=>providerToken(config.auth.provider), settled:async()=>{}} : undefined;
   const baseUrl = new URL(server.url);
+  let lastToken;
   const authorized = async (input, init) => {
     const url = new URL(input instanceof Request ? input.url : input, baseUrl);
     // SSE endpoint messages must not send configured credentials to another origin.
     if (url.origin !== baseUrl.origin) throw new Error('MCP endpoint changed origin.');
     for (let attempt=0; ; attempt++) {
       init?.signal?.throwIfAborted();
-      const token = await provider?.token();
+      // Closing a session must not refresh expired credentials or restart auth.
+      // Reuse the latest request's token for its best-effort DELETE.
+      const closing = init?.method === 'DELETE';
+      const token = closing ? lastToken : await provider?.token();
+      if (!closing) lastToken = token;
       const headers = new Headers(init?.headers);
       if (token) headers.set('Authorization', `Bearer ${token}`);
       const response = await fetcher(input,{...init,headers,redirect:'error'});
       const unauthorized = response.status === 401 || response.status === 403 && parseWwwAuthenticate(response.headers.get('www-authenticate')).error === 'insufficient_scope';
+      if (closing) return response;
       if (!unauthorized) {server[Symbol.for('eido.pi.mcp.needs-auth')] = false; return response;}
       server[Symbol.for('eido.pi.mcp.needs-auth')] = true;
       if (attempt || !provider?.onUnauthorized) return response;
@@ -136,7 +142,7 @@ export async function signIn(directory, name, prompt, signal) {
       if (JSON.stringify(current) !== JSON.stringify(server)) throw new Error('MCP configuration changed during sign-in.');
       return store.save(state);
     }};
-    await signInMcpServer({serverUrl:server.url,store:checkedStore,settings:oauthSettings(server),prompt});
+    await signInMcpServer({serverUrl:server.url,store:checkedStore,settings:oauthSettings(server),prompt,signal});
     signal?.throwIfAborted();
   });
 }

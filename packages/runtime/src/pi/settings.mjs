@@ -20,7 +20,7 @@ const { ModelConfig } = await import(new URL("core/model-config.js", piEntry).hr
 const { getSupportedThinkingLevels } = await import(pathToFileURL(join(root, "packages/acp/node_modules/@earendil-works/pi-ai/dist/index.js")).href);
 const manifest = JSON.parse(await readFile(new URL("../package.json", piEntry), "utf8"));
 export const bundledVersion = manifest.version;
-if (bundledVersion !== "1.0.4") throw new PiConfigError("Eido requires bundled pi 1.0.4. Run setup:acp.");
+if (bundledVersion !== "1.1.0") throw new PiConfigError("Eido requires bundled pi 1.1.0. Run setup:acp.");
 
 async function readJson(path, fallback = {}) {
   try { return JSON.parse(await readFile(path, "utf8")); }

@@ -87,6 +87,12 @@ fn test_eido_pi_tool_name_metadata_supports_live_and_replayed_calls() {
     assert!(tool_name_from_meta(&None).is_none());
 }
 
+/// Official pi execution timing. Older history and invalid values remain unknown.
+fn tool_duration_from_meta(meta: &Option<acp::Meta>) -> Option<Duration> {
+    let milliseconds = meta.as_ref()?.get("eidoToolDurationMs")?.as_f64()?;
+    Duration::try_from_secs_f64(milliseconds / 1000.0).ok()
+}
+
 /// Creates ACP metadata containing the legacy tool-name field.
 pub fn meta_with_tool_name(tool_name: &str) -> acp::Meta {
     acp::Meta::from_iter([(TOOL_NAME_META_KEY.into(), tool_name.into())])
@@ -960,6 +966,7 @@ pub struct ToolCall {
     pub raw_input: Option<serde_json::Value>,
     pub raw_input_markdown: Option<Entity<Markdown>>,
     pub raw_output: Option<serde_json::Value>,
+    pub duration: Option<Duration>,
     pub tool_name: Option<SharedString>,
     pub parent_tool_call_id: Option<SharedString>,
     pub subagent_session_info: Option<SubagentSessionInfo>,
@@ -1027,6 +1034,7 @@ impl ToolCall {
             raw_input: tool_call.raw_input,
             raw_input_markdown,
             raw_output: tool_call.raw_output,
+            duration: tool_duration_from_meta(&tool_call.meta),
             tool_name,
             parent_tool_call_id: tool_call.meta.as_ref().and_then(|meta| meta.get("parentToolCallId")).and_then(|value| value.as_str()).map(SharedString::from),
             subagent_session_info,
@@ -1117,6 +1125,9 @@ impl ToolCall {
             label_changed |= self.tool_name.is_some();
         }
 
+        if let Some(duration) = tool_duration_from_meta(&meta) {
+            self.duration = Some(duration);
+        }
         if let Some(parent) = meta.as_ref().and_then(|meta| meta.get("parentToolCallId")).and_then(|value| value.as_str()) {
             self.parent_tool_call_id = Some(parent.to_owned().into());
         }
@@ -3555,6 +3566,7 @@ impl AcpThread {
                     raw_input: None,
                     raw_input_markdown: None,
                     raw_output: None,
+                    duration: None,
                     tool_name: None,
                     parent_tool_call_id: None,
                     subagent_session_info: None,
@@ -8200,6 +8212,32 @@ mod tests {
             call.update_fields(acp::ToolCallUpdateFields::new().status(acp::ToolCallStatus::Completed),
                 None, languages, &HashMap::default(), cx).unwrap();
             assert_eq!(call.parent_tool_call_id.as_deref(), Some("code-parent"));
+        });
+    }
+
+    #[gpui::test]
+    fn test_eido_tool_duration_survives_updates_and_keeps_plugin_output(cx: &mut TestAppContext) {
+        init_test(cx);
+        let languages = cx.update(|cx| Arc::new(LanguageRegistry::test(cx.background_executor().clone())));
+        cx.update(|cx| {
+            let mut call = ToolCall::from_acp(acp::ToolCall::new("timed", "plugin-tool"),
+                ToolCallStatus::Pending, languages.clone(), &HashMap::default(), cx).unwrap();
+            assert_eq!(call.duration, None);
+            let meta: acp::Meta = serde_json::from_value(serde_json::json!({"eidoToolDurationMs":1250.25})).unwrap();
+            let output = serde_json::json!(["plugin details", 42]);
+            call.update_fields(acp::ToolCallUpdateFields::new().status(acp::ToolCallStatus::Completed).raw_output(output.clone()),
+                Some(meta.clone()), languages.clone(), &HashMap::default(), cx).unwrap();
+            assert_eq!(call.duration, Some(Duration::from_micros(1_250_250)));
+            assert_eq!(call.raw_output, Some(output));
+            call.update_fields(acp::ToolCallUpdateFields::new().title("Updated title"),
+                None, languages.clone(), &HashMap::default(), cx).unwrap();
+            assert_eq!(call.duration, Some(Duration::from_micros(1_250_250)));
+            let replay = ToolCall::from_acp(acp::ToolCall::new("replayed", "plugin-tool").meta(meta),
+                ToolCallStatus::Completed, languages, &HashMap::default(), cx).unwrap();
+            assert_eq!(replay.duration, call.duration);
+            for invalid in [serde_json::json!(-1), serde_json::json!("1250"), serde_json::json!(null)] {
+                assert_eq!(tool_duration_from_meta(&Some(acp::Meta::from_iter([("eidoToolDurationMs".into(), invalid)]))), None);
+            }
         });
     }
 

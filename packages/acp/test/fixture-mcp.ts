@@ -2,11 +2,15 @@ import assert from 'node:assert/strict';
 import {createServer} from 'node:http';
 import {createHash} from 'node:crypto';
 
-export async function oauthFixture(options: {manual?:boolean} = {}) {
+export async function oauthFixture(options: {manual?:boolean; holdPath?:string} = {}) {
   let origin='', access='initial-mcp-access', refresh='initial-mcp-refresh';
   let codeChallenge='', refreshes=0, calls=0, browserFlows=0, mode: 'normal'|'scope'|'reject' = 'normal';
+  let reached!:()=>void,closed!:()=>void;
+  const heldRequest=new Promise<void>(resolve=>{reached=resolve;});
+  const heldClosed=new Promise<void>(resolve=>{closed=resolve;});
   const server=createServer(async(req,res)=> {
     const url=new URL(req.url!,origin);
+    if(url.pathname===options.holdPath){res.on('close',closed);reached();return;}
     const json=(data:unknown,status=200)=>res.writeHead(status,{'content-type':'application/json'}).end(JSON.stringify(data));
     if(url.pathname.startsWith('/.well-known/oauth-protected-resource'))return json({resource:origin+'/mcp',authorization_servers:[origin],scopes_supported:['tools']});
     if(url.pathname==='/.well-known/oauth-authorization-server')return json({issuer:origin,authorization_endpoint:origin+'/authorize',token_endpoint:origin+'/token',registration_endpoint:origin+'/register',response_types_supported:['code'],grant_types_supported:['authorization_code','refresh_token'],token_endpoint_auth_methods_supported:['none'],code_challenge_methods_supported:['S256']});
@@ -46,7 +50,7 @@ export async function oauthFixture(options: {manual?:boolean} = {}) {
   });
   await new Promise<void>(resolve=>server.listen(0,'127.0.0.1',resolve));
   const address=server.address();assert.ok(address&&typeof address==='object');origin=`http://127.0.0.1:${address.port}`;
-  return {url:origin+'/mcp',origin,refreshes:()=>refreshes,calls:()=>calls,browserFlows:()=>browserFlows,
+  return {url:origin+'/mcp',origin,heldRequest,heldClosed,refreshes:()=>refreshes,calls:()=>calls,browserFlows:()=>browserFlows,
     expire:()=>{access='expired-by-server';},setMode:(value:typeof mode)=>{mode=value;},
     close:async()=>{server.closeAllConnections();await new Promise<void>(resolve=>server.close(()=>resolve()));}};
 }
