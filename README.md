@@ -35,6 +35,8 @@ Eido keeps the conversation and the code in the same place. Describe what you wa
 
 macOS 13 or later · Apple Silicon (M-series) · Early beta
 
+The latest beta includes pi 1.1.0, visible tool execution times, and improvements to screenshots and cancellation in agent workflows.
+
 ## The Eido experience
 
 ### Start with the intent
