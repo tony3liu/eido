@@ -1,0 +1,63 @@
+import assert from 'node:assert/strict';
+import {test} from 'node:test';
+import {createServer,get} from 'node:http';
+import {mkdtemp,writeFile,rm} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
+import {fileURLToPath} from 'node:url';
+import {Client} from '@modelcontextprotocol/sdk/client/index.js';
+import {StdioClientTransport} from '@modelcontextprotocol/sdk/client/stdio.js';
+import {browserDirectory} from '../src/paths.mjs';
+process.env.PLAYWRIGHT_BROWSERS_PATH=browserDirectory();
+const {chromium}=await import('playwright');
+const one=(ids,choice)=>({choice,confidence:1,probabilities:Object.fromEntries(Object.keys(ids).map(k=>[k,Number(k===choice)]))});
+const text=result=>JSON.parse(result.content.find(c=>c.type==='text').text);
+test('packaged MCP inspector UI performs Choose, Execute, Auto, overlays and exports on the owned browser',async t=>{
+  const dir=await mkdtemp(join(tmpdir(),'eido-inspector-'));t.after(()=>rm(dir,{recursive:true,force:true}));let calls=0;
+  const api=createServer(async(req,res)=>{
+    let data='';for await(const chunk of req)data+=chunk;const body=JSON.parse(data);calls++;
+    if(body.messages){res.end(JSON.stringify({choices:[{message:{content:'{"text":"Lisbon"}'}}]}));return;}
+    const travel=!body.state.page.title.includes('Reading room')&&!body.state.page.text.includes('NOTES FROM THE LAB')&&!body.state.page.text.includes('End of article');
+    const elements=body.state.elements;
+    const field=elements.find(e=>e.label==='Destination'),category=elements.find(e=>e.label==='Stay category'),toggle=elements.find(e=>e.label==='Free cancellation');
+    const op=travel?(body.state.page.title.startsWith('Casa Flora')?'DONE':field?.value!=='Lisbon'?'TYPE_TEXT':category?.value!=='Design'?'SELECT':'CLICK'):
+      body.state.page.text.includes('End of article')?'DONE':'CLICK';
+    const answers={operation:one(body.questions.operation.criteria,op)};
+    if(op!=='DONE') {const headName=op.toLowerCase()+'_target',head=body.questions[headName].criteria;
+      const label=travel?(op==='TYPE_TEXT'?'Destination':op==='SELECT'?'→ Design':toggle?.checked!=='true'?'Free cancellation':!body.state.page.text.includes('1 places in Lisbon')?'Find stays':'View Casa Flora'):'A browser is a choice';
+      const target=Object.keys(head).find(k=>head[k].element.includes(label));assert.ok(target);answers[headName]=one(head,target);}
+    res.setHeader('content-type','application/json');res.end(JSON.stringify({model:'fixture',answers}));
+  });
+  await new Promise(r=>api.listen(0,'127.0.0.1',r));t.after(()=>{api.closeAllConnections();return new Promise(r=>api.close(r));});
+  const apiUrl=`http://127.0.0.1:${api.address().port}`;
+  await writeFile(join(dir,'settings.json'),JSON.stringify({eido:{browserDecision:{apiUrl,model:'fixture',engine:'ultrafast'},browserText:{apiUrl,model:'fixture'}}}));
+  await writeFile(join(dir,'auth.json'),JSON.stringify({'eido-jev':{type:'api_key',key:'fixture-key'},'eido-browser-text':{type:'api_key',key:'fixture-key'}}));
+  const transport=new StdioClientTransport({command:process.env.EIDO_BROWSER_TEST_NODE??process.execPath,args:[process.env.EIDO_BROWSER_TEST_ENTRY??fileURLToPath(new URL('../bin/browser-server.mjs',import.meta.url))],env:{...process.env,EIDO_PI_CONFIG_DIR:dir,JEV_BROWSER_HEADED:'0'},stderr:'pipe'});
+  let stderr='';transport.stderr?.on('data',b=>stderr+=b);
+  const client=new Client({name:'inspector-test',version:'1'},{capabilities:{}});t.after(()=>client.close());await client.connect(transport);
+  const call=(name,args={})=>client.callTool({name:'browser_'+name,arguments:args});
+  const inspect=await call('inspect');assert.equal(inspect.isError,undefined,stderr);const url=text(inspect).url;
+  const owned=await chromium.launch();t.after(()=>owned.close());const page=await owned.newPage();
+  await page.goto(url);await page.selectOption('#scenario','research');await page.click('#start');
+  await page.waitForFunction(()=>!document.querySelector('#choose').disabled);
+  assert.ok(await page.locator('#screenshot').getAttribute('src'));assert.ok(await page.locator('.target').count()>0);
+  await page.click('#choose');await page.waitForFunction(()=>!document.querySelector('#execute').disabled);
+  assert.equal(calls,1);assert.equal(text(await call('agent_state')).status,'predicted');assert.ok(await page.locator('.operation-choice.best').count());
+  await page.click('#execute');await page.waitForFunction(()=>document.querySelector('#step-count').textContent.startsWith('1 '));
+  assert.equal(calls,1);const after=text(await call('agent_state'));assert.equal(after.history.length,1);assert.match(after.page.url,/#choices/);
+  await page.uncheck('#overlays');assert.equal(await page.locator('#targets').isVisible(),false);await page.check('#overlays');
+  await page.click('#auto');await page.waitForFunction(()=>document.querySelector('#status').textContent.includes('complete'));
+  assert.equal(calls,2);assert.equal(text(await call('agent_state')).status,'done');
+  const downloaded=page.waitForEvent('download');await page.click('#download');const download=await downloaded;
+  assert.equal(download.suggestedFilename(),'typesafe-browser-trace.json');
+  assert.equal((await call('agent_command',{command:'act',fingerprint:after.page.fingerprint})).isError,true);
+  const forbidden=await fetch(url+'/api/tick',{method:'POST',headers:{'content-type':'application/json'},body:'{}'});assert.equal(forbidden.status,403);
+  const crossOrigin=await new Promise(resolve=>get(url+'/api/state',{headers:{Host:'evil.example'}},res=>{res.resume();resolve(res.statusCode);}));assert.equal(crossOrigin,403);
+  await page.selectOption('#scenario','travel');await page.check('#record');await page.click('#start');
+  await page.waitForFunction(()=>!document.querySelector('#auto').disabled);await page.click('#auto');
+  await page.waitForFunction(()=>document.querySelector('#status').textContent.includes('complete'));
+  const travelState=text(await call('agent_state'));assert.equal(travelState.history.length,5);assert.equal(travelState.text_calls.length,1);assert.equal(travelState.record,true);
+  assert.match(travelState.page.url,/#casa-flora/);assert.match(travelState.page.text,/Your filters: Design · Free cancellation enabled · Destination Lisbon/);
+  const verification=await call('verify',{scenario:'travel',screenshot:true});assert.equal(text(verification).verification.passed,true);assert.ok(verification.content.some(c=>c.type==='image'));
+  await call('close');assert.equal(text(await call('status')).open,false);assert.equal(text(await call('agent_state')).status,'idle');
+});

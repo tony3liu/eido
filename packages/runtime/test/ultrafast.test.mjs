@@ -33,7 +33,7 @@ const fixture=`<title>Booking fixture</title><form><label>Destination <input id=
 <input id="check" type="checkbox" aria-label="Nonstop"><p id="result">Ready</p></form><aside id="aside">Weather</aside>`;
 
 test('one indexed node has compatible heads; only selected head is validated', async t=>{
-  const {fast}=await browser(t,fixture);const page=await fast.observe();
+  const {fast}=await browser(t,fixture);const page=await fast.observe(false);
   const {elements,targets}=actionSpace(page.actions);
   const field=elements.find(e=>e.label==='Destination');assert.deepEqual(field.operations,['TYPE_TEXT','CLICK']);
   const select=elements.find(e=>e.label==='Cabin');assert.equal(select.options.length,1);
@@ -56,18 +56,18 @@ test('real DOM guards reject changed meaning, form state, replacement, visibilit
     "field.readOnly=true", "button.style.visibility='hidden'", "button.outerHTML=button.outerHTML",
     "select.options[1].textContent='Premium'", "document.querySelector('#result').textContent='Price changed'",
   ]) {
-    await page.setContent(fixture);const snapshot=await fast.observe(),action=snapshot.actions.find(a=>a.label==='Search');
+    await page.setContent(fixture);const snapshot=await fast.observe(false),action=snapshot.actions.find(a=>a.label==='Search');
     await page.evaluate(mutation);assert.equal(await fast.fresh(snapshot,action),false,mutation);
     await assert.rejects(fast.act(action,snapshot),StalePage);
   }
-  await page.setContent(fixture);let snapshot=await fast.observe(),action=snapshot.actions.find(a=>a.label==='Search');
+  await page.setContent(fixture);let snapshot=await fast.observe(false),action=snapshot.actions.find(a=>a.label==='Search');
   await page.evaluate("button.style.transform='translateX(130px)'");
   assert.equal(await fast.fresh(snapshot,action),true);await fast.act(action,snapshot);
   assert.match(await page.locator('#result').innerText(),/Submitted/,'click resolves current geometry');
-  await page.setContent(fixture);snapshot=await fast.observe();action=snapshot.actions.find(a=>a.label==='Search');
+  await page.setContent(fixture);snapshot=await fast.observe(false);action=snapshot.actions.find(a=>a.label==='Search');
   await page.evaluate("document.querySelector('#aside').textContent='Weather changed'");
   assert.equal(await fast.fresh(snapshot,action),true);assert.equal(await fast.fresh(snapshot),false);
-  snapshot=await fast.observe();action=snapshot.actions.find(a=>a.label==='Search');
+  snapshot=await fast.observe(false);action=snapshot.actions.find(a=>a.label==='Search');
   await page.evaluate("const cover=document.createElement('div');cover.style='position:fixed;inset:0;z-index:99999';document.body.append(cover)");
   assert.equal(await fast.fresh(snapshot),true,'textless overlay is caught by hit test, not semantics');
   await assert.rejects(fast.act(action,snapshot),StalePage);
@@ -77,13 +77,13 @@ test('real DOM guards reject changed meaning, form state, replacement, visibilit
 test('atomic snapshot excludes unsafe inputs; native select, fill and autocomplete change real state', async t=>{
   const {page,fast}=await browser(t,fixture+`<input type="password" value="private-secret"><input type="file"><input type="hidden" value="hidden-secret">`);
   const calls=[];const send=fast.session.send.bind(fast.session);fast.session.send=(name,args)=>{calls.push(name);return send(name,args);};
-  let state=await fast.observe();assert.deepEqual(calls,['Runtime.evaluate']);
+  let state=await fast.observe(false);assert.deepEqual(calls,['Runtime.evaluate']);
   assert.ok(!JSON.stringify(state).includes('private-secret'));assert.ok(!JSON.stringify(state).includes('hidden-secret'));
   await fast.act(state.actions.find(a=>a.kind==='select'),state);assert.equal(await page.locator('#select').inputValue(),'business');
-  state=await fast.observe();await fast.act(state.actions.find(a=>a.kind==='fill'),state,'London');assert.equal(await page.locator('#field').inputValue(),'London');
+  state=await fast.observe(false);await fast.act(state.actions.find(a=>a.kind==='fill'),state,'London');assert.equal(await page.locator('#field').inputValue(),'London');
   await page.setContent(`<input id="field" role="combobox" aria-label="City" aria-controls="options" oninput="setTimeout(()=>document.querySelector('#options').innerHTML='<div role=option>London</div>',60)"><div id="options"></div>`);
-  state=await fast.observe();await fast.act(state.actions.find(a=>a.kind==='fill'),state,'London');
-  state=await fast.observe();assert.ok(state.actions.some(a=>a.role==='option'&&a.label==='London'));
+  state=await fast.observe(false);await fast.act(state.actions.find(a=>a.kind==='fill'),state,'London');
+  state=await fast.observe(false);assert.ok(state.actions.some(a=>a.role==='option'&&a.label==='London'));
   assert.ok(!calls.some(name=>name.includes('Screenshot')));
 });
 
@@ -99,7 +99,7 @@ test('full goal uses helper only for TYPE_TEXT, traces before observing, and con
     return {model:'fixture',answers};
   });
   const agent=new FastAgent(fast,'Enter "London" and click Search',{decision:api.config,text:api.config,signal:controller.signal});
-  const result=await agent.run();assert.equal(result.status,'likely_done');assert.equal(result.actions,2);assert.equal(result.model_calls,3);assert.equal(result.text_calls,1);
+  const result=await agent.runToCompletion();assert.equal(result.status,'likely_done');assert.equal(result.actions,2);assert.equal(result.model_calls,3);assert.equal(result.text_calls,1);
   assert.match(await page.locator('#result').innerText(),/Submitted London/);
   assert.equal(api.requests.filter(r=>r.messages).length,1);assert.equal(agent.history[0].text,'London');
   await assert.rejects(agent.act(agent.page.fingerprint),/Observe and choose/);
@@ -110,7 +110,7 @@ test('full goal uses helper only for TYPE_TEXT, traces before observing, and con
 });
 
 test('text output is strict, cancellation aborts HTTP, and missing helper configuration never types', async t=>{
-  const {fast,controller}=await browser(t,fixture);const page=await fast.observe(),action=page.actions.find(a=>a.kind==='fill');
+  const {fast,controller}=await browser(t,fixture);const page=await fast.observe(false),action=page.actions.find(a=>a.kind==='fill');
   const context=fieldContext('Enter London',action,page,[]);
   await assert.rejects(fieldText(context,{apiUrl:'',key:'',model:''}),/Configure Browser Text Model/);
   for(const content of ['null','{}','{"text":null}','{"text":""}','{"text":"ok","action":"click"}','{"text":123}','not json']) {
@@ -127,7 +127,7 @@ test('stale helper is reused only when the complete input is identical', async t
   const api=await service(t,body=>body.messages?{choices:[{message:{content:'{"text":"London"}'}}]}:{model:'fixture',answers:{
     operation:one(body.questions.operation.criteria,'TYPE_TEXT'),type_text_target:one(body.questions.type_text_target.criteria,Object.keys(body.questions.type_text_target.criteria)[0])}});
   const agent=new FastAgent(fast,'Enter London',{decision:api.config,text:api.config,signal:controller.signal});
-  agent.page=await fast.observe();await agent.predict();
+  agent.page=await fast.observe(false);await agent.predict();
   const act=fast.act.bind(fast);fast.act=async()=>{throw new StalePage('Covered after helper');};
   await assert.rejects(agent.act(agent.page.fingerprint),StalePage);assert.equal(agent.textCalls.length,1);
   agent.status='ready';await agent.predict();await assert.rejects(agent.act(agent.page.fingerprint),StalePage);assert.equal(agent.textCalls.length,1);
@@ -137,10 +137,10 @@ test('stale helper is reused only when the complete input is identical', async t
 });
 
 test('WAIT is bounded without false no-progress; uncertain select is never retried as stale', async t=>{
-  const {fast,controller}=await browser(t,fixture);const page=await fast.observe();
+  const {fast,controller}=await browser(t,fixture);const page=await fast.observe(false);
   const api=await service(t,body=>({model:'fixture',answers:{operation:one(body.questions.operation.criteria,'WAIT')}}));
   const agent=new FastAgent(fast,'Wait',{decision:api.config,text:api.config,signal:controller.signal,maxActions:3});
-  const result=await agent.run();assert.equal(result.actions,3);assert.equal(result.status,'blocked');assert.equal(result.stale_retries,0);
+  const result=await agent.runToCompletion();assert.equal(result.actions,3);assert.equal(result.status,'blocked');assert.equal(result.stale_retries,0);
   const send=fast.session.send.bind(fast.session);fast.session.send=async(name,args)=>{
     if(name==='Runtime.evaluate'&&args.expression.includes("e.value=action.value"))return {exceptionDetails:{text:'Interrupted'}};
     return send(name,args);

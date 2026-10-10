@@ -24,16 +24,21 @@ RUNTIME_FILES = (
     'packages/runtime/src/computer.mjs',
     'packages/runtime/src/browser/config.mjs', 'packages/runtime/src/browser/server.mjs',
     'packages/runtime/src/browser/ultrafast/agent.js', 'packages/runtime/src/browser/ultrafast/browser.js', 'packages/runtime/src/browser/ultrafast/model.js', 'packages/runtime/src/browser/ultrafast/types.js', 'packages/runtime/src/browser/ultrafast/transport.js', 'packages/runtime/src/browser/ultrafast/questions.js', 'packages/runtime/src/browser/ultrafast/scripts.js', 'packages/runtime/src/browser/ultrafast/snapshot.js', 'packages/runtime/src/browser/ultrafast/LICENSE',
+    'packages/runtime/src/browser/ultrafast/render.js',
+    'packages/runtime/src/browser/ultrafast/index.js', 'packages/runtime/src/browser/ultrafast/recording.js',
+    'packages/runtime/src/browser/ultrafast/json.js', 'packages/runtime/src/browser/ultrafast/inspector.js', 'packages/runtime/src/browser/ultrafast/verification.js',
+    'packages/runtime/src/browser/ultrafast/static/index.html', 'packages/runtime/src/browser/ultrafast/static/app.js', 'packages/runtime/src/browser/ultrafast/static/style.css', 'packages/runtime/src/browser/ultrafast/static/scenarios.html',
     'packages/runtime/src/pi/settings.mjs', 'packages/runtime/src/pi/extensions.mjs',
     'packages/runtime/src/pi/http-settings.mjs', 'packages/runtime/src/pi/runtime-settings.mjs',
     'packages/runtime/src/mcp/config.mjs', 'packages/runtime/src/mcp/status.mjs',
     'packages/runtime/bin/pi-settings.mjs', 'packages/runtime/bin/pi-extensions.mjs',
+    'packages/runtime/bin/browser-agent.mjs',
     'packages/runtime/bin/mcp-auth.mjs', 'packages/runtime/bin/browser-server.mjs',
     'packages/acp/bin/component-terminal.mjs',
     'packages/acp/helpers/preview/server.mjs', 'packages/acp/helpers/preview/command.mjs',
     'packages/acp/helpers/preview/project.mjs',
 )
-RUNTIME_COMPILED = tuple(name for name in RUNTIME_FILES if '/ultrafast/' in name and name.endswith('.js') and not name.endswith('/snapshot.js'))
+RUNTIME_COMPILED = tuple(name for name in RUNTIME_FILES if '/ultrafast/' in name and name.endswith('.js') and not name.endswith('/snapshot.js') and '/static/' not in name)
 RUNTIME_MODULE_ROOTS = ('packages/runtime', 'packages/acp/bin', 'packages/acp/helpers')
 EXCLUDED = {'test', 'tests', '__tests__', '__mocks__', 'fixtures', '__fixtures__',
             'examples', 'example', 'bench', 'benchmark', 'benchmarks', 'coverage',
@@ -220,8 +225,10 @@ def build():
                 raise RuntimeError(f'Missing compiled browser module: {name}')
             continue
         copy_file(ROOT / name, runtime / name)
-    browser_server = runtime / 'packages/runtime/src/browser/server.mjs'
-    browser_server.write_text(browser_server.read_text().replace("./ultrafast/browser.ts", "./ultrafast/browser.js").replace("./ultrafast/agent.ts", "./ultrafast/agent.js"))
+    for name in RUNTIME_FILES:
+        if name.endswith('.mjs'):
+            module = runtime / name
+            module.write_text(re.sub(r"(ultrafast/[a-z]+)\.ts", r"\1.js", module.read_text()))
     count = copy_dependencies(ROOT, runtime) + copy_dependencies(ROOT / 'packages/acp', runtime / 'packages/acp')
     copy_file(ROOT / 'native/appearance.json', runtime / 'native/appearance.json')
     copy_file(node, contents / 'Helpers/node')

@@ -3,13 +3,14 @@ export type Operation = 'CLICK' | 'TYPE_TEXT' | 'SELECT' | 'SCROLL_UP' | 'SCROLL
 export interface Action {
   id: string; kind: 'click' | 'fill' | 'select' | 'scroll' | 'wait'; label: string;
   node?: number; role?: string; value?: string; current_value?: string;
-  checked?: string; selected?: string; expanded?: string; delta?: number;
+  checked?: string|boolean; selected?: string|boolean; expanded?: string|boolean; delta?: number;
   rect?: {x:number;y:number;w:number;h:number};
 }
 export interface Snapshot {
   url:string; title:string; text:string; w:number; h:number; actions:Action[];
   scroll:{y:number;height:number}; marker:unknown; page_key:unknown;
   guards:Record<string,unknown>; omitted_actions:number; fingerprint:string;
+  screenshot?:string;
 }
 export interface History {
   step:number; action:string; kind:Action['kind']; choice:string; text:string|null;
@@ -22,6 +23,7 @@ export interface Decision {
   probabilities:Record<string,number>; operation_probabilities:Record<string,number>;
   target_probabilities:Record<string,number>; target_confidence:number|null;
   raw_answers:unknown; model:string; usage:unknown; latency_ms:number; request:unknown;
+  fingerprint?:string; elapsed_ms?:number;
 }
 export interface Helper {model:string;latency_ms:number;usage:unknown}
 export interface ModelConfig {apiUrl:string;model:string;key:string}

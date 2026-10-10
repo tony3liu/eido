@@ -272,7 +272,7 @@ test("Jev configuration uses global settings and pi credentials without exposing
   assert.equal(result.defaultModel, 'test-model');
   assert.equal((await f.get(f.target, 'settings.json')).customSetting.retain, true);
   const env = await browserDecisionEnvironment(f.target);
-  assert.deepEqual(env, {JEV_API_URL:'http://127.0.0.1:19001/v1/systemone', JEV_MODEL:'jev-fixture', TYPESAFE_API_KEY:'fixture-jev-secret', EIDO_BROWSER_ENGINE:'ultrafast', TEXT_MODEL_BASE_URL:'', TEXT_MODEL:'', TEXT_MODEL_REASONING:'low', TEXT_MODEL_API_KEY:''});
+  assert.deepEqual(env, {JEV_API_URL:'http://127.0.0.1:19001/v1/systemone', JEV_MODEL:'jev-fixture', TYPESAFE_API_KEY:'fixture-jev-secret', EIDO_BROWSER_ENGINE:'ultrafast', TEXT_MODEL_BASE_URL:'https://api.deepseek.com/v1', TEXT_MODEL:'deepseek-chat', TEXT_MODEL_REASONING:'low', TEXT_MODEL_API_KEY:''});
   assert.equal((await stat(join(f.target, 'auth.json'))).mode & 0o777, 0o600);
   await f.bridge.execute({operation:'browser-decision', apiUrl:'https://example.invalid/v1/systemone', model:'jev-new', key:''});
   assert.equal((await browserDecisionEnvironment(f.target)).TYPESAFE_API_KEY, 'fixture-jev-secret');

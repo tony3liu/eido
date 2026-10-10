@@ -32,6 +32,7 @@ class ProductionPackageTests(unittest.TestCase):
                             if 'test' not in path.parts)
         expected.update(package.RUNTIME_COMPILED)
         expected.update(['packages/runtime/src/browser/ultrafast/snapshot.js', 'packages/runtime/src/browser/ultrafast/LICENSE'])
+        expected.update(str(path.relative_to(package.ROOT)) for path in (package.ROOT / 'packages/runtime/src/browser/ultrafast/static').iterdir())
         expected.add('packages/runtime/package.json')
         self.assertEqual(set(package.RUNTIME_FILES), expected)
         with tempfile.TemporaryDirectory() as directory:

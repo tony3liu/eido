@@ -1,0 +1,507 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Forma · Find a place to slow down</title>
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        font:
+          15px system-ui,
+          sans-serif;
+        color: #343e38;
+        background: #fcfcf8;
+        -webkit-font-smoothing: antialiased;
+      }
+      header {
+        height: 74px;
+        border-bottom: 1px solid #dce2d8;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 0 52px;
+      }
+      .logo {
+        font-family: Georgia, serif;
+        font-size: 30px;
+        letter-spacing: -1px;
+        color: #2e5344;
+      }
+      nav {
+        display: flex;
+        gap: 28px;
+      }
+      a {
+        color: inherit;
+        text-decoration: none;
+      }
+      button,
+      input,
+      select {
+        font: inherit;
+      }
+      button,
+      a,
+      select,
+      input[type="checkbox"] {
+        cursor: pointer;
+      }
+      button {
+        background: white;
+        border: 1px solid #d6ddcf;
+        border-radius: 6px;
+        padding: 10px 16px;
+        color: #38503e;
+      }
+      button:hover {
+        background: #edf2e8;
+      }
+      main {
+        padding: 42px 52px;
+      }
+      h1 {
+        font:
+          42px Georgia,
+          serif;
+        margin: 0 0 10px;
+        letter-spacing: -1px;
+      }
+      h2 {
+        font:
+          22px Georgia,
+          serif;
+        margin: 0;
+      }
+      p {
+        line-height: 1.6;
+        color: #87917e;
+        margin: 8px 0 24px;
+      }
+      .topline {
+        display: flex;
+        justify-content: space-between;
+        align-items: end;
+      }
+      .edition {
+        font:
+          11px ui-monospace,
+          monospace;
+        letter-spacing: 2px;
+        color: #96a18b;
+        margin-bottom: 22px;
+      }
+      .search {
+        display: flex;
+        gap: 12px;
+        margin-top: 22px;
+      }
+      input[type="search"] {
+        flex: 1;
+        min-width: 0;
+        border: 1px solid #d6ddcf;
+        border-radius: 6px;
+        padding: 13px 16px;
+        background: white;
+        color: #344c3c;
+      }
+      .search button {
+        background: #365b45;
+        color: white;
+        padding: 10px 32px;
+        border-color: #365b45;
+      }
+      .filters {
+        display: flex;
+        gap: 24px;
+        align-items: center;
+        margin: 25px 0;
+        font-size: 13px;
+      }
+      .filters select {
+        margin-left: 8px;
+        padding: 8px 12px;
+        border: 1px solid #d6ddcf;
+        border-radius: 5px;
+        background: white;
+        color: #446047;
+      }
+      input[type="checkbox"] {
+        accent-color: #42684b;
+      }
+      .filters label {
+        display: flex;
+        gap: 7px;
+        align-items: center;
+      }
+      .filters .count {
+        margin-left: auto;
+        color: #94a089;
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 23px;
+      }
+      .card {
+        border: 1px solid #e1e6d9;
+        border-radius: 9px;
+        overflow: hidden;
+        background: white;
+      }
+      .photo {
+        height: 184px;
+        position: relative;
+        overflow: hidden;
+        background: #e4e6da;
+      }
+      .photo:before {
+        content: "";
+        position: absolute;
+        left: 20%;
+        top: 26px;
+        width: 60%;
+        height: 170px;
+        background: #ddcdb5;
+        box-shadow: 12px 5px 0 #a5a78c;
+      }
+      .photo:after {
+        content: "";
+        position: absolute;
+        left: 32%;
+        top: 63px;
+        width: 30px;
+        height: 68px;
+        border-radius: 18px 18px 0 0;
+        background: #788877;
+        box-shadow:
+          66px 0 #788877,
+          0 95px #788877,
+          66px 95px #788877;
+      }
+      .photo .tree {
+        position: absolute;
+        z-index: 1;
+        bottom: -20px;
+        right: 10px;
+        width: 80px;
+        height: 140px;
+        border-radius: 65% 55% 45% 40%;
+        background: #6d8963;
+        transform: rotate(-10deg);
+      }
+      .photo .sun {
+        position: absolute;
+        left: 20px;
+        top: 22px;
+        width: 30px;
+        height: 30px;
+        border-radius: 50%;
+        background: #f5d9a6;
+      }
+      .card:nth-child(2) .photo {
+        background: #dce6e3;
+      }
+      .card:nth-child(2) .photo:before {
+        background: #e3c6aa;
+      }
+      .card:nth-child(3) .photo {
+        background: #e7e0d5;
+      }
+      .card:nth-child(3) .photo:before {
+        background: #bdc6af;
+      }
+      .card-body {
+        padding: 18px;
+      }
+      .location {
+        font:
+          10px ui-monospace,
+          monospace;
+        letter-spacing: 1px;
+        color: #94a18a;
+        margin-bottom: 8px;
+      }
+      .meta {
+        font-size: 12px;
+        margin: 10px 0 18px;
+        color: #8d987f;
+      }
+      .card-bottom {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+      }
+      .price {
+        font-size: 16px;
+        color: #425742;
+      }
+      .price span {
+        font-size: 11px;
+        color: #8d987f;
+      }
+      .card-bottom button {
+        font-size: 12px;
+        padding: 8px 13px;
+      }
+      .empty {
+        padding: 45px;
+        text-align: center;
+        border: 1px dashed #cbd6c2;
+      }
+      .detail {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 35px;
+        margin-top: 20px;
+      }
+      .detail .photo {
+        height: 370px;
+        border-radius: 12px;
+      }
+      .detail .photo:before {
+        width: 65%;
+        height: 350px;
+        top: 40px;
+      }
+      .detail .photo:after {
+        top: 100px;
+        left: 30%;
+        width: 50px;
+        height: 95px;
+        box-shadow:
+          105px 0 #788877,
+          0 130px #788877,
+          105px 130px #788877;
+      }
+      .detail-copy {
+        padding-top: 28px;
+      }
+      .success {
+        padding: 12px 16px;
+        background: #edf3e5;
+        color: #628250;
+        border-radius: 6px;
+        font-size: 13px;
+        margin-top: 24px;
+      }
+      .articles {
+        display: grid;
+        gap: 18px;
+      }
+      .article {
+        padding: 23px;
+        border: 1px solid #dce3d4;
+        border-radius: 7px;
+        background: white;
+      }
+      .article a {
+        display: block;
+        font:
+          23px Georgia,
+          serif;
+        color: #304c36;
+      }
+      .article p {
+        margin: 10px 0 0;
+      }
+      .article-tag {
+        font:
+          10px ui-monospace,
+          monospace;
+        letter-spacing: 1px;
+        color: #9aa58d;
+        margin-bottom: 10px;
+      }
+      .article-content {
+        max-width: 690px;
+      }
+      .article-content p {
+        color: #5a6752;
+        font-size: 17px;
+      }
+      .back {
+        font-size: 13px;
+        display: inline-block;
+        margin-bottom: 20px;
+      }
+      .fixture-note {
+        font-size: 10px;
+        color: #a4ad9b;
+        margin-top: 24px;
+      }
+      footer {
+        font-size: 11px;
+        color: #a5ae9b;
+        padding-top: 28px;
+        border-top: 1px solid #e1e6d9;
+        margin-top: 32px;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <a href="#" class="logo" id="home">forma.</a>
+      <nav>
+        <a href="#" id="stays">Find a stay</a
+        ><a href="#reading" id="reading">Reading room</a>
+      </nav>
+      <span class="edition">PLACES WITH CHARACTER</span>
+    </header>
+    <main id="content"></main>
+    <script>
+      const root = document.getElementById("content");
+      let query = "",
+        category = "all",
+        free = false,
+        searched = false;
+      const places = [
+        {
+          name: "Casa Flora",
+          city: "Lisbon",
+          category: "Design",
+          free: true,
+          price: 145,
+          description:
+            "A quiet courtyard, warm terracotta, and light that stays all afternoon.",
+        },
+        {
+          name: "The Glasshouse",
+          city: "Copenhagen",
+          category: "Design",
+          free: true,
+          price: 210,
+          description: "An airy studio tucked into a green corner of the city.",
+        },
+        {
+          name: "Serra Lodge",
+          city: "Lisbon",
+          category: "Nature",
+          free: false,
+          price: 120,
+          description: "A hillside retreat for slower mornings and long walks.",
+        },
+      ];
+      function art() {
+        return '<div class="photo"><span class="sun"></span><span class="tree"></span></div>';
+      }
+      function travel() {
+        document.title = "Forma · Find a place to slow down";
+        root.innerHTML = `<div class="topline"><div><div class="edition">THE SLOWER WAY TO STAY</div><h1>Somewhere you can exhale.</h1><p>Small, considered places. A little closer to what matters.</p></div><div class="edition">CURATED, NOT CROWDED</div></div><form class="search" id="search"><input type="search" id="destination" name="destination" aria-label="Destination" placeholder="Where would you like to go?" autocomplete="off"><button type="submit">Find stays</button></form><div class="filters"><label>Category <select id="category" name="category" aria-label="Stay category"><option value="all">All stays</option><option value="Design">Design</option><option value="Nature">Nature</option><option value="Coastal">Coastal</option></select></label><label><input type="checkbox" id="free" name="cancellation"> Free cancellation</label><span class="count" id="count"></span></div><div class="grid" id="results"></div><footer>Thoughtful places, independent hosts. <span> · Local demo: no bookings or payments.</span></footer>`;
+        document.getElementById("destination").value = query;
+        document.getElementById("category").value = category;
+        document.getElementById("free").checked = free;
+        document.getElementById("search").onsubmit = (e) => {
+          e.preventDefault();
+          query = document.getElementById("destination").value;
+          searched = true;
+          results();
+        };
+        document.getElementById("category").onchange = (e) => {
+          category = e.target.value;
+          results();
+        };
+        document.getElementById("free").onchange = (e) => {
+          free = e.target.checked;
+          results();
+        };
+        results();
+      }
+      function results() {
+        const rows = places.filter(
+          (p) =>
+            (!searched ||
+              p.city.toLowerCase().includes(query.trim().toLowerCase())) &&
+            (category === "all" || p.category === category) &&
+            (!free || p.free),
+        );
+        document.getElementById("count").textContent =
+          `${rows.length} places${searched ? " in " + query : ""}`;
+        const target = document.getElementById("results");
+        target.innerHTML = rows.length
+          ? rows
+              .map(
+                (p) =>
+                  `<article class="card">${art()}<div class="card-body"><div class="location">${p.city.toUpperCase()} · ${p.category.toUpperCase()}</div><h2>${p.name}</h2><div class="meta">${p.free ? "Free cancellation" : "Non-refundable"} · 2 guests</div><div class="card-bottom"><div class="price">€${p.price} <span>/ night</span></div><button type="button" data-place="${p.name}" aria-label="View ${p.name}">View stay ↗</button></div></div></article>`,
+              )
+              .join("")
+          : '<div class="empty">No places match these filters. Try another destination or category.</div>';
+        target
+          .querySelectorAll("button")
+          .forEach(
+            (b) =>
+              (b.onclick = () =>
+                detail(places.find((p) => p.name === b.dataset.place))),
+          );
+      }
+      function detail(p) {
+        location.hash = p.name.toLowerCase().replaceAll(" ", "-");
+        document.title = `${p.name} · Forma`;
+        root.innerHTML = `<button type="button" class="back" id="back">← All stays</button><div class="detail">${art()}<div class="detail-copy"><div class="edition">${p.city.toUpperCase()} · ${p.category.toUpperCase()}</div><h1>${p.name}</h1><p>${p.description}</p><div class="price">€${p.price} <span>/ night · 2 guests</span></div><div class="success">${p.free ? "Free cancellation included" : "Non-refundable stay"}</div><p class="fixture-note">Your filters: ${category} · Free cancellation ${free ? "enabled" : "off"} · Destination ${query || "anywhere"}</p></div></div><footer>Local demo property. No reservation has been made.</footer>`;
+        document.getElementById("back").onclick = () => {
+          location.hash = "";
+          travel();
+        };
+      }
+      const articles = [
+        {
+          id: "choices",
+          tag: "AGENTS · 6 MIN",
+          title: "A browser is a choice, not a conversation",
+          description:
+            "How finite action sets turn visible elements into a fast browser control loop.",
+        },
+        {
+          id: "latency",
+          tag: "SYSTEMS · 4 MIN",
+          title: "Where the milliseconds go",
+          description:
+            "Measuring network latency, model decisions, and page settling separately.",
+        },
+        {
+          id: "uncertainty",
+          tag: "RESEARCH · 5 MIN",
+          title: "Confidence is not correctness",
+          description:
+            "What a peaked distribution can and cannot tell you about an outcome.",
+        },
+      ];
+      function research() {
+        document.title = "Forma · Reading room";
+        root.innerHTML =
+          '<div class="edition">NOTES FROM THE LAB</div><h1>Ideas worth opening.</h1><p>Small experiments in how software sees and acts.</p><div class="articles">' +
+          articles
+            .map(
+              (a) =>
+                `<article class="article"><div class="article-tag">${a.tag}</div><a href="#${a.id}" data-article="${a.id}">${a.title}</a><p>${a.description}</p></article>`,
+            )
+            .join("") +
+          "</div><footer>Local reading fixture · Three original demo articles</footer>";
+        root
+          .querySelectorAll("[data-article]")
+          .forEach((a) => (a.onclick = () => article(a.dataset.article)));
+      }
+      function article(id) {
+        const a = articles.find((a) => a.id === id);
+        document.title = a.title + " · Forma";
+        root.innerHTML = `<button type="button" class="back" id="back">← Reading room</button><div class="article-content"><div class="edition">${a.tag}</div><h1>${a.title}</h1><p>${a.description}</p>${id === "choices" ? "<p>Observe the browser’s accessibility tree. Enumerate the actions that are actually available. Ask a choice model for the next action, execute it, then observe again.</p><p>Links, buttons, checkboxes, and dropdown values already form a finite vocabulary. Text fields need a separate value generator. The model chooses the field; a small language model supplies the words.</p><p>Freshness is part of correctness. Bind every decision to its observed page state. If the page changes before execution, discard the decision and observe again.</p>" : "<p>Measure the complete loop against an observable result. A valid action and a confident decision do not by themselves prove that the task succeeded.</p>"}</div><footer>End of article · Local demo content</footer>`;
+        document.getElementById("back").onclick = research;
+      }
+      document.getElementById("home").onclick = (e) => {
+        e.preventDefault();
+        travel();
+      };
+      document.getElementById("stays").onclick = (e) => {
+        e.preventDefault();
+        travel();
+      };
+      document.getElementById("reading").onclick = research;
+      new URLSearchParams(location.search).get("scenario") === "research"
+        ? research()
+        : travel();
+    </script>
+  </body>
+</html>

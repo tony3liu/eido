@@ -3,6 +3,7 @@
 import {setTimeout as delay} from 'node:timers/promises';
 import {modelFetch} from './transport.ts';
 import {NEXT_ACTION, TARGET, TEXT_VALUE} from './questions.ts';
+import {pythonJson} from './json.ts';
 import type {Action, Choice, Decision, History, ModelConfig, Operation, Snapshot, TextConfig} from './types.ts';
 
 export async function postJson(config:ModelConfig, body:unknown, signal?:AbortSignal):Promise<any> {
@@ -86,14 +87,14 @@ export async function choose(state:Snapshot,goal:string,history:History[],config
 }
 export function fieldContext(goal:string,action:Action,page:Snapshot,history:History[]) {
   return {goal,field:Object.fromEntries(['label','role','value'].map(k=>[k,(action as any)[k]??null])),
-    page:{title:page.title,text:page.text.slice(0,6000)},recent_actions:history.slice(-6).map(h=>({action:h.action??null,text:h.text??null}))};
+    page:{title:page.title,text:[...page.text].slice(0,6000).join('')},recent_actions:history.slice(-6).map(h=>({action:h.action??null,text:h.text??null}))};
 }
 export async function fieldText(context:ReturnType<typeof fieldContext>,config:TextConfig,signal?:AbortSignal) {
   if (!config.key || !config.apiUrl || !config.model) throw new Error('TYPE_TEXT needs a text model. Configure Browser Text Model in global settings; nothing was typed.');
   const base=config.apiUrl.replace(/\/+$/,''), started=performance.now();
   const reasoning=config.reasoning==='none'?{reasoning:{enabled:false}}:base.includes('api.deepseek.com/')?{thinking:{type:'disabled'}}:{reasoning:{effort:'low'}};
   const result=await postJson({...config,apiUrl:base+'/chat/completions'},{model:config.model,max_tokens:1024,response_format:{type:'json_object'},...reasoning,
-    messages:[{role:'system',content:TEXT_VALUE},{role:'user',content:JSON.stringify(context)}]},signal);
+    messages:[{role:'system',content:TEXT_VALUE},{role:'user',content:pythonJson(context)}]},signal);
   let output;
   try {output=JSON.parse(result.choices[0].message.content);} catch {throw new Error('Text helper returned no valid field value; nothing typed.');}
   if (!output || Object.keys(output).length!==1 || typeof output.text!=='string' || !output.text.trim() || [...output.text].length>2000)

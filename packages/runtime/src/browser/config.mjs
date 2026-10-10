@@ -5,6 +5,7 @@ import { ReadOnlyAuthStorage } from "../../../acp/node_modules/@earendil-works/p
 export const browserCredentialId = "eido-jev";
 export const browserTextCredentialId = "eido-browser-text";
 export const browserDefaults = {apiUrl: "https://api.typesafe.ai/v1/systemone", model: "jev-latest"};
+export const browserTextDefaults={apiUrl:'https://api.deepseek.com/v1',model:'deepseek-chat'};
 const settings = async directory => JSON.parse(await readFile(join(directory, "settings.json"), "utf8").catch(error => {
   if (error.code === "ENOENT") return "{}"; throw error;
 })).eido ?? {};
@@ -22,7 +23,7 @@ export async function browserDecisionSettings(directory) {
 }
 export async function browserTextSettings(directory) {
   const config = (await settings(directory)).browserText ?? {};
-  return {apiUrl: config.apiUrl ?? process.env.TEXT_MODEL_BASE_URL ?? '',model: config.model ?? process.env.TEXT_MODEL ?? '',
+  return {apiUrl: config.apiUrl ?? process.env.TEXT_MODEL_BASE_URL ?? browserTextDefaults.apiUrl,model: config.model ?? process.env.TEXT_MODEL ?? browserTextDefaults.model,
     reasoning: config.reasoning ?? process.env.TEXT_MODEL_REASONING ?? 'low',
     credential: state(await auth(directory).list(),browserTextCredentialId,process.env.TEXT_MODEL_API_KEY)};
 }

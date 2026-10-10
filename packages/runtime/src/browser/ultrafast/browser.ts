@@ -4,35 +4,78 @@ import {readFileSync} from 'node:fs';
 import {createHash} from 'node:crypto';
 import {isDeepStrictEqual} from 'node:util';
 import {setTimeout as delay} from 'node:timers/promises';
-import type {Page, CDPSession} from 'playwright';
+import {chromium, type Page, type CDPSession, type BrowserContext} from 'playwright';
 import {AFTER_INPUT,TARGET} from './scripts.ts';
+import {pythonJson} from './json.ts';
 import type {Action,Snapshot} from './types.ts';
 export const READ_STATE=readFileSync(new URL('./snapshot.js',import.meta.url),'utf8').trim();
 const MARKER=`(() => {const state=${READ_STATE}; return state?.marker ?? null;})()`;
 export class StalePage extends Error {}
 export class UncertainAction extends Error {}
-// Canonical content identity (the Python digest uses different JSON whitespace).
-const canonical=(v:any):string=>JSON.stringify(v===null||typeof v!=='object'?v:Array.isArray(v)?v.map(x=>JSON.parse(canonical(x))):Object.fromEntries(Object.keys(v).sort().map(k=>[k,JSON.parse(canonical(v[k]))])));
 export function fingerprint(state:Snapshot):string {
-  return createHash('sha256').update(canonical({url:state.url,text:state.text,actions:state.actions,scroll:state.scroll})).digest('hex');
+  return createHash('sha256').update(pythonJson({url:state.url,text:state.text,actions:state.actions,scroll:state.scroll},true)).digest('hex');
 }
 export class FastBrowser {
   private afterInput:Action|undefined;
   readonly session:CDPSession;
-  readonly signal:AbortSignal;
+  signal:AbortSignal;
+  page:Page|undefined;
+  target:string|null=null;
+  private ownedClose:(()=>Promise<void>)|undefined;
   private constructor(session:CDPSession,signal:AbortSignal) {this.session=session;this.signal=signal;}
   static async attach(page:Page,signal:AbortSignal) {
     signal.throwIfAborted();
     const session=await page.context().newCDPSession(page);
     const browser=new FastBrowser(session,signal);
+    browser.page=page;
     try {
+      await browser.call('Emulation.setDeviceMetricsOverride',{width:1120,height:780,deviceScaleFactor:1,mobile:false});
       await browser.call('Emulation.setFocusEmulationEnabled',{enabled:true});
+      browser.target=(await browser.call('Target.getTargetInfo')).targetInfo.targetId;
       return browser;
     } catch(error) {await session.detach().catch(()=>{});throw error;}
   }
+  // Owned background target, persistent CDP session, and the upstream navigation policy.
+  static async create(url:string,signal:AbortSignal,options:{context?:BrowserContext;headed?:boolean}={}) {
+    signal.throwIfAborted();
+    const owned=options.context?undefined:await chromium.launch({headless:!options.headed});
+    const context=options.context??await owned!.newContext({viewport:{width:1120,height:780}});
+    let fast:FastBrowser|undefined;
+    let createdPage:Page|undefined;
+    try {
+      const root=await context.browser()!.newBrowserCDPSession();
+      const existing=context.pages()[0], probe=existing??await context.newPage();
+      const probeSession=await context.newCDPSession(probe);
+      let browserContextId:string;
+      try {browserContextId=(await probeSession.send('Target.getTargetInfo')).targetInfo.browserContextId!;}
+      finally {await probeSession.detach();if(!existing) await probe.close();}
+      try {
+        const appeared=context.waitForEvent('page');
+        await root.send('Target.createTarget',{url:'about:blank',background:true,browserContextId});
+        createdPage=await appeared;
+      }
+      finally {await root.detach();}
+      fast=await FastBrowser.attach(createdPage,signal);
+      fast.ownedClose=owned?()=>owned.close():()=>createdPage!.close();
+      await fast.navigate(url);return fast;
+    } catch(error) {await fast?.detach();await createdPage?.close().catch(()=>{});await owned?.close();throw error;}
+  }
+  async navigate(url:string) {
+    await this.call('Page.navigate',{url});
+    const deadline=performance.now()+15_000;
+    while(performance.now()<deadline) {
+      if(await this.evaluate('document.readyState')==='complete') break;
+      await delay(20,undefined,{signal:this.signal});
+    }
+  }
   async call(method:string,params:Record<string,unknown>={}) {
     this.signal.throwIfAborted();
-    const result=await (this.session.send as (method:string,params:Record<string,unknown>)=>Promise<any>)(method,params);
+    // Browser Harness's raw CDP port bounds response waits at five seconds.
+    const result=await new Promise<any>((resolve,reject)=>{
+      const timeout=setTimeout(()=>reject(new Error(`${method} timed out after 5s waiting for the browser`)),5000);
+      (this.session.send as (method:string,params:Record<string,unknown>)=>Promise<any>)(method,params)
+        .then(value=>{clearTimeout(timeout);resolve(value);},error=>{clearTimeout(timeout);reject(error);});
+    });
     this.signal.throwIfAborted();return result;
   }
   async evaluate(expression:string,mutating=false):Promise<any> {
@@ -47,7 +90,7 @@ export class FastBrowser {
       throw error;
     }
   }
-  async observe():Promise<Snapshot> {
+  async observe(screenshot=true):Promise<Snapshot> {
     if (this.afterInput) {
       const action=this.afterInput;this.afterInput=undefined;
       try {await this.call('Runtime.evaluate',{expression:AFTER_INPUT+JSON.stringify(action)+')',awaitPromise:true,returnByValue:true});}
@@ -57,7 +100,9 @@ export class FastBrowser {
       try {
         const state=await this.evaluate(READ_STATE) as Snapshot|null;
         if (!state) throw new StalePage('Document is navigating');
-        state.fingerprint=fingerprint(state);return state;
+        state.fingerprint=fingerprint(state);
+        if(screenshot) state.screenshot=(await this.call('Page.captureScreenshot',{format:'jpeg',quality:72})).data;
+        return state;
       } catch(error) {
         if (!(error instanceof StalePage) || attempt===9) throw error;
         await delay(20,undefined,{signal:this.signal});
@@ -101,4 +146,10 @@ export class FastBrowser {
     return {executed:action.id};
   }
   async detach() {await this.session.detach().catch(()=>{});}
+  async close() {
+    if(!this.target) return;
+    this.target=null;
+    await this.detach();
+    if(this.ownedClose) await this.ownedClose();else await this.page?.close();
+  }
 }
