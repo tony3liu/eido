@@ -43,3 +43,16 @@ test('official tool duration survives live/replay with arbitrary plugin details 
     assert.equal(replay._meta,undefined);
   }
 });
+
+
+test('history restores file navigation without replaying a tool', async () => {
+  const {replayEntry} = await import('../adapter/src/replay.js');
+  for (const name of ['read', 'edit', 'write']) {
+    const updates = replayEntry({type:'message', id:'history', message:{role:'assistant', content:[
+      {type:'toolCall', id:name, name, arguments:{path:'src/fixture.ts'}}
+    ]}} as any);
+    assert.equal(updates.length, 1);
+    assert.deepEqual((updates[0] as any).locations, [{path:'src/fixture.ts'}]);
+    assert.equal(updates[0]?.sessionUpdate, 'tool_call');
+  }
+});

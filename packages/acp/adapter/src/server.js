@@ -17,6 +17,7 @@ export async function runAcp(options = {}) {
         .onRequest(methods.agent.session.fork, (context) => impl.forkSession(context))
         .onRequest(methods.agent.session.list, (context) => impl.listSessions(context))
         .onRequest(methods.agent.session.close, (context) => impl.closeSession(context))
+        .onRequest(methods.agent.session.delete, (context) => impl.deleteSession(context))
         .onRequest(methods.agent.session.setConfigOption, (context) => impl.setConfigOption(context))
         .onRequest(methods.agent.session.prompt, (context) => impl.prompt(context))
         .onRequest(SESSION_STEERING_METHOD, steeringRequestParser, (context) => impl.steer(context))

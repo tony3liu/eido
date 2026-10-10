@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="native/branding/eido-readme.svg" alt="Eido — AI 开发工作空间，0.0.1 beta" width="100%">
+  <img src="native/branding/eido-readme.svg" alt="Eido — AI 开发工作空间，0.0.1 beta2" width="100%">
 </p>
 
 <h1 align="center">让想法成为你能掌握的代码。</h1>
@@ -26,16 +26,16 @@
 
 Eido 将 AI 对话与代码放在一起。描述你想实现的目标，提供必要的上下文，再到编辑器里理解和完善结果。从讨论方案到落地实现，任务、改动与审阅决定始终保持关联。
 
-**Eido 0.0.1 beta 是首个 macOS 预览版本。** 下载应用，从真实项目中的一个明确任务开始试用。
+**Eido 0.0.1 beta2 是最新的 macOS 预览版本。** 下载应用，从真实项目中的一个明确任务开始试用。
 
 <p>
-  <a href="https://github.com/tony3liu/eido/releases/download/v0.0.1-beta/Eido-0.0.1-beta-macos-arm64.dmg"><strong>下载 Mac 版 · Apple Silicon</strong></a> ·
-  <a href="https://github.com/tony3liu/eido/releases/tag/v0.0.1-beta">版本说明</a>
+  <a href="https://github.com/tony3liu/eido/releases/download/v0.0.1-beta2/Eido-0.0.1-beta2-macos-arm64.dmg"><strong>下载 Mac 版 · Apple Silicon</strong></a> ·
+  <a href="https://github.com/tony3liu/eido/releases/tag/v0.0.1-beta2">版本说明</a>
 </p>
 
 macOS 13 及以上 · Apple Silicon（M 系列）· 早期测试版
 
-最新 beta 已升级至 pi 1.1.0，增加工具执行耗时显示，并改善 Agent 工作流程中的截图与取消体验。
+Beta2 增加提问复制、编辑、重新发送、上一句提问回填和单条会话删除；执行过程采用两层折叠，点击整条标题即可展开，文件工具提供 Open File 按钮。修改可以直接在文件 tab 中 review，Keep All 会保存已接受的修改，Git 面板首次点击即可打开。应用内置官方 pi 1.1.0。
 
 ## Eido 的核心体验
 
@@ -74,7 +74,7 @@ macOS 13 及以上 · Apple Silicon（M 系列）· 早期测试版
 
 ## 下载与安装
 
-1. 下载 [Eido-0.0.1-beta-macos-arm64.dmg](https://github.com/tony3liu/eido/releases/download/v0.0.1-beta/Eido-0.0.1-beta-macos-arm64.dmg)。
+1. 下载 [Eido-0.0.1-beta2-macos-arm64.dmg](https://github.com/tony3liu/eido/releases/download/v0.0.1-beta2/Eido-0.0.1-beta2-macos-arm64.dmg)。
 2. 打开磁盘映像，将 **Eido** 拖入 **Applications**。
 3. 启动 Eido，在全局设置中配置模型与认证信息。
 
@@ -130,7 +130,7 @@ Agent Access 在所有任务之间全局生效。配置与工作历史保存在�
 - **你的目标**：当时想完成什么。
 - **遇到的阻碍**：预期怎样，实际发生了什么。
 - **一个简短示例**：复现步骤、截图或相关错误信息。
-- **版本信息**：Eido **0.0.1 beta**，以及 macOS 版本。
+- **版本信息**：Eido **0.0.1 beta2**，以及 macOS 版本。
 
 分享示例前，请移除凭据和不适合公开的项目内容。
 
@@ -153,5 +153,5 @@ Eido 尊重并保留这两个项目的许可证与署名。**Eido 自有代码�
 
 <p align="center">
   <strong>理解。创造。演进。</strong><br>
-  <sub>Eido · 0.0.1 beta · macOS 预览版</sub>
+  <sub>Eido · 0.0.1 beta2 · macOS 预览版</sub>
 </p>

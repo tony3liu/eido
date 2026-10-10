@@ -265,7 +265,7 @@ def build():
     with (contents / 'Info.plist').open('wb') as stream:
         plistlib.dump({'CFBundleExecutable': 'eido', 'CFBundleIdentifier': 'dev.eido.app',
             'CFBundleName': 'Eido', 'CFBundleDisplayName': 'Eido', 'CFBundleIconFile': 'Eido.icns',
-            'CFBundlePackageType': 'APPL', 'CFBundleShortVersionString': version, 'CFBundleVersion': '1',
+            'CFBundlePackageType': 'APPL', 'CFBundleShortVersionString': version.split('-')[0], 'CFBundleVersion': '2',
             'NSHighResolutionCapable': True, 'NSPrincipalClass': 'NSApplication',
             'NSCameraUsageDescription': 'Eido uses the camera only when an enabled tool requests it.',
             'NSMicrophoneUsageDescription': 'Eido uses the microphone only when an enabled tool requests it.',

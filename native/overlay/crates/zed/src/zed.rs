@@ -1560,7 +1560,7 @@ fn open_about_window(cx: &mut App) {
                 ""
             };
             let message: SharedString =
-                format!("Eido 0.0.1 {debug} · based on {release_channel_name} {version}").into();
+                format!("Eido 0.0.1 beta2 {debug} · based on {release_channel_name} {version}").into();
             let commit = AppCommitSha::try_global(cx)
                 .map(|sha| sha.full())
                 .filter(|commit| !commit.is_empty())

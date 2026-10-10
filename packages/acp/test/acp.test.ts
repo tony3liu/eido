@@ -85,10 +85,11 @@ test("existing ACP adapter retains sessions and delegates edits to editor buffer
   const writes: string[] = [];
   const updates: string[] = [];
   const replayed: string[] = [];
+  const locations: string[] = [];
   await writeFile(path, "export const value = 'disk';\n");
   await writeFile(join(cwd, "settings.json"), JSON.stringify({ defaultProvider: "eido-fixture", defaultModel: "scripted", defaultThinkingLevel: "off" }));
   const fixture = await fixtureModel(cwd, [
-    () => call("read", {path}),
+    () => call("read", {path: "sample.ts"}),
     context => { assert.match(lastToolText(context,"read"), /unsaved/); return call("edit", { path, edits: [{oldText: "'unsaved'",newText: "'edited'"}] }); },
     context => { assert.match(lastToolText(context,"edit"), /Successfully/); return "Updated the editor buffer."; },
     context => { assert.ok(JSON.stringify(context.messages).includes("apricot")); return "The earlier marker was apricot."; },
@@ -101,7 +102,11 @@ test("existing ACP adapter retains sessions and delegates edits to editor buffer
     .onRequest(methods.client.fs.readTextFile, () => ({content:buffer}))
     .onRequest(methods.client.fs.writeTextFile, ({params}) => { assert.equal(params.path,path);buffer=params.content;writes.push(buffer);return {}; })
     .onRequest(methods.client.session.requestPermission, () => ({outcome:{outcome:"selected",optionId:"allow_once"}}))
-    .onNotification(methods.client.session.update, ({params}) => {updates.push(params.sessionId); if (params.update.sessionUpdate === "agent_message_chunk" && params.update.content.type === "text") replayed.push(params.update.content.text);});
+    .onNotification(methods.client.session.update, ({params}) => {
+      updates.push(params.sessionId);
+      if (params.update.sessionUpdate === "tool_call") locations.push(...(params.update.locations ?? []).map(location => location.path));
+      if (params.update.sessionUpdate === "agent_message_chunk" && params.update.content.type === "text") replayed.push(params.update.content.text);
+    });
   const connection = app.connect({readable:toClient.readable,writable:toAgent.writable});
   try {
     const initialized = await connection.agent.request(methods.agent.initialize, {protocolVersion:1,clientCapabilities:{fs:{readTextFile:true,writeTextFile:true}},clientInfo:{name:"eido-test",version:"0.0.1"}});
@@ -112,6 +117,7 @@ test("existing ACP adapter retains sessions and delegates edits to editor buffer
     const prompt = (sessionId: string,text: string) => connection.agent.request(methods.agent.session.prompt,{sessionId,prompt:[{type:"text",text}]});
     assert.equal((await prompt(a.sessionId,"Remember apricot. Read and edit sample.ts using the editor tools.")).stopReason,"end_turn");
     assert.equal(writes.length,1);
+    assert.deepEqual(locations, [path, path], "relative read and absolute edit locations must both resolve to the session file");
     assert.match(buffer,/'edited'/);
     assert.match(await readFile(path,"utf8"),/'disk'/);
     assert.equal((await prompt(a.sessionId,"What was my marker?")).stopReason,"end_turn");
@@ -122,9 +128,11 @@ test("existing ACP adapter retains sessions and delegates edits to editor buffer
     assert.equal(fixture.requests(),5);
     await connection.agent.request(methods.agent.session.close,{sessionId:a.sessionId});
     replayed.length = 0;
+    locations.length = 0;
     await connection.agent.request(methods.agent.session.load,{sessionId:a.sessionId,cwd,mcpServers:[]});
     assert.match(replayed.join(""), /apricot/);
     assert.match(replayed.join(""), /Updated the editor buffer/);
+    assert.deepEqual(locations, [path, path], "restored file navigation must match the live turn");
     assert.equal(fixture.requests(),5, "history replay must not call the model");
   } catch (error) {
     console.error("ACP fixture diagnostic", error instanceof Error && "data" in error ? error.data : error);
@@ -239,4 +247,47 @@ test("pi sees the current global access mode on each turn", { timeout: 30_000 },
   } finally {
     await server.agent.dispose(); connection.close(); server.connection.close(); await rm(cwd,{recursive:true,force:true});
   }
+});
+
+test("deleting a pi thread removes only its journal and rejects busy or externally owned sessions", {timeout:30_000}, async () => {
+  const dir = await realpath(await mkdtemp(join(tmpdir(), "eido-delete-thread-")));
+  await writeFile(join(dir, "settings.json"), JSON.stringify({defaultProvider:"eido-fixture", defaultModel:"scripted", compaction:{enabled:false}}));
+  let release!: () => void;
+  let started!: () => void;
+  const running = new Promise<void>(resolve => { started = resolve; });
+  const finish = new Promise<void>(resolve => { release = resolve; });
+  const fixture = await fixtureModel(dir, [() => "First answer", () => "Second answer", async () => {started(); await finish; return "Finished";}]);
+  const toAgent = new TransformStream(), toClient = new TransformStream();
+  const server = await startEidoAgent(dir, join(dir,"sessions"), {readable:toAgent.readable,writable:toClient.writable}, fixture.runtime);
+  const connection = client({name:"eido-delete-thread-test"})
+    .onNotification(methods.client.session.update, () => {})
+    .connect({readable:toClient.readable,writable:toAgent.writable});
+  const request = connection.agent;
+  try {
+    const init = await request.request(methods.agent.initialize, {protocolVersion:1, clientCapabilities:{}});
+    assert.deepEqual(init.agentCapabilities?.sessionCapabilities?.delete, {});
+    const first = await request.request(methods.agent.session.new, {cwd:dir,mcpServers:[]});
+    const second = await request.request(methods.agent.session.new, {cwd:dir,mcpServers:[]});
+    for (const session of [first, second]) await request.request(methods.agent.session.prompt, {sessionId:session.sessionId,prompt:[{type:"text",text:"Remember this question"}]});
+    const before = await request.request(methods.agent.session.list, {});
+    assert.equal(before.sessions.length, 2);
+    await request.request(methods.agent.session.delete, {sessionId:first.sessionId});
+    assert.deepEqual((await request.request(methods.agent.session.list, {})).sessions.map(s=>s.sessionId), [second.sessionId]);
+    await assert.rejects(request.request(methods.agent.session.load, {sessionId:first.sessionId,cwd:dir,mcpServers:[]}));
+    await request.request(methods.agent.session.close, {sessionId:second.sessionId});
+    const {sessionOwners} = await import('../src/session-owner.ts');
+    const unlock = await sessionOwners(dir)(second.sessionId);
+    try {await assert.rejects(request.request(methods.agent.session.delete, {sessionId:second.sessionId}), /already open/);}
+    finally {await unlock();}
+    assert.equal((await request.request(methods.agent.session.list, {})).sessions.length, 1);
+    await request.request(methods.agent.session.load, {sessionId:second.sessionId,cwd:dir,mcpServers:[]});
+    const prompt = request.request(methods.agent.session.prompt, {sessionId:second.sessionId,prompt:[{type:"text",text:"Wait for completion"}]});
+    await running;
+    await assert.rejects(request.request(methods.agent.session.delete, {sessionId:second.sessionId}), (error: any) => error.data?.errorKind === "session_busy");
+    release(); await prompt;
+    await request.request(methods.agent.session.close, {sessionId:second.sessionId});
+    await request.request(methods.agent.session.delete, {sessionId:second.sessionId});
+    await request.request(methods.agent.session.delete, {sessionId:second.sessionId});
+    assert.equal((await request.request(methods.agent.session.list, {})).sessions.length, 0);
+  } finally {release(); await server.agent.dispose(); connection.close(); server.connection.close(); await rm(dir,{recursive:true,force:true});}
 });

@@ -1,5 +1,7 @@
 // Adapted for Eido from @automatalabs/pi-acp 0.9.4 (Apache-2.0). See ../LICENSE.
 import {randomUUID} from "node:crypto";
+import {resolve} from "node:path";
+import {homedir} from "node:os";
 import {appendEidoEntry} from "./session-persistence.js";
 import {TURN_RECORD, savedTurnState, terminalTurnStatus} from "./turn-state.js";
 import { methods, } from "@agentclientprotocol/sdk";
@@ -51,6 +53,7 @@ export class PiSession {
     loadedTurnReportedRunning = false;
     constructor(options) {
         this.sessionId = options.sessionId;
+        this.cwd = options.cwd;
         this.pi = options.session;
         this.manager = options.manager;
         this.client = options.client;
@@ -140,6 +143,15 @@ export class PiSession {
     enqueue(update) {
         if (this.stopped)
             return;
+        // ACP file locations are absolute. Pi tools also accept paths relative
+        // to the session directory; normalize live and replayed notifications.
+        if (Array.isArray(update.locations)) {
+            update = {...update, locations: update.locations.map(location => ({
+                ...location,
+                path: resolve(this.cwd, location.path.startsWith("~/")
+                    ? resolve(homedir(), location.path.slice(2)) : location.path),
+            }))};
+        }
         this.pending.push(update);
         if (!this.pump)
             this.startPump();

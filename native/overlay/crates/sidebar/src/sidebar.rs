@@ -5348,6 +5348,58 @@ impl Sidebar {
         close_item_tasks
     }
 
+    fn delete_thread(&mut self, thread_id: ThreadId, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(entry) = self.contents.entries.iter().find_map(|entry| match entry {
+            ListEntry::Thread(thread) if thread.metadata.thread_id == thread_id => Some(thread.clone()),
+            _ => None,
+        }) else { return; };
+        if matches!(entry.status, AgentThreadStatus::Running | AgentThreadStatus::WaitingForConfirmation) { return; }
+        let workspace = match &entry.workspace {
+            ThreadEntryWorkspace::Open(workspace) => Some(workspace.clone()),
+            ThreadEntryWorkspace::Closed { .. } => self.active_workspace(cx),
+        };
+        let Some(workspace) = workspace else { return; };
+        let Some(panel) = workspace.read(cx).panel::<AgentPanel>(cx) else { return; };
+        let prompt = window.prompt(gpui::PromptLevel::Warning, "Delete this thread?",
+            Some("Its conversation history will be permanently deleted. Project files are kept."),
+            &["Delete", "Cancel"], cx);
+        cx.spawn_in(window, async move |this, cx| {
+            if prompt.await != Ok(0) { return; }
+            let result: anyhow::Result<()> = async {
+                let connection = panel.update(cx, |panel, cx| {
+                    let agent = Agent::from(entry.metadata.agent_id.clone());
+                    let fs = <dyn project::Fs>::global(cx);
+                    panel.connection_store().update(cx, |store, cx| {
+                        store.request_connection(agent.clone(), agent.server(fs, ThreadStore::global(cx)), cx)
+                            .read(cx).wait_for_connection()
+                    })
+                }).await?;
+                if let Some(session_id) = &entry.metadata.session_id {
+                    let task = cx.update(|_, cx| {
+                        let list = connection.connection.session_list(cx)
+                            .filter(|list| list.supports_delete())
+                            .ok_or_else(|| anyhow::anyhow!("This agent does not support deleting history"))?;
+                        Ok::<_, anyhow::Error>(list.delete_session(session_id, cx))
+                    })??;
+                    task.await?;
+                }
+                this.update_in(cx, |this, window, cx| {
+                    panel.update(cx, |panel, cx| panel.remove_thread(thread_id, window, cx));
+                    ThreadMetadataStore::global(cx).update(cx, |store, cx| store.delete(thread_id, cx));
+                    this.update_entries(cx);
+                    cx.notify();
+                })?;
+                Ok(())
+            }.await;
+            if let Err(error) = result {
+                workspace.update(cx, |workspace, cx| {
+                    let toast = StatusToast::new(format!("Thread could not be deleted: {error}"), cx, |this, _| this);
+                    workspace.toggle_status_toast(toast, cx);
+                });
+            }
+        }).detach();
+    }
+
     fn archive_thread(
         &mut self,
         session_id: &acp::SessionId,
@@ -6254,7 +6306,6 @@ impl Sidebar {
             self.rename_target == Some(RenameTarget::Thread(thread.metadata.thread_id));
 
         let thread_id_for_actions = thread.metadata.thread_id;
-        let session_id_for_delete = thread.metadata.session_id.clone();
         let focus_handle = self.focus_handle.clone();
         let rename_title_editor = is_renaming.then(|| self.render_rename_title_editor(cx));
 
@@ -6388,27 +6439,13 @@ impl Sidebar {
                                 .into_any_element(),
                         ),
                         None => Some(
-                            IconButton::new("archive-thread", IconName::Archive)
+                            IconButton::new("delete-thread", IconName::Trash)
                                 .icon_size(IconSize::Small)
-                                .tooltip({
-                                    let focus_handle = focus_handle.clone();
-                                    move |_window, cx| {
-                                        Tooltip::for_action_in(
-                                            "Archive Thread",
-                                            &ArchiveSelectedThread,
-                                            &focus_handle,
-                                            cx,
-                                        )
-                                    }
-                                })
-                                .on_click({
-                                    let session_id = session_id_for_delete.clone();
-                                    cx.listener(move |this, _, window, cx| {
-                                        if let Some(ref session_id) = session_id {
-                                            this.archive_thread(session_id, window, cx);
-                                        }
-                                    })
-                                })
+                                .tooltip(Tooltip::text("Delete thread"))
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    cx.stop_propagation();
+                                    this.delete_thread(thread_id_for_actions, window, cx);
+                                }))
                                 .into_any_element(),
                         ),
                     }
@@ -6559,6 +6596,14 @@ impl Sidebar {
                             });
                         }
 
+                        if !is_running {
+                            menu = menu.separator().entry("Delete Thread", None, {
+                                let sidebar = sidebar.clone();
+                                move |window, cx| { sidebar.update(cx, |sidebar, cx| {
+                                    sidebar.delete_thread(thread_id, window, cx);
+                                }).ok(); }
+                            });
+                        }
                         menu.separator().entry("Archive Thread", None, {
                             let session_id = session_id.clone();
                             move |window, cx| {

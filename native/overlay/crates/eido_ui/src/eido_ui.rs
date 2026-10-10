@@ -1,4 +1,4 @@
-use agent_ui::{AgentPanel, thread_metadata_store::ThreadMetadataStore};
+use agent_ui::AgentPanel;
 use gpui::{
     Action, App, Context, Entity, EntityId, FocusHandle, Focusable, IntoElement, KeyBinding,
     Render, Subscription, WeakEntity, Window, actions,
@@ -158,20 +158,16 @@ impl Render for Navigation {
 
 struct Composer {
     panel: Entity<AgentPanel>,
-    metadata: Entity<ThreadMetadataStore>,
     active: Option<(EntityId, Vec<Subscription>)>,
     _subscriptions: Vec<Subscription>,
 }
 impl Composer {
     fn new(panel: Entity<AgentPanel>, cx: &mut Context<Self>) -> Self {
-        let metadata = ThreadMetadataStore::global(cx);
         let subscriptions = vec![
             cx.observe(&panel, |_, _, cx| cx.notify()),
-            cx.observe(&metadata, |_, _, cx| cx.notify()),
         ];
         Self {
             panel,
-            metadata,
             active: None,
             _subscriptions: subscriptions,
         }
@@ -180,21 +176,6 @@ impl Composer {
 impl Render for Composer {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let panel = self.panel.read(cx);
-        let title = panel
-            .active_thread_id(cx)
-            .and_then(|id| self.metadata.read(cx).entry(id))
-            .map(|entry| entry.display_title())
-            .or_else(|| {
-                panel
-                    .active_conversation_view()
-                    .map(|view| view.read(cx).title(cx))
-            })
-            .unwrap_or_else(|| "New Task".into());
-        let title = if title.as_ref() == "New Agent Thread" {
-            "New Task".into()
-        } else {
-            title
-        };
         let viewing_child = panel.active_conversation_view().and_then(|view| {
             view.read(cx).as_connected().and_then(|connected| connected.active_view()).cloned()
                 .filter(|view| view.read(cx).thread.read(cx).parent_session_id().is_some())
@@ -233,7 +214,7 @@ impl Render for Composer {
             .bg(cx.theme().colors().editor_background)
             .p_3()
             .gap_2()
-            .child(
+            .when(viewing_child.is_some() || recipient.is_some() || recipient_running, |this| this.child(
                 h_flex()
                     .w_full()
                     .max_w(px(780.))
@@ -249,7 +230,7 @@ impl Render for Composer {
                     )
                     .child(
                         div().flex_1().min_w_0().child(
-                            Label::new(if let Some(recipient) = &recipient_title { format!("To {recipient} · {title}") } else { format!("To Main agent · {title}") })
+                            Label::new(recipient_title.as_ref().map(|recipient| format!("To {recipient}")).unwrap_or_else(|| "To Main agent".into()))
                                 .truncate()
                                 .size(LabelSize::XSmall)
                                 .color(Color::Muted),
@@ -286,12 +267,7 @@ impl Render for Composer {
                                 if let Some(root) = &root { root.update(cx, |root, cx| root.eido_send_next(window, cx)); }
                             }))
                     })
-                    .child(
-                        Label::new(if recipient_running { "⌘↵ Queue" } else { "⌘↵ Send" })
-                            .size(LabelSize::XSmall)
-                            .color(Color::Muted),
-                    ),
-            )
+            ))
             .when_some(delivery_status, |this, status| this.child(
                 div().w_full().max_w(px(780.)).mx_auto().px_1()
                     .child(Label::new(status).size(LabelSize::XSmall).color(Color::Muted))))

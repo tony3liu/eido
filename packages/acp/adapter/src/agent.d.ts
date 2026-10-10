@@ -37,6 +37,7 @@ export declare class PiAcpAgent {
                 fork: {};
                 list: {};
                 close: {};
+                delete: {};
             };
         };
         authMethods: import("@agentclientprotocol/sdk").AuthMethod[];
@@ -89,6 +90,7 @@ export declare class PiAcpAgent {
             title: string;
         }[];
     }>;
+    deleteSession(context: AgentRequestContext<import("@agentclientprotocol/sdk").DeleteSessionRequest>): Promise<{}>;
     closeSession(context: AgentRequestContext<CloseSessionRequest>): Promise<{}>;
     private requireLive;
     setConfigOption(context: AgentRequestContext<SetSessionConfigOptionRequest>): Promise<{

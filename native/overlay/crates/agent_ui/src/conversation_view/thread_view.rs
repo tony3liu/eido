@@ -1351,14 +1351,14 @@ impl ThreadView {
     ) {
         match &event.view_event {
             ViewEvent::NewDiff(tool_call_id) => {
-                if AgentSettings::get_global(cx).expand_edit_card {
+                if self.agent_id.as_ref() != "eido-pi" && AgentSettings::get_global(cx).expand_edit_card {
                     self.entry_view_state.update(cx, |state, _cx| {
                         state.expand_tool_call(tool_call_id.clone());
                     });
                 }
             }
             ViewEvent::NewTerminal(tool_call_id) => {
-                if AgentSettings::get_global(cx).expand_terminal_card {
+                if self.agent_id.as_ref() != "eido-pi" && AgentSettings::get_global(cx).expand_terminal_card {
                     self.entry_view_state.update(cx, |state, _cx| {
                         state.expand_tool_call(tool_call_id.clone());
                     });
@@ -1372,8 +1372,8 @@ impl ThreadView {
             ViewEvent::MessageEditorEvent(_editor, MessageEditorEvent::Focus) => {
                 if let Some(AgentThreadEntry::UserMessage(user_message)) =
                     self.thread.read(cx).entries().get(event.entry_index)
-                    && self.thread.read(cx).supports_truncate(cx)
-                    && user_message.client_id.is_some()
+                    && (self.agent_id.as_ref() == "eido-pi" || (self.thread.read(cx).supports_truncate(cx)
+                    && user_message.client_id.is_some()))
                     && !self.is_subagent()
                 {
                     self.editing_message = Some(event.entry_index);
@@ -1383,8 +1383,8 @@ impl ThreadView {
             ViewEvent::MessageEditorEvent(editor, MessageEditorEvent::LostFocus) => {
                 if let Some(AgentThreadEntry::UserMessage(user_message)) =
                     self.thread.read(cx).entries().get(event.entry_index)
-                    && self.thread.read(cx).supports_truncate(cx)
-                    && user_message.client_id.is_some()
+                    && (self.agent_id.as_ref() == "eido-pi" || (self.thread.read(cx).supports_truncate(cx)
+                    && user_message.client_id.is_some()))
                     && !self.is_subagent()
                 {
                     if editor.read(cx).text(cx).as_str() == user_message.content.to_markdown(cx) {
@@ -2280,6 +2280,31 @@ impl ThreadView {
         cx: &mut Context<Self>,
     ) {
         if self.is_loading_contents {
+            return;
+        }
+        if self.agent_id.as_ref() == "eido-pi" {
+            let contents = self.resolve_message_contents(&message_editor, cx);
+            self.is_loading_contents = true;
+            cx.spawn_in(window, async move |this, cx| {
+                let result = contents.await;
+                this.update_in(cx, |this, window, cx| {
+                    this.is_loading_contents = false;
+                    match result {
+                        Ok((content, buffers)) if !content.is_empty() => {
+                            this.cancel_editing(&Default::default(), window, cx);
+                            cx.emit(AcpThreadViewEvent::Interacted);
+                            if this.eido_is_generating(cx) {
+                                this.add_to_queue(content, buffers, window, cx);
+                            } else {
+                                this.send_content(Task::ready(Ok(Some((content, buffers)))), false, window, cx);
+                            }
+                        }
+                        Err(error) => this.eido_delivery_status = Some(format!("Message not sent: {error}").into()),
+                        _ => {}
+                    }
+                    cx.notify();
+                }).ok();
+            }).detach();
             return;
         }
         let thread = self.thread.clone();
@@ -3279,12 +3304,7 @@ impl ThreadView {
     }
 
     pub fn keep_all(&mut self, _: &KeepAll, _window: &mut Window, cx: &mut Context<Self>) {
-        let thread = &self.thread;
-        let telemetry = ActionLogTelemetry::from(thread.read(cx));
-        let action_log = thread.read(cx).action_log().clone();
-        action_log.update(cx, |action_log, cx| {
-            action_log.keep_all_edits(Some(telemetry), cx)
-        });
+        crate::agent_diff::keep_and_save(&self.thread, None, self.workspace.clone(), cx);
         self.decide_pending_file_operations("accept", cx);
     }
 
@@ -3339,6 +3359,10 @@ impl ThreadView {
         cx: &mut Context<Self>,
     ) {
         let thread = &self.thread;
+        if self.agent_id.as_ref() == "eido-pi" {
+            AgentDiff::open_file(thread.clone(), buffer.clone(), self.workspace.clone(), window, cx).log_err();
+            return;
+        }
 
         let Some(diff) =
             AgentDiffPane::deploy(thread.clone(), self.workspace.clone(), window, cx).log_err()
@@ -4602,8 +4626,14 @@ impl ThreadView {
                                     )
                                 }
                             })
-                            .on_click(cx.listener(|_, _, window, cx| {
-                                window.dispatch_action(OpenAgentDiff.boxed_clone(), cx);
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                let buffers = this.thread.read(cx).action_log().read(cx)
+                                    .changed_buffers(cx).map(|(buffer, _)| buffer).collect::<Vec<_>>();
+                                if this.agent_id.as_ref() == "eido-pi" && buffers.len() == 1 {
+                                    this.open_edited_buffer(&buffers[0], window, cx);
+                                } else {
+                                    window.dispatch_action(OpenAgentDiff.boxed_clone(), cx);
+                                }
                             })),
                     )
                     .child(Divider::vertical().color(DividerColor::Border))
@@ -6592,6 +6622,43 @@ impl ThreadView {
         .flex_grow_1()
     }
 
+    /// A turn's execution is one disclosure. Inner thinking/tool disclosures keep
+    /// their own state, and permission requests remain reachable when it is closed.
+    pub(super) fn eido_activity(&self, entry_ix: usize, cx: &App) -> Option<(usize, usize, usize, String)> {
+        if self.agent_id.as_ref() != "eido-pi" { return None; }
+        let entries = self.thread.read(cx).entries();
+        if matches!(entries.get(entry_ix), Some(AgentThreadEntry::UserMessage(_))) { return None; }
+        let start = entries[..entry_ix].iter().rposition(|entry| entry.user_message().is_some())
+            .map_or(0, |index| index + 1);
+        let end = entries[entry_ix..].iter().position(|entry| entry.user_message().is_some())
+            .map_or(entries.len(), |index| entry_ix + index);
+        let mut first = None;
+        let mut count = 0;
+        let mut preview = String::new();
+        for (index, entry) in entries.iter().enumerate().take(end).skip(start) {
+            match entry {
+                AgentThreadEntry::ToolCall(tool) => {
+                    first.get_or_insert(index);
+                    count += 1;
+                    preview = tool.label.read(cx).source().to_string();
+                }
+                AgentThreadEntry::AssistantMessage(message) => {
+                    for chunk in &message.chunks {
+                        if let AssistantMessageChunk::Thought { block, .. } = chunk {
+                            first.get_or_insert(index);
+                            count += 1;
+                            let text = block.to_markdown(cx);
+                            let last_line = text.lines().rev().find(|line| !line.trim().is_empty()).unwrap_or("");
+                            preview = if last_line.is_empty() { "Thinking".into() } else { format!("Thinking · {last_line}") };
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        first.map(|first| (first, end, count, preview.split_whitespace().collect::<Vec<_>>().join(" ")))
+    }
+
     fn render_entry(
         &self,
         entry_ix: usize,
@@ -6600,6 +6667,9 @@ impl ThreadView {
         window: &Window,
         cx: &Context<Self>,
     ) -> AnyElement {
+        let activity = self.eido_activity(entry_ix, cx);
+        let activity_collapsed = activity.as_ref().is_some_and(|(first, _, _, _)|
+            !self.entry_view_state.read(cx).expanded_activity.contains(first));
         let is_indented = entry.is_indented();
         let is_first_indented = is_indented
             && self
@@ -6637,7 +6707,7 @@ impl ThreadView {
 
                 let is_subagent = self.is_subagent();
                 let can_rewind = self.thread.read(cx).supports_truncate(cx);
-                let is_editable = can_rewind && message.client_id.is_some() && !is_subagent;
+                let is_editable = (self.agent_id.as_ref() == "eido-pi" || (can_rewind && message.client_id.is_some())) && !is_subagent;
                 let agent_name = if is_subagent {
                     "subagents".into()
                 } else {
@@ -6753,7 +6823,7 @@ impl ThreadView {
                                                         .icon_color(Color::Muted)
                                                         .icon_size(IconSize::XSmall)
                                                         .tooltip(Tooltip::text(
-                                                            "Editing will restart the thread from this point."
+                                                            if self.agent_id.as_ref() == "eido-pi" { "Send the edited question as a new message" } else { "Editing will restart the thread from this point." }
                                                         ))
                                                         .on_click(cx.listener({
                                                             let editor = editor.clone();
@@ -6797,6 +6867,30 @@ impl ThreadView {
                                 }
                             }),
                     )
+                    .child(h_flex().justify_end().gap_1()
+                        .child(IconButton::new(("copy-question", entry_ix), IconName::Copy)
+                            .icon_size(IconSize::Small).tooltip(Tooltip::text("Copy question"))
+                            .on_click({ let text = message.content.to_markdown(cx); move |_, _, cx| {
+                                cx.stop_propagation();
+                                cx.write_to_clipboard(ClipboardItem::new_string(text.clone()));
+                            }}))
+                        .when(is_editable, |row| row
+                            .child(IconButton::new(("edit-question", entry_ix), IconName::Pencil)
+                                .icon_size(IconSize::Small).tooltip(Tooltip::text("Edit question"))
+                                .disabled(self.is_loading_contents)
+                                .on_click(cx.listener({ let editor = editor.clone(); move |this, _, window, cx| {
+                                    cx.stop_propagation();
+                                    this.editing_message = Some(entry_ix);
+                                    editor.focus_handle(cx).focus(window, cx);
+                                    cx.notify();
+                                }})))
+                            .child(IconButton::new(("resend-question", entry_ix), IconName::RotateCw)
+                                .icon_size(IconSize::Small).tooltip(Tooltip::text("Send question again"))
+                                .disabled(self.is_loading_contents)
+                                .on_click(cx.listener({ let editor = editor.clone(); move |this, _, window, cx| {
+                                    cx.stop_propagation();
+                                    this.regenerate(entry_ix, editor.clone(), window, cx);
+                                }})))))
                     .into_any()
             }
             AgentThreadEntry::AssistantMessage(AssistantMessage {
@@ -6825,6 +6919,7 @@ impl ThreadView {
                                 })
                             }
                             AssistantMessageChunk::Thought { block, .. } => {
+                                if activity_collapsed { return None; }
                                 let this_is_blank = !block.visible_content(cx);
                                 is_blank = is_blank && this_is_blank;
                                 (!this_is_blank).then(|| {
@@ -6860,6 +6955,8 @@ impl ThreadView {
                         .into_any()
                 }
             }
+            AgentThreadEntry::ToolCall(tool_call) if activity_collapsed
+                && !matches!(tool_call.status, ToolCallStatus::WaitingForConfirmation { .. }) => Empty.into_any(),
             AgentThreadEntry::ToolCall(tool_call) => {
                 // A canceled tool call that produced visible output is still worth
                 // showing, but one that was canceled before producing anything just
@@ -6924,6 +7021,30 @@ impl ThreadView {
                 self.render_context_compaction(entry_ix, compaction, window, cx)
             }
         };
+
+        let primary = if let Some((first, end, count, preview)) = activity.filter(|(first, _, _, _)| *first == entry_ix) {
+            let running = end == total_entries && self.eido_is_generating(cx);
+            let open = !activity_collapsed;
+            v_flex().w_full()
+                .child(h_flex().id(("execution-activity", first)).debug_selector(move || format!("execution-activity-{first}")).mx_5().my_2().py_2().gap_2()
+                    .cursor_pointer().overflow_hidden()
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.entry_view_state.update(cx, |state, _| {
+                            if !state.expanded_activity.remove(&first) { state.expanded_activity.insert(first); }
+                        });
+                        this.list_state.remeasure_items(first..end);
+                        cx.notify();
+                    }))
+                    .child(Icon::new(if open { IconName::ChevronDown } else { IconName::ChevronRight })
+                        .size(IconSize::Small).color(Color::Muted))
+                    .when(running, |row| row.child(GeneratingSpinnerElement::new(SpinnerVariant::Dots)))
+                    .child(Label::new(format!("{} · {count} {}", if running { "Working" } else { "Activity" }, if count == 1 { "step" } else { "steps" }))
+                        .size(LabelSize::Small).color(Color::Muted))
+                    .when(!open, |row| row.child(div().flex_1().min_w_0().overflow_hidden()
+                        .child(Label::new(util::truncate_and_trailoff(&preview, 140).to_string())
+                            .truncate().size(LabelSize::Small).color(Color::Muted)))))
+                .child(primary).into_any_element()
+        } else { primary };
 
         let is_subagent_output = self.is_subagent()
             && matches!(entry, AgentThreadEntry::AssistantMessage(msg) if msg.is_subagent_output);
@@ -7052,6 +7173,7 @@ impl ThreadView {
         };
 
         if let Some(editing_index) = self.editing_message
+            && self.agent_id.as_ref() != "eido-pi"
             && editing_index < entry_ix
         {
             let is_subagent = self.is_subagent();
@@ -7986,6 +8108,9 @@ impl ThreadView {
             .child(
                 h_flex()
                     .id(header_id)
+                    .debug_selector(move || format!("thinking-header-{entry_ix}-{chunk_ix}"))
+                    .cursor_pointer()
+                    .hover(|style| style.bg(cx.theme().colors().element_hover))
                     .group(&card_header_id)
                     .relative()
                     .w_full()
@@ -8014,11 +8139,13 @@ impl ThreadView {
                             .closed_icon(IconName::ChevronDown)
                             .visible_on_hover(&card_header_id)
                             .on_click(cx.listener(move |this, _event: &ClickEvent, window, cx| {
+                                cx.stop_propagation();
                                 this.toggle_thinking_block_expansion(key, window, cx);
                             })),
                     )
                     .on_click(cx.listener(move |this, _event: &ClickEvent, window, cx| {
-                        this.toggle_thinking_block_expansion(key, window, cx);
+                        cx.stop_propagation();
+                                this.toggle_thinking_block_expansion(key, window, cx);
                     }))
                     .map(|header| {
                         self.render_message_context_menu(entry_ix, None, header.into_any(), cx)
@@ -8691,6 +8818,7 @@ impl ThreadView {
         window: &Window,
         cx: &Context<Self>,
     ) -> Div {
+        let is_eido = self.agent_id.as_ref() == "eido-pi";
         let has_location = tool_call.locations.len() == 1;
         let card_header_id = SharedString::from(format!("inner-tool-call-header-{entry_ix}"));
 
@@ -8729,7 +8857,7 @@ impl ThreadView {
 
         let has_image_content = tool_call.content.iter().any(|c| c.image().is_some());
 
-        let should_show_raw_input = !is_terminal_tool && !is_edit && !has_image_content;
+        let should_show_raw_input = is_eido || (!is_terminal_tool && !is_edit && !has_image_content);
 
         let has_content = !tool_call.content.is_empty()
             || (should_show_raw_input && tool_call.raw_input.is_some());
@@ -8984,7 +9112,7 @@ impl ThreadView {
                 this.child(Label::new(format!("Nested tool · {}", parent)).size(LabelSize::XSmall).color(Color::Muted))
             })
             .map(|this| {
-                if is_terminal_tool {
+                if is_terminal_tool && !is_eido {
                     this.child(self.render_collapsible_command(
                         card_header_id.clone(),
                         true,
@@ -8998,6 +9126,21 @@ impl ThreadView {
                 } else {
                     this.child(
                         h_flex()
+                            .id(("tool-call-header", entry_ix))
+                            .debug_selector(move || format!("tool-call-header-{entry_ix}"))
+                            .when(is_eido && is_collapsible, |header| header
+                                .cursor_pointer()
+                                .hover(|style| style.bg(cx.theme().colors().element_hover))
+                                .on_click(cx.listener({
+                                    let id = tool_call.id.clone();
+                                    move |this, _, window, cx| {
+                                        cx.stop_propagation();
+                                        this.entry_view_state.update(cx, |state, _| state.toggle_tool_call_expansion(&id));
+                                        this.list_state.remeasure_items(entry_ix..entry_ix + 1);
+                                        this.refresh_thread_search(window, cx);
+                                        cx.notify();
+                                    }
+                                })))
                             .group(&card_header_id)
                             .relative()
                             .w_full()
@@ -9019,7 +9162,17 @@ impl ThreadView {
                             ))
                             .child(
                                 h_flex()
+                                    .flex_none()
                                     .gap_2()
+                                    .when(is_eido && has_location, |row| row.child(
+                                        IconButton::new(("open-tool-file", entry_ix), IconName::File)
+                                            .icon_size(IconSize::Small)
+                                            .tooltip(Tooltip::text("Open File"))
+                                            .on_click(cx.listener(move |this, _, window, cx| {
+                                                cx.stop_propagation();
+                                                this.open_tool_call_location(entry_ix, 0, window, cx);
+                                            }))
+                                    ))
                                     .when_some(tool_call.duration, |this, duration| {
                                         this.child(Label::new(eido_tool_duration_label(duration))
                                             .size(LabelSize::XSmall).color(Color::Muted))
@@ -9052,6 +9205,7 @@ impl ThreadView {
                                                                   _,
                                                                   window,
                                                                   cx: &mut Context<Self>| {
+                                                                cx.stop_propagation();
                                                                 this.entry_view_state.update(
                                                                     cx,
                                                                     |state, _cx| {
@@ -9116,6 +9270,7 @@ impl ThreadView {
                                                                 let tool_call_id =
                                                                     tool_call_id.clone();
                                                                 move |this, _, _window, cx| {
+                                                                    cx.stop_propagation();
                                                                     let diff_data = diff.read(cx);
                                                                     let base_text = diff_data
                                                                         .base_text()
@@ -9143,7 +9298,7 @@ impl ThreadView {
                                                 }),
                                         )
                                     })
-                                    .when(tool_call_output_focus, |this| {
+                                    .when(tool_call_output_focus && !is_eido, |this| {
                                         this.child(
                                             Button::new("open-file-button", "Open File")
                                                 .style(ButtonStyle::Outlined)
@@ -10518,6 +10673,7 @@ impl ThreadView {
         window: &Window,
         cx: &Context<Self>,
     ) -> Div {
+        let is_eido = self.agent_id.as_ref() == "eido-pi";
         let has_location = tool_call.locations.len() == 1;
         let is_file = tool_call.kind == acp::ToolKind::Edit && has_location;
         let is_subagent_tool_call = tool_call.is_subagent();
@@ -10600,7 +10756,7 @@ impl ThreadView {
             .text_size(self.tool_name_font_size())
             .gap_1p5()
             .when(has_location || use_card_layout, |this| this.px_1())
-            .when(has_location, |this| {
+            .when(has_location && !is_eido, |this| {
                 this.cursor(CursorStyle::PointingHand)
                     .rounded(rems_from_px(3_f32)) // Concentric border radius
                     .hover(|s| s.bg(cx.theme().colors().element_hover.opacity(0.5)))
@@ -10641,17 +10797,18 @@ impl ThreadView {
                             cx,
                         ),
                     )
-                    .tooltip(Tooltip::text("Go to File"))
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.open_tool_call_location(entry_ix, 0, window, cx);
-                    }))
+                    .when(!is_eido, |label| label
+                        .tooltip(Tooltip::text("Go to File"))
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.open_tool_call_location(entry_ix, 0, window, cx);
+                        })))
                     .into_any_element()
             } else {
                 h_flex()
                     .w_full()
                     .child(self.render_markdown(
                         tool_call.label.clone(),
-                        MarkdownStyle::themed(MarkdownFont::Agent, window, cx).with_muted_text(cx),
+                        MarkdownStyle { prevent_mouse_interaction: is_eido, ..MarkdownStyle::themed(MarkdownFont::Agent, window, cx).with_muted_text(cx) },
                         cx,
                     ))
                     .into_any()
@@ -10678,6 +10835,10 @@ impl ThreadView {
             .upgrade()?
             .read(cx)
             .find_project_path(&tool_call_location.path, cx);
+
+        if self.agent_id.as_ref() == "eido-pi" {
+            AgentDiff::set_active_thread(&self.workspace, self.thread.clone(), window, cx);
+        }
 
         let open_task = self
             .workspace

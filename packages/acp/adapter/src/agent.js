@@ -1,5 +1,6 @@
 // Adapted for Eido from @automatalabs/pi-acp 0.9.4 (Apache-2.0). See ../LICENSE.
 import { existsSync, statSync } from "node:fs";
+import { rm } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { isAbsolute } from "node:path";
 import { DefaultResourceLoader, SettingsManager, createBashToolDefinition, getAgentDir, } from "@earendil-works/pi-coding-agent";
@@ -128,6 +129,7 @@ export class PiAcpAgent {
     openingControllers = new Set();
     openingTasks = new Set();
     tombstones = new Set();
+    deleting = new Set();
     cleanupRecords = new Map();
     mcpOwnerToken = {};
     disposed = false;
@@ -148,7 +150,7 @@ export class PiAcpAgent {
                 loadSession: true,
                 promptCapabilities: { image: true },
                 mcpCapabilities: { http: true, sse: true },
-                sessionCapabilities: { resume: {}, fork: {}, list: {}, close: {} },
+                sessionCapabilities: { resume: {}, fork: {}, list: {}, close: {}, delete: {} },
             },
             authMethods: AUTH_METHODS,
             _meta: {
@@ -162,6 +164,7 @@ export class PiAcpAgent {
         return authenticateMethod(context.params.methodId);
     }
     ensureMayOpen(id) {
+        if (this.deleting.has(id)) throw adapterError("session_busy");
         if (this.disposed)
             throw adapterError("internal_error");
         if (this.tombstones.has(id))
@@ -331,6 +334,7 @@ export class PiAcpAgent {
             bindingState.pi = pi;
             wrapper = new PiSession({
                 sessionId: id,
+                cwd,
                 session: pi,
                 manager,
                 client,
@@ -626,6 +630,28 @@ export class PiAcpAgent {
                 : {}),
         };
     }
+    async deleteSession(context) {
+        const id = context.params.sessionId;
+        if (this.deleting.has(id) || this.opening.has(id) || this.live.get(id)?.busy)
+            throw adapterError("session_busy");
+        this.deleting.add(id);
+        let release;
+        try {
+            // Stop the owned runtime before touching its journal, and use the
+            // same cross-process ownership guard as load/resume.
+            await this.closeSession(context);
+            if (this.cleanupRecords.has(id)) throw adapterError("child_cleanup_error");
+            release = await this.deps.eidoClaimSession?.(id);
+            const sessions = await this.deps.sessions.listAll(this.deps.sessionDir);
+            const target = sessions.find(session => session.id === id);
+            if (target) await rm(target.path);
+            this.tombstones.add(id);
+            return {};
+        } finally {
+            await release?.();
+            this.deleting.delete(id);
+        }
+    }
     async closeSession(context) {
         const opening = this.opening.get(context.params.sessionId);
         if (opening) {
@@ -657,6 +683,7 @@ export class PiAcpAgent {
         return {};
     }
     requireLive(id) {
+        if (this.deleting.has(id)) throw adapterError("session_busy");
         if (this.tombstones.has(id))
             throw adapterError("session_terminated");
         const session = this.live.get(id);

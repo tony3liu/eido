@@ -1076,6 +1076,44 @@ impl ActionLog {
         (task, undo_info)
     }
 
+    /// Accept and persist the selected files. Only the versions reviewed by the
+    /// user are accepted; a concurrent edit or a failed save stays reviewable.
+    pub fn keep_edits_and_save(
+        &mut self,
+        buffers: Option<Vec<Entity<Buffer>>>,
+        telemetry: Option<ActionLogTelemetry>,
+        cx: &mut Context<Self>,
+    ) -> Task<anyhow::Result<()>> {
+        if self.save_on_review {
+            self.keep_all_edits(telemetry, cx);
+            return Task::ready(Ok(()));
+        }
+        let buffers = self.changed_buffers(cx).map(|(buffer, _)| buffer)
+            .filter(|buffer| buffers.as_ref().is_none_or(|selected| selected.contains(buffer)))
+            .collect::<Vec<_>>();
+        let project = self.project.clone();
+        cx.spawn(async move |this, cx| {
+            for buffer in buffers {
+                let version = this.update(cx, |log, cx| {
+                    let live = buffer.read(cx);
+                    let tracked = log.tracked_buffers.get(&buffer)
+                        .ok_or_else(|| anyhow::anyhow!("This file is no longer available for review"))?;
+                    anyhow::ensure!(!live.has_conflict(), "File changed on disk. Resolve the conflict before keeping edits.");
+                    anyhow::ensure!(tracked.snapshot.version() == &live.version(), "Review is updating. Wait for the diff, then keep edits again.");
+                    Ok::<_, anyhow::Error>(live.version())
+                })??;
+                project.update(cx, |project, cx| project.save_buffer(buffer.clone(), cx)).await?;
+                this.update(cx, |log, cx| {
+                    anyhow::ensure!(buffer.read(cx).version() == version, "File changed while saving. Review the latest edits before keeping them.");
+                    let end = buffer.read(cx).max_point();
+                    log.keep_edits_in_range(buffer.clone(), Point::zero()..end, telemetry.clone(), cx);
+                    Ok::<_, anyhow::Error>(())
+                })??;
+            }
+            Ok(())
+        })
+    }
+
     pub fn keep_all_edits(
         &mut self,
         telemetry: Option<ActionLogTelemetry>,
@@ -1570,6 +1608,37 @@ mod tests {
             buffer.edit([(Point::new(row, 0)..Point::new(row, buffer.line_len(row)), text)], None, cx);
         });
         log.update(cx, |log, cx| log.buffer_edited(buffer.clone(), cx));
+    }
+
+    #[gpui::test]
+    async fn test_eido_keep_all_saves_accepted_buffer_without_saving_unrelated_draft(cx: &mut TestAppContext) {
+        let (buffer, log, _) = eido_review_pair(cx).await;
+        let draft = cx.new(|cx| Buffer::local("Unrelated draft", cx));
+        cx.update(|cx| eido_edit(&log, &buffer, 0, "accepted", cx));
+        cx.run_until_parked();
+        assert!(buffer.read_with(cx, |buffer, _| buffer.is_dirty()));
+        log.update(cx, |log, cx| log.keep_edits_and_save(Some(vec![buffer.clone(), draft.clone()]), None, cx)).await.unwrap();
+        cx.run_until_parked();
+        assert!(!buffer.read_with(cx, |buffer, _| buffer.is_dirty()));
+        assert_eq!(log.read_with(cx, |log, cx| log.changed_buffers(cx).count()), 0);
+        let fs = log.read_with(cx, |log, cx| log.project.read(cx).fs().clone());
+        assert_eq!(fs.load(path!("/reviews/shared.txt").as_ref()).await.unwrap(), "accepted\nmiddle\ntwo\n");
+        assert_eq!(draft.read_with(cx, |buffer, _| buffer.text()), "Unrelated draft");
+    }
+
+    #[gpui::test]
+    async fn test_eido_keep_all_preserves_review_when_disk_conflicts(cx: &mut TestAppContext) {
+        let (buffer, log, _) = eido_review_pair(cx).await;
+        cx.update(|cx| eido_edit(&log, &buffer, 0, "agent change", cx));
+        cx.run_until_parked();
+        let fs = log.read_with(cx, |log, cx| log.project.read(cx).fs().clone());
+        fs.atomic_write(path!("/reviews/shared.txt").into(), "external change".into()).await.unwrap();
+        cx.run_until_parked();
+        assert!(buffer.read_with(cx, |buffer, _| buffer.has_conflict()));
+        assert!(log.update(cx, |log, cx| log.keep_edits_and_save(None, None, cx)).await.is_err());
+        assert!(buffer.read_with(cx, |buffer, _| buffer.is_dirty()));
+        assert_eq!(log.read_with(cx, |log, cx| log.changed_buffers(cx).count()), 1);
+        assert_eq!(fs.load(path!("/reviews/shared.txt").as_ref()).await.unwrap(), "external change");
     }
 
     #[gpui::test(iterations = 10)]

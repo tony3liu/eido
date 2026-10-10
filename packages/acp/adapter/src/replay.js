@@ -1,5 +1,5 @@
 // Adapted for Eido from @automatalabs/pi-acp 0.9.4 (Apache-2.0). See ../LICENSE.
-import { mapKind, toContent, toolDurationMeta } from "./translate.js";
+import { mapKind, toContent, toolDurationMeta, fileLocations } from "./translate.js";
 function blocks(content) {
     if (typeof content === "string")
         return [{ type: "text", text: content }];
@@ -44,6 +44,7 @@ function replayMessage(message) {
                         kind: mapKind(item.name),
                         status: "pending",
                         rawInput: item.arguments,
+                        locations: fileLocations(item.arguments),
                         _meta: { toolName: item.name },
                     });
                 }
@@ -62,7 +63,7 @@ function replayMessage(message) {
                 update.rawOutput = message.details;
             const nested = (message.nestedCalls?.calls ?? []).flatMap(call => [
                 { sessionUpdate: "tool_call", toolCallId: call.id, title: call.name, kind: mapKind(call.name), status: "pending",
-                  rawInput: call.arguments, _meta: {toolName:call.name,parentToolCallId:call.id.slice(0,call.id.lastIndexOf('/')) || message.toolCallId} },
+                  rawInput: call.arguments, locations: fileLocations(call.arguments), _meta: {toolName:call.name,parentToolCallId:call.id.slice(0,call.id.lastIndexOf('/')) || message.toolCallId} },
                 { sessionUpdate: "tool_call_update", toolCallId:call.id, status:call.status === 'ok' ? 'completed' : 'failed',
                   content:[{type:'content',content:{type:'text',text:call.error ?? (call.status === 'ok' ? 'Nested call completed. Detailed output is recorded in the parent tool result.' : 'Nested call was interrupted; no action was replayed.')}}],
                   rawOutput:{durationMs:call.durationMs,argumentsBytes:call.argumentsBytes} }

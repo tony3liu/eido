@@ -726,10 +726,28 @@ impl MessageEditor {
     fn eido_key_down(
         &mut self,
         event: &gpui::KeyDownEvent,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let capabilities = self.session_capabilities.read();
+        if self.agent_id.as_ref() == "eido-pi"
+            && event.keystroke.key == "up"
+            && event.keystroke.modifiers == gpui::Modifiers::default()
+            && self.eido_component.is_none()
+            && !self.editor.read(cx).read_only(cx)
+            && !self.editor.read(cx).context_menu_visible()
+            && self.is_empty(cx)
+        {
+            let message = capabilities.eido_thread.as_ref().and_then(|thread| thread.upgrade())
+                .and_then(|thread| thread.read(cx).entries().iter().rev()
+                    .find_map(|entry| entry.user_message().map(|message| message.chunks.clone())));
+            if let Some(message) = message {
+                drop(capabilities);
+                self.set_message(message, window, cx);
+                cx.stop_propagation();
+                return;
+            }
+        }
         let Some((key, generation, _)) = capabilities
             .eido_shortcuts
             .iter()

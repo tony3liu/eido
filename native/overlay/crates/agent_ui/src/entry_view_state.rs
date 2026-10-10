@@ -47,6 +47,7 @@ pub struct EntryViewState {
     auto_expanded_thinking_block: Option<(usize, usize)>,
     user_toggled_thinking_blocks: HashSet<(usize, usize)>,
     expanded_compactions: HashSet<usize>,
+    pub(crate) expanded_activity: HashSet<usize>,
     expanded_tool_calls: HashSet<acp::ToolCallId>,
     collapsed_tool_calls: HashSet<acp::ToolCallId>,
     pub(crate) all_tools_expanded: bool,
@@ -71,6 +72,7 @@ impl EntryViewState {
             auto_expanded_thinking_block: None,
             user_toggled_thinking_blocks: HashSet::default(),
             expanded_compactions: HashSet::default(),
+            expanded_activity: HashSet::default(),
             expanded_tool_calls: HashSet::default(),
             collapsed_tool_calls: HashSet::default(),
             all_tools_expanded: false,
@@ -128,6 +130,7 @@ impl EntryViewState {
     }
 
     pub(crate) fn auto_expand_streaming_thought(&mut self, thread: &AcpThread, cx: &App) -> bool {
+        if self.agent_id.as_ref() == "eido-pi" { return false; }
         let thinking_display = AgentSettings::get_global(cx).thinking_display;
 
         if !matches!(
@@ -169,7 +172,7 @@ impl EntryViewState {
     }
 
     pub(crate) fn toggle_thinking_block_expansion(&mut self, key: (usize, usize), cx: &App) {
-        match AgentSettings::get_global(cx).thinking_display {
+        match if self.agent_id.as_ref() == "eido-pi" { ThinkingBlockDisplay::AlwaysCollapsed } else { AgentSettings::get_global(cx).thinking_display } {
             ThinkingBlockDisplay::Auto => {
                 let is_open = self.expanded_thinking_blocks.contains(&key)
                     || self.user_toggled_thinking_blocks.contains(&key);
@@ -219,7 +222,7 @@ impl EntryViewState {
         let is_user_toggled = self.user_toggled_thinking_blocks.contains(&key);
         let is_in_expanded_set = self.expanded_thinking_blocks.contains(&key);
 
-        match AgentSettings::get_global(cx).thinking_display {
+        match if self.agent_id.as_ref() == "eido-pi" { ThinkingBlockDisplay::AlwaysCollapsed } else { AgentSettings::get_global(cx).thinking_display } {
             ThinkingBlockDisplay::Auto => {
                 let is_open = is_user_toggled || is_in_expanded_set;
                 (is_open, false)
@@ -279,7 +282,7 @@ impl EntryViewState {
                             window,
                             cx,
                         );
-                        if !can_rewind || !has_client_id || is_subagent {
+                        if (self.agent_id.as_ref() != "eido-pi" && (!can_rewind || !has_client_id)) || is_subagent {
                             editor.set_read_only(true, cx);
                         }
                         editor.set_message(chunks, window, cx);
@@ -452,6 +455,8 @@ impl EntryViewState {
     pub fn remove(&mut self, range: Range<usize>) {
         self.entries.drain(range.clone());
 
+        self.expanded_activity = self.expanded_activity.iter()
+            .filter_map(|&index| reindex_after_removal(index, &range)).collect();
         self.expanded_compactions = self
             .expanded_compactions
             .iter()

@@ -4036,6 +4036,122 @@ pub(crate) mod tests {
     use super::*;
 
     #[gpui::test]
+    async fn test_eido_recall_and_resend_restored_question_preserve_composer_draft(cx: &mut TestAppContext) {
+        init_test(cx);
+        let connection = StubAgentConnection::new().with_agent_id(AgentId::new("eido-pi"));
+        let (conversation, cx) = setup_conversation_view(StubAgentServer::new(connection.clone()), cx).await;
+        add_to_workspace(conversation.clone(), cx);
+        let view = active_thread(&conversation, cx);
+        let id = view.read_with(cx, |view, cx| view.thread.read(cx).session_id().clone());
+        // Restored pi messages have no native truncate capability/client ID.
+        cx.update(|_, cx| connection.send_update(id.clone(), serde_json::from_value(json!({
+            "sessionUpdate":"user_message_chunk", "content":{"type":"text","text":"Previous question"}
+        })).unwrap(), cx));
+        cx.run_until_parked();
+        let editor = view.read_with(cx, |view, _| view.message_editor.clone());
+        editor.update_in(cx, |editor, window, cx| editor.focus_handle(cx).focus(window, cx));
+        cx.simulate_keystrokes("up");
+        assert_eq!(editor.read_with(cx, |editor, cx| editor.text(cx)), "Previous question");
+        editor.update_in(cx, |editor, window, cx| editor.set_text("Preserved draft", window, cx));
+        cx.simulate_keystrokes("up");
+        assert_eq!(editor.read_with(cx, |editor, cx| editor.text(cx)), "Preserved draft");
+        let historical = view.read_with(cx, |view, cx| view.entry_view_state.read(cx).entry(0).unwrap().message_editor().unwrap().clone());
+        historical.update_in(cx, |editor, window, cx| editor.set_text("Edited question", window, cx));
+        view.update_in(cx, |view, window, cx| {
+            view.editing_message = Some(0);
+            view.regenerate(0, historical.clone(), window, cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(editor.read_with(cx, |editor, cx| editor.text(cx)), "Preserved draft");
+        assert_eq!(historical.read_with(cx, |editor, cx| editor.text(cx)), "Previous question");
+        view.read_with(cx, |view, cx| {
+            let users = view.thread.read(cx).entries().iter().filter_map(|entry| entry.user_message())
+                .map(|message| message.content.to_markdown(cx)).collect::<Vec<_>>();
+            assert_eq!(users, vec!["Previous question", "Edited question"]);
+        });
+        cx.update(|_, _| connection.end_turn(id, acp::StopReason::EndTurn));
+        cx.run_until_parked();
+    }
+
+    #[gpui::test]
+    async fn test_eido_execution_disclosures_default_closed_and_preview_latest_action(cx: &mut TestAppContext) {
+        init_test(cx);
+        let connection = StubAgentConnection::new().with_agent_id(AgentId::new("eido-pi"));
+        let (conversation, cx) = setup_conversation_view(StubAgentServer::new(connection.clone()), cx).await;
+        add_to_workspace(conversation.clone(), cx);
+        let view = active_thread(&conversation, cx);
+        let id = view.read_with(cx, |view, cx| view.thread.read(cx).session_id().clone());
+        for update in [
+            json!({"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"Inspect a file"}}),
+            json!({"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"First thought"}}),
+            json!({"sessionUpdate":"tool_call","toolCallId":"read-fixture","title":"Read fixture.txt","status":"in_progress"}),
+        ] { cx.update(|_, cx| connection.send_update(id.clone(), serde_json::from_value(update).unwrap(), cx)); }
+        cx.run_until_parked();
+        view.read_with(cx, |view, cx| {
+            let state = view.entry_view_state.read(cx);
+            assert!(state.expanded_activity.is_empty());
+            assert_eq!(state.thinking_block_state((1, 0), cx), (false, false));
+            assert!(!state.is_tool_call_expanded(&acp::ToolCallId::new("read-fixture")));
+            let (first, _, steps, preview) = view.eido_activity(1, cx).unwrap();
+            assert_eq!((first, steps), (1, 2));
+            assert_eq!(preview, "Read fixture.txt");
+        });
+        view.update(cx, |view, cx| view.entry_view_state.update(cx, |state, cx| {
+            state.expanded_activity.insert(1);
+            state.toggle_thinking_block_expansion((1, 0), cx);
+        }));
+        cx.update(|_, cx| connection.send_update(id, serde_json::from_value(json!({
+            "sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"Latest thought"}
+        })).unwrap(), cx));
+        cx.run_until_parked();
+        view.read_with(cx, |view, cx| {
+            let state = view.entry_view_state.read(cx);
+            assert!(state.expanded_activity.contains(&1));
+            assert_eq!(state.thinking_block_state((1, 0), cx), (true, false));
+            assert!(!state.is_tool_call_expanded(&acp::ToolCallId::new("read-fixture")));
+            let (_, _, steps, preview) = view.eido_activity(1, cx).unwrap();
+            assert_eq!(steps, 3);
+            assert_eq!(preview, "Thinking · Latest thought");
+        });
+    }
+
+    #[gpui::test]
+    async fn test_eido_activity_headers_toggle_from_the_label_area(cx: &mut TestAppContext) {
+        init_test(cx);
+        let connection = StubAgentConnection::new().with_agent_id(AgentId::new("eido-pi"));
+        let (conversation, cx) = setup_conversation_view(StubAgentServer::new(connection.clone()), cx).await;
+        add_to_workspace_with_size(conversation.clone(), true, cx);
+        let view = active_thread(&conversation, cx);
+        let id = view.read_with(cx, |view, cx| view.thread.read(cx).session_id().clone());
+        for update in [
+            json!({"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"Inspect a file"}}),
+            json!({"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"Inspecting the file"}}),
+            json!({"sessionUpdate":"tool_call","toolCallId":"read-row","title":"read","kind":"read","status":"completed","rawInput":{"path":"/project/fixture.txt"},"locations":[{"path":"/project/fixture.txt"}],"content":[{"type":"content","content":{"type":"text","text":"File contents"}}]}),
+            json!({"sessionUpdate":"tool_call","toolCallId":"edit-row","title":"edit","kind":"edit","status":"completed","rawInput":{"path":"/project/fixture.txt","newText":"Updated"},"locations":[{"path":"/project/fixture.txt"}]}),
+            json!({"sessionUpdate":"tool_call","toolCallId":"execute-row","title":"bash","kind":"execute","status":"completed","rawInput":{"command":"pwd"},"content":[{"type":"content","content":{"type":"text","text":"/project"}}]}),
+        ] { cx.update(|_, cx| connection.send_update(id.clone(), serde_json::from_value(update).unwrap(), cx)); }
+        cx.run_until_parked();
+        let bounds = cx.debug_bounds("execution-activity-1").expect("outer activity header");
+        cx.simulate_click(bounds.center(), gpui::Modifiers::default());
+        cx.run_until_parked();
+        assert!(view.read_with(cx, |view, cx| view.entry_view_state.read(cx).expanded_activity.contains(&1)));
+        for expected in [true, false] {
+            let bounds = cx.debug_bounds("thinking-header-1-0").expect("thinking header");
+            cx.simulate_click(bounds.origin + point(px(70.), bounds.size.height / 2.), gpui::Modifiers::default());
+            cx.run_until_parked();
+            assert_eq!(view.read_with(cx, |view, cx| view.entry_view_state.read(cx).thinking_block_state((1, 0), cx).0), expected);
+        }
+        for (selector, tool) in [("tool-call-header-2", "read-row"), ("tool-call-header-3", "edit-row"), ("tool-call-header-4", "execute-row")] {
+            for expected in [true, false] {
+                let bounds = cx.debug_bounds(selector).expect("tool header");
+                cx.simulate_click(bounds.origin + point(px(70.), bounds.size.height / 2.), gpui::Modifiers::default());
+                cx.run_until_parked();
+                assert_eq!(view.read_with(cx, |view, cx| view.entry_view_state.read(cx).is_tool_call_expanded(&acp::ToolCallId::new(tool))), expected, "{tool}");
+            }
+        }
+    }
+
+    #[gpui::test]
     async fn test_eido_extension_shortcuts_route_only_from_the_composer(cx: &mut TestAppContext) {
         init_test(cx);
         let connection = StubAgentConnection::new().with_agent_id(AgentId::new("eido-pi"));
@@ -6755,7 +6871,7 @@ pub(crate) mod tests {
         let connection_store =
             cx.update(|_window, cx| cx.new(|cx| AgentConnectionStore::new(project.clone(), cx)));
 
-        let agent_key = Agent::Custom { id: "Test".into() };
+        let agent_key = Agent::Custom { id: agent.agent_id() };
 
         let conversation_view = cx.update(|window, cx| {
             cx.new(|cx| {
@@ -6881,7 +6997,8 @@ pub(crate) mod tests {
         }
 
         fn agent_id(&self) -> AgentId {
-            "Test".into()
+            let id = self.connection.agent_id();
+            if id.as_ref() == "eido-pi" { id } else { "Test".into() }
         }
 
         fn connect(

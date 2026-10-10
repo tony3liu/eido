@@ -1443,7 +1443,8 @@ impl Render for PanelButtons {
                     (action, icon_tooltip.into())
                 };
 
-                let focus_handle = dock.focus_handle(cx);
+                let dock_for_click = dock_entity.clone();
+                let workspace_for_click = workspace.clone();
                 let icon_label = entry.panel.icon_label(window, cx);
 
                 Some(
@@ -1547,10 +1548,22 @@ impl Render for PanelButtons {
                                 .tab_index(0isize)
                                 .aria_label(icon_tooltip)
                                 .on_click({
-                                    let action = action.boxed_clone();
                                     move |_, window, cx| {
-                                        window.focus(&focus_handle, cx);
-                                        window.dispatch_action(action.boxed_clone(), cx)
+                                        // A hidden dock has no dispatch path on the first frame.
+                                        // Activate it directly instead of sending an action to it.
+                                        if is_active_button {
+                                            workspace_for_click.update(cx, |workspace, cx| {
+                                                workspace.toggle_dock(dock_position, window, cx);
+                                            }).ok();
+                                        } else {
+                                            dock_for_click.update(cx, |dock, cx| {
+                                                dock.activate_panel(i, window, cx);
+                                                dock.set_open(true, window, cx);
+                                                if let Some(panel) = dock.active_panel() {
+                                                    panel.activation_focus_handle(cx).focus(window, cx);
+                                                }
+                                            });
+                                        }
                                     }
                                 })
                                 .when(!is_active, |this| {

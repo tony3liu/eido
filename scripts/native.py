@@ -258,7 +258,7 @@ def main():
                 'CFBundleDisplayName': 'Eido',
                 'CFBundlePackageType': 'APPL',
                 'CFBundleShortVersionString': '0.0.1',
-                'CFBundleVersion': '1',
+                'CFBundleVersion': '2',
                 'NSHighResolutionCapable': True,
             }, stream)
         executable = bundle_executable

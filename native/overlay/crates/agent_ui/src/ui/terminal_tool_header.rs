@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{rc::Rc, time::Duration};
 
 use gpui::{AnyElement, ClickEvent, CursorStyle, Window};
 use ui::{CommonAnimationExt, Disclosure, Divider, DividerColor, Tooltip, prelude::*};
@@ -133,6 +133,7 @@ impl RenderOnce for TerminalToolHeader {
             command_slot,
         } = self;
 
+        let on_toggle_expand = on_toggle_expand.map(Rc::new);
         let child_id = |name: &str| format!("terminal-tool-{name}-{id}");
 
         let header_bg = cx
@@ -143,6 +144,12 @@ impl RenderOnce for TerminalToolHeader {
 
         let header_row = h_flex()
             .id(child_id("header"))
+            .when_some(on_toggle_expand.clone(), |row, handler: Rc<ClickHandler>| row
+                .cursor_pointer()
+                .on_click(move |event, window, cx| {
+                    cx.stop_propagation();
+                    handler(event, window, cx);
+                }))
             .pt_1()
             .pl_1p5()
             .pr_1()
@@ -171,7 +178,10 @@ impl RenderOnce for TerminalToolHeader {
                     .opened_icon(IconName::ChevronUp)
                     .closed_icon(IconName::ChevronDown)
                     .visible_on_hover(&hover_group)
-                    .when_some(on_toggle_expand, |this, handler| this.on_click(handler)),
+                    .when_some(on_toggle_expand, |this, handler| this.on_click(move |event, window, cx| {
+                        cx.stop_propagation();
+                        handler(event, window, cx);
+                    })),
             )
             .when(show_elapsed, |header| {
                 let elapsed = elapsed.unwrap_or_default();
@@ -209,7 +219,7 @@ impl RenderOnce for TerminalToolHeader {
                                             cx,
                                         )
                                     })
-                                    .on_click(handler),
+                                    .on_click(move |event, window, cx| { cx.stop_propagation(); handler(event, window, cx); }),
                             )
                     })
             })
@@ -254,7 +264,7 @@ impl RenderOnce for TerminalToolHeader {
                                 cx,
                             )
                         })
-                        .on_click(move |_, _, cx| cx.open_url(&docs_url)),
+                        .on_click(move |_, _, cx| { cx.stop_propagation(); cx.open_url(&docs_url); }),
                 )
             });
 

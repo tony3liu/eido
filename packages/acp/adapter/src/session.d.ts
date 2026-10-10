@@ -9,6 +9,7 @@ import type { SteeringRequest, SteeringResponse } from "./steering.js";
 import { type LoadedTurnStatus } from "./loaded-turn.js";
 export interface PiSessionOptions {
     sessionId: string;
+    cwd: string;
     session: AgentSession;
     manager: SessionManager;
     client: AgentContext;
@@ -23,6 +24,7 @@ export interface PiSessionOptions {
 }
 export declare class PiSession {
     readonly sessionId: string;
+    private readonly cwd;
     readonly pi: AgentSession;
     readonly manager: SessionManager;
     private readonly client;

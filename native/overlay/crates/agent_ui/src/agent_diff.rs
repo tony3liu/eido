@@ -40,6 +40,25 @@ use workspace::{
 };
 use zed_actions::assistant::ToggleFocus;
 
+pub(crate) fn keep_and_save(
+    thread: &Entity<AcpThread>,
+    buffers: Option<Vec<Entity<Buffer>>>,
+    workspace: WeakEntity<Workspace>,
+    cx: &mut App,
+) {
+    let telemetry = ActionLogTelemetry::from(thread.read(cx));
+    let log = thread.read(cx).action_log().clone();
+    let task = log.update(cx, |log, cx| log.keep_edits_and_save(buffers, Some(telemetry), cx));
+    cx.spawn(async move |cx| {
+        if let Err(error) = task.await {
+            workspace.update(cx, |workspace, cx| {
+                let toast = StatusToast::new(format!("Edits could not be saved: {error}"), cx, |this, _| this);
+                workspace.toggle_status_toast(toast, cx);
+            }).ok();
+        }
+    }).detach();
+}
+
 pub struct AgentDiffPane {
     multibuffer: Entity<MultiBuffer>,
     editor: Entity<SplittableEditor>,
@@ -309,11 +328,7 @@ impl AgentDiffPane {
     }
 
     fn keep_all(&mut self, _: &KeepAll, _window: &mut Window, cx: &mut Context<Self>) {
-        let telemetry = ActionLogTelemetry::from(self.thread.read(cx));
-        let action_log = self.thread.read(cx).action_log().clone();
-        action_log.update(cx, |action_log, cx| {
-            action_log.keep_all_edits(Some(telemetry), cx)
-        });
+        keep_and_save(&self.thread, None, self.workspace.clone(), cx);
     }
 }
 
@@ -1369,6 +1384,19 @@ impl AgentDiff {
             })
     }
 
+    pub fn open_file(
+        thread: Entity<AcpThread>,
+        buffer: Entity<Buffer>,
+        workspace: WeakEntity<Workspace>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Result<Entity<Editor>> {
+        Self::set_active_thread(&workspace, thread, window, cx);
+        workspace.update(cx, |workspace, cx| {
+            workspace.open_project_item::<Editor>(None, buffer, true, true, true, false, window, cx)
+        })
+    }
+
     pub fn set_active_thread(
         workspace: &WeakEntity<Workspace>,
         thread: Entity<AcpThread>,
@@ -1634,7 +1662,10 @@ impl AgentDiff {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if !AgentSettings::get_global(cx).single_file_review {
+        let is_eido = self.workspace_threads.get(workspace)
+            .and_then(|state| state.thread.upgrade())
+            .is_some_and(|thread| thread.read(cx).connection().agent_id().as_ref() == "eido-pi");
+        if !is_eido && !AgentSettings::get_global(cx).single_file_review {
             for (editor, _) in self.reviewing_editors.drain() {
                 editor
                     .update(cx, |editor, cx| {
@@ -1776,10 +1807,15 @@ impl AgentDiff {
     fn keep_all(
         editor: &Entity<Editor>,
         thread: &Entity<AcpThread>,
-        _workspace: &WeakEntity<Workspace>,
+        workspace: &WeakEntity<Workspace>,
         window: &mut Window,
         cx: &mut App,
     ) -> PostReviewState {
+        if thread.read(cx).connection().agent_id().as_ref() == "eido-pi" {
+            let buffers = editor.read(cx).buffer().read(cx).all_buffers();
+            keep_and_save(thread, Some(buffers.into_iter().collect()), workspace.clone(), cx);
+            return PostReviewState::Pending;
+        }
         editor.update(cx, |editor, cx| {
             let snapshot = editor.buffer().read(cx).snapshot(cx);
             keep_edits_in_ranges(
@@ -1933,12 +1969,58 @@ mod tests {
     use agent_settings::AgentSettings;
     use editor::EditorSettings;
     use gpui::{TestAppContext, UpdateGlobal, VisualTestContext};
-    use project::{FakeFs, Project};
+    use project::{FakeFs, Fs, Project};
     use serde_json::json;
     use settings::{DiffViewStyle, SettingsStore};
     use std::{path::Path, rc::Rc};
     use util::path;
     use workspace::{MultiWorkspace, PathList};
+
+    #[gpui::test]
+    async fn test_eido_review_uses_file_tab_and_keep_all_saves(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            let settings = SettingsStore::test(cx);
+            cx.set_global(settings);
+            prompt_store::init(cx);
+            theme_settings::init(theme::LoadThemes::JustBase, cx);
+            language_model::init(cx);
+            workspace::register_project_item::<Editor>(cx);
+            SettingsStore::update_global(cx, |store, _| {
+                let mut settings = store.get::<AgentSettings>(None).clone();
+                settings.single_file_review = false;
+                store.override_global(settings);
+            });
+        });
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(path!("/test"), json!({"fixture.txt": "before"})).await;
+        let project = Project::test(fs.clone(), [path!("/test").as_ref()], cx).await;
+        let path = project.read_with(cx, |project, cx| project.find_project_path("test/fixture.txt", cx)).unwrap();
+        let buffer = project.update(cx, |project, cx| project.open_buffer(path, cx)).await.unwrap();
+        let (multi_workspace, cx) = cx.add_window_view(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+        let workspace = multi_workspace.read_with(cx, |mw, _| mw.workspace().clone());
+        let connection = Rc::new(acp_thread::StubAgentConnection::new().with_agent_id(project::AgentId::new("eido-pi")));
+        let thread = cx.update(|_, cx| connection.new_session(project.clone(), PathList::new(&[Path::new(path!("/test"))]), cx)).await.unwrap();
+        let log = thread.read_with(cx, |thread, _| thread.action_log().clone());
+        cx.update(|_, cx| {
+            log.update(cx, |log, cx| { log.set_save_on_review(false, cx); log.buffer_read(buffer.clone(), cx); });
+            buffer.update(cx, |buffer, cx| buffer.set_text("after", cx));
+            log.update(cx, |log, cx| log.buffer_edited(buffer.clone(), cx));
+        });
+        cx.run_until_parked();
+        let editor = cx.update(|window, cx| AgentDiff::open_file(thread.clone(), buffer.clone(), workspace.downgrade(), window, cx)).unwrap();
+        cx.run_until_parked();
+        assert_eq!(editor.read_with(cx, |editor, cx| editor.text(cx)), "before\nafter");
+        assert_eq!(cx.update(|_, cx| AgentDiff::global(cx).read(cx).editor_state(&editor.downgrade())), EditorState::Reviewing);
+        let reopened = cx.update(|window, cx| AgentDiff::open_file(thread.clone(), buffer.clone(), workspace.downgrade(), window, cx)).unwrap();
+        assert_eq!(editor, reopened, "review must reuse the real file tab");
+        assert_eq!(workspace.read_with(cx, |workspace, cx| workspace.items_of_type::<AgentDiffPane>(cx).count()), 0);
+        cx.update(|window, cx| { AgentDiff::keep_all(&editor, &thread, &workspace.downgrade(), window, cx); });
+        cx.run_until_parked();
+        assert!(!buffer.read_with(cx, |buffer, _| buffer.is_dirty()));
+        assert_eq!(fs.load(path!("/test/fixture.txt").as_ref()).await.unwrap(), "after");
+        assert_eq!(editor.read_with(cx, |editor, cx| editor.text(cx)), "after");
+        assert_eq!(cx.update(|_, cx| AgentDiff::global(cx).read(cx).editor_state(&editor.downgrade())), EditorState::Idle);
+    }
 
     #[gpui::test]
     async fn test_eido_file_contributors_preserve_nested_origin(cx: &mut TestAppContext) {
