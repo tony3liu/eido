@@ -23,6 +23,7 @@ export async function serveBrowser() {
   const server = new McpServer({name:'eido-browser', version:'0.0.1'});
   let launch, tail = Promise.resolve(), owner = 'agent', handoffEpoch = 0, lifetime = new AbortController(), inputLifetime = new AbortController();
   const engine=process.env.EIDO_BROWSER_ENGINE ?? 'ultrafast';
+  const fastOperations=new Set(['click','type','select','scroll']);
   let activeAgent=null,activeFast=null,inspector=null;
   const executable = chromium.executablePath();
   async function browser() {
@@ -57,6 +58,8 @@ export async function serveBrowser() {
     const snapshot = engine==='legacy'?await b.snapshotText():formatPage(b.shown=await b.snapshot());
     const page = b.lastPage;
     return {url:page.url, title:page.title, status:barrier(page)?'needs_user':'ready',
+      execution:{engine,next_tool:process.env.TYPESAFE_API_KEY?'browser_do':'browser_act',
+        text_model_configured:!!process.env.TEXT_MODEL_API_KEY},
       ...(barrier(page)?{message:'Verification required. Use browser_takeover to let the user choose Manual Takeover or Use Computer Use. Wait for their choice and re-observe before continuing.'}:{}), snapshot};
   }
   async function recordingDirectory() {
@@ -135,11 +138,18 @@ export async function serveBrowser() {
     return text(await observe(b));
   });
   register('browser_snapshot','Re-observe the current page and numbered elements before acting, especially after navigation, errors or user takeover.',{},async()=>text(await observe(await browser())));
-  register('browser_act','Act on an element from the latest snapshot. Actions serialize even when Code Mode calls them in parallel. Re-observe after every action.',{
+  register('browser_act','Direct browser fallback for a specific observed element. Use browser_do for complete goals. With a configured Ultrafast engine, click/type/select/scroll require fallback_reason explaining why the fast loop cannot perform this step. press_enter and press_key require element. Re-observe after errors or ownership changes.',{
     action:z.enum(['click','type','press_enter','press_key','select','hover','right_click','drag','upload','scroll','back']),
     element:z.number().int().optional(),value:z.string().optional(),key:z.string().optional(),destination:z.number().int().optional(),accept_dialog:z.boolean().optional(),
-  },async ({accept_dialog,...args})=>{
-    const b=await browser();const action=await b.actOn({...args,acceptDialog:!!accept_dialog});return text({...action,...await observe(b)});
+    fallback_reason:z.string().trim().min(1).max(500).optional().describe('Explain the unsupported control, failed fast run, unavailable service, or explicit user request requiring direct input. This is recorded in the result; it does not switch the global engine.'),
+  },async ({accept_dialog,fallback_reason,...args})=>{
+    if(engine==='ultrafast'&&process.env.TYPESAFE_API_KEY&&fastOperations.has(args.action)&&!fallback_reason) {
+      return {isError:true,...text({status:'use_browser_do',engine,
+        message:'Use browser_do with the entire browser goal and required field values. No action was executed. Direct click/type/select/scroll need a fallback_reason explaining why Ultrafast cannot perform this step.',
+        recovery:'Call browser_do first. For unsupported controls or an unavailable service, supply a specific fallback_reason. Do not replay any already completed action.'})};
+    }
+    const b=await browser();const action=await b.actOn({...args,acceptDialog:!!accept_dialog});
+    return text({...action,...await observe(b),execution:{engine:'direct',decision_service:false,...(fallback_reason?{fallback_reason}:{})}});
   });
   register('browser_do','Run the complete browser goal using the globally selected Jev execution loop. Supply the entire goal and required field values in the goal. Ultrafast makes one decision request per step and generates text only for TYPE_TEXT; it does not need screenshots. Legacy uses the optional values map. Check likely_done against actual page evidence. Use browser_takeover for verification barriers; do not repeat uncertain side effects.',{
     goal:z.string(),values:z.record(z.string(),z.string()).optional(),max_actions:z.number().int().min(1).max(60).optional(),allow_irreversible:z.boolean().optional().describe('Legacy only: allow its irreversible-action guard. Ultrafast executes the supported operations under the agent access policy.'),explain:z.boolean().optional(),

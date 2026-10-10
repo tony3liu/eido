@@ -26,7 +26,9 @@ test('bundled pi ACP executes the complete fast goal, propagates full trace and 
   await writeFile(join(directory,'settings.json'),JSON.stringify({defaultProvider:'eido-fixture',defaultModel:'scripted',defaultThinkingLevel:'off',retry:{enabled:false},eido:{fullAccess:true,browserDecision:{apiUrl:url,model:'fixture',engine:'ultrafast'}}}));
   await writeFile(join(directory,'auth.json'),JSON.stringify({'eido-jev':{type:'api_key',key:'fixture'}}));
   const fixture=await fixtureModel(directory,[
-    ()=>call(tool('open'),{url}),()=>call(tool('do'),{goal:'Click Increment and verify Count: 1',explain:true}),
+    context=>{assert.match(JSON.stringify(context),/Delegate supported clicking, typing, selection and scrolling to browser_do/);return call(tool('open'),{url});},
+    context=>{assert.equal(JSON.parse(lastToolText(context,tool('open'))).execution.next_tool,'browser_do');return call(tool('act'),{action:'click',element:0});},
+    context=>{const result=context.messages.findLast(m=>m.role==='toolResult'&&m.toolName===tool('act'));assert.ok(result?.role==='toolResult'&&result.isError);assert.match(JSON.stringify(result),/use_browser_do/);assert.equal(requests,0);return call(tool('do'),{goal:'Click Increment and verify Count: 1',explain:true});},
     context=>{const trace=JSON.parse(lastToolText(context,tool('do')));assert.equal(trace.status,'likely_done');assert.equal(trace.state.status,'done');assert.equal(trace.state.plan_index,1);assert.equal(trace.history.length,1);assert.match(trace.state.page.text,/Count: 1/);assert.equal(requests,2);return 'Observed Count: 1.';},
     ()=>call(tool('status')),context=>{assert.equal(JSON.parse(lastToolText(context,tool('status'))).open,false);invalid=true;return call(tool('open'),{url});},
     ()=>call(tool('do'),{goal:'Click Increment',explain:true}),context=>{const result=context.messages.findLast(m=>m.role==='toolResult'&&m.toolName===tool('do'));assert.ok(result?.role==='toolResult'&&result.isError);return call(tool('status'));},

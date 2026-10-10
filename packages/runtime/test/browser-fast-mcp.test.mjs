@@ -30,10 +30,18 @@ test('MCP fast loop executes, reports progress, invalidates a closed session and
   transport.stderr?.on('data',()=>{});
   const client=new Client({name:'fast-mcp-test',version:'1'},{capabilities:{elicitation:{form:{}}}});t.after(()=>client.close());await client.connect(transport);
   const call=(name,args={},options={})=>client.callTool({name:'browser_'+name,arguments:args},undefined,options);
-  await call('open',{url});
+  const opened=text(await call('open',{url}));
+  assert.equal(opened.execution.engine,'ultrafast');assert.equal(opened.execution.next_tool,'browser_do');
+  const attempted=await call('act',{action:'click',element:0});
+  assert.equal(attempted.isError,true);assert.equal(text(attempted).status,'use_browser_do');
+  assert.match(text(await call('snapshot')).snapshot,/Count: 0/,'redirecting to the fast loop must not send input');
   const progress=[];const result=await call('do',{goal:'Click Increment and observe Count: 1',explain:true},{onprogress:p=>progress.push(p)});
   assert.equal(result.isError,undefined);assert.equal(text(result).status,'likely_done');assert.equal(text(result).actions,1);assert.ok(progress.length>0);
   assert.match(text(await call('snapshot')).snapshot,/Count: 1/);
+  await call('open',{url});
+  const direct=text(await call('act',{action:'click',element:0,fallback_reason:'The user explicitly requested direct input to this observed button.'}));
+  assert.match(direct.snapshot,/Count: 1/);assert.equal(direct.execution.engine,'direct');assert.equal(direct.execution.decision_service,false);
+  assert.match(direct.execution.fallback_reason,/explicitly requested/);
   // Taking over interrupts a model request, preserves the browser, and discards the decision.
   await call('open',{url});hold=true;received=new Promise(r=>notifyHold=r);
   const stopped=call('do',{goal:'Click Increment'});await received;
