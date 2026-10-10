@@ -35,6 +35,11 @@ pub(crate) struct PiSettingsView {
     jev_url: Entity<Editor>,
     jev_model: Entity<Editor>,
     jev_key: Entity<Editor>,
+    browser_engine: String,
+    browser_text_url: Entity<Editor>,
+    browser_text_model: Entity<Editor>,
+    browser_text_key: Entity<Editor>,
+    browser_text_reasoning: String,
     cua_path: Entity<Editor>,
     busy: bool,
     notice: String,
@@ -65,6 +70,10 @@ impl PiSettingsView {
             jev_url: input("Jev System One API endpoint", false, window, cx),
             jev_model: input("Jev model ID", false, window, cx),
             jev_key: input("API key or $ENV_VAR reference; leave blank to keep", true, window, cx),
+            browser_engine: "ultrafast".into(), browser_text_reasoning: "low".into(),
+            browser_text_url: input("OpenAI-compatible base URL, e.g. https://api.deepseek.com/v1", false, window, cx),
+            browser_text_model: input("Text model ID", false, window, cx),
+            browser_text_key: input("API key or $ENV_VAR reference; leave blank to keep", true, window, cx),
             cua_path: input("Absolute cua-driver path; leave blank for automatic discovery", false, window, cx),
             custom_api: "openai-completions".into(), busy: false, notice: String::new(), failed: false,
         };
@@ -134,8 +143,14 @@ impl PiSettingsView {
                             view.thinking = data["defaultThinkingLevel"].as_str().unwrap_or("off").into();
                         }
                         if view.data.is_none() || matches!(operation.as_str(), "status" | "browser-decision") {
+                            view.browser_engine = data["browserDecision"]["engine"].as_str().unwrap_or("ultrafast").into();
                             view.jev_url.update(cx, |editor, cx| editor.set_text(data["browserDecision"]["apiUrl"].as_str().unwrap_or_default(), window, cx));
                             view.jev_model.update(cx, |editor, cx| editor.set_text(data["browserDecision"]["model"].as_str().unwrap_or_default(), window, cx));
+                        }
+                        if view.data.is_none() || matches!(operation.as_str(), "status" | "browser-text") {
+                            view.browser_text_url.update(cx, |editor, cx| editor.set_text(data["browserText"]["apiUrl"].as_str().unwrap_or_default(), window, cx));
+                            view.browser_text_model.update(cx, |editor, cx| editor.set_text(data["browserText"]["model"].as_str().unwrap_or_default(), window, cx));
+                            view.browser_text_reasoning = data["browserText"]["reasoning"].as_str().unwrap_or("low").into();
                         }
                         if view.data.is_none() || matches!(operation.as_str(), "status" | "computer-use") {
                             view.cua_path.update(cx, |editor, cx| editor.set_text(data["computerUse"]["path"].as_str().unwrap_or_default(), window, cx));
@@ -156,6 +171,7 @@ impl PiSettingsView {
                             "tool-defaults" => "Tool defaults saved. New tasks use this list; /reload adds newly selected tools to the current task.".into(),
                             "runtime" => "Runtime settings saved. Use /reload in an existing task to apply them.".into(),
                             "http-proxy" => "HTTP proxy saved. Restart Eido to apply this change to all tasks.".into(),
+                            "browser-text" => "Browser text model saved. New tasks use this configuration.".into(),
                             "browser-decision" => "Browser decision settings saved. New tasks use this configuration.".into(),
                             "computer-use" => "Computer Use configuration saved. New tasks use this configuration.".into(),
                             "custom-model" => "Model saved. Select it above to make it the default.".into(),
@@ -367,6 +383,8 @@ impl PiSettingsView {
                             "pi-model" => { view.model = value.clone(); if !view.levels().contains(&view.thinking) { view.thinking = "off".into(); } }
                             "pi-thinking" => view.thinking = value.clone(),
                             "pi-custom-api" => view.custom_api = value.clone(),
+                            "pi-browser-engine" => view.browser_engine = value.clone(),
+                            "pi-browser-text-reasoning" => view.browser_text_reasoning = value.clone(),
                             _ => {}
                         }
                         view.ensure_model_settings(window, cx);
@@ -481,6 +499,9 @@ impl Render for PiSettingsView {
             .child(v_flex().gap_3().pt_4().border_t_1().border_color(cx.theme().colors().border_variant)
                 .child(Label::new("Browser Decision Model · Jev"))
                 .child(Label::new("Optional decision service for browser goals and checks. Direct browser control works without a key.").size(LabelSize::Small).color(Color::Muted))
+                .child(field("Execution", self.selector("pi-browser-engine", if self.browser_engine == "legacy" { "Legacy" } else { "Ultrafast" }.into(),
+                    vec![("ultrafast".into(), "Ultrafast".into()), ("legacy".into(), "Legacy".into())], window, cx)))
+                .child(Label::new("Ultrafast runs the complete goal from page content. Switch to Legacy for controls it cannot handle. Changes apply to new tasks.").size(LabelSize::Small).color(Color::Muted))
                 .child(field("API Endpoint", text_field(self.jev_url.clone(), cx)))
                 .child(field("Model", text_field(self.jev_model.clone(), cx)))
                 .child(field("API Key", text_field(self.jev_key.clone(), cx)))
@@ -495,11 +516,36 @@ impl Render for PiSettingsView {
                             let key = this.jev_key.read(cx).text(cx);
                             this.jev_key.update(cx, |editor, cx| editor.set_text("", window, cx));
                             this.request(json!({"operation":"browser-decision", "apiUrl":this.jev_url.read(cx).text(cx),
-                                "model":this.jev_model.read(cx).text(cx), "key":key}), window, cx);
+                                "model":this.jev_model.read(cx).text(cx), "engine":this.browser_engine, "key":key}), window, cx);
                         })))
                     .child(Button::new("pi-remove-jev-key", "Remove API Key").disabled(self.busy)
                         .on_click(cx.listener(|this, _, window, cx| this.request(json!({"operation":"browser-decision",
                             "apiUrl":this.jev_url.read(cx).text(cx), "model":this.jev_model.read(cx).text(cx), "removeKey":true}), window, cx))))))
+            .child(v_flex().gap_3().pt_4().border_t_1().border_color(cx.theme().colors().border_variant)
+                .child(Label::new("Browser Text Model"))
+                .child(Label::new("Ultrafast calls this model only when entering text. Use a small, fast model with an OpenAI-compatible Chat Completions API.").size(LabelSize::Small).color(Color::Muted))
+                .child(field("Base URL", text_field(self.browser_text_url.clone(), cx)))
+                .child(field("Model", text_field(self.browser_text_model.clone(), cx)))
+                .child(field("API Key", text_field(self.browser_text_key.clone(), cx)))
+                .child(field("Reasoning", self.selector("pi-browser-text-reasoning", self.browser_text_reasoning.clone(),
+                    vec![("low".into(), "Low".into()), ("none".into(), "None".into())], window, cx)))
+                .child(Label::new(match self.data.as_ref().and_then(|d| d["browserText"]["credential"].as_str()) {
+                    Some("configured") => "API key configured",
+                    Some("environment") => "Using TEXT_MODEL_API_KEY from the environment",
+                    _ => "No text model API key configured",
+                }).size(LabelSize::Small).color(Color::Muted))
+                .child(h_flex().gap_2()
+                    .child(Button::new("pi-save-browser-text", "Save Text Model").style(ButtonStyle::Outlined).disabled(self.busy)
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            let key = this.browser_text_key.read(cx).text(cx);
+                            this.browser_text_key.update(cx, |editor, cx| editor.set_text("", window, cx));
+                            this.request(json!({"operation":"browser-text", "apiUrl":this.browser_text_url.read(cx).text(cx),
+                                "model":this.browser_text_model.read(cx).text(cx), "reasoning":this.browser_text_reasoning, "key":key}), window, cx);
+                        })))
+                    .child(Button::new("pi-remove-browser-text-key", "Remove Text API Key").disabled(self.busy)
+                        .on_click(cx.listener(|this, _, window, cx| this.request(json!({"operation":"browser-text",
+                            "apiUrl":this.browser_text_url.read(cx).text(cx), "model":this.browser_text_model.read(cx).text(cx),
+                            "reasoning":this.browser_text_reasoning, "removeKey":true}), window, cx))))))
             .child(v_flex().gap_3().pt_4().border_t_1().border_color(cx.theme().colors().border_variant)
                 .child(Label::new("Computer Use · Cua Driver"))
                 .child(Label::new(self.data.as_ref().and_then(|d| d["computerUse"]["message"].as_str()).unwrap_or("Checking Cua Driver...").to_owned()).size(LabelSize::Small).color(Color::Muted))

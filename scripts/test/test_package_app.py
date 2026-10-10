@@ -30,13 +30,19 @@ class ProductionPackageTests(unittest.TestCase):
             expected.update(str(path.relative_to(package.ROOT))
                             for path in (package.ROOT / root).rglob('*.mjs')
                             if 'test' not in path.parts)
+        expected.update(package.RUNTIME_COMPILED)
+        expected.update(['packages/runtime/src/browser/ultrafast/snapshot.js', 'packages/runtime/src/browser/ultrafast/LICENSE'])
         expected.add('packages/runtime/package.json')
         self.assertEqual(set(package.RUNTIME_FILES), expected)
         with tempfile.TemporaryDirectory() as directory:
             bundle = Path(directory) / 'Eido.app'
             runtime = bundle / 'Contents/Resources/runtime'
+            subprocess.run([shutil.which('node'), package.ROOT / 'node_modules/typescript/bin/tsc', '-p', package.ROOT / 'tsconfig.runtime.json', '--outDir', runtime], check=True)
+            # This audit covers the runtime allowlist; ACP compiled files have their own package checks.
+            shutil.rmtree(runtime / 'packages/acp/src')
             for name in package.RUNTIME_FILES:
-                package.copy_file(package.ROOT / name, runtime / name)
+                if name not in package.RUNTIME_COMPILED:
+                    package.copy_file(package.ROOT / name, runtime / name)
             self.assertEqual(len(package.audit(bundle)), len(expected))
             for name, error in [('scripts/setup/acp.mjs', 'Development script'),
                                 ('packages/runtime/src/accidental.mjs', 'Unlisted runtime module')]:

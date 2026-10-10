@@ -78,3 +78,8 @@ Other bundled dependencies and assets retain their own licenses.
 This notice records attribution and licensing scope; it adds no restrictions
 and does not replace or modify the applicable license texts. Acknowledgment
 does not imply endorsement by the upstream projects or their contributors.
+
+The Ultrafast browser execution loop includes code adapted from browser-use/jev-ultrafast,
+commit 1231850a0bf1a0c0341fe408ef1668dbbfdfac46 (Copyright 2026 Browser Use),
+licensed under the MIT License. See packages/runtime/src/browser/ultrafast/LICENSE.
+Upstream: https://github.com/browser-use/jev-ultrafast

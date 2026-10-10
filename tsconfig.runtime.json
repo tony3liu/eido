@@ -7,6 +7,14 @@
     "declaration": false,
     "rootDir": "."
   },
-  "include": ["packages/acp/src/**/*.ts"],
-  "exclude": ["**/test/**", "**/tests/**", "**/*.test.ts", "**/*.spec.ts"]
+  "include": [
+    "packages/acp/src/**/*.ts",
+    "packages/runtime/src/browser/ultrafast/**/*.ts"
+  ],
+  "exclude": [
+    "**/test/**",
+    "**/tests/**",
+    "**/*.test.ts",
+    "**/*.spec.ts"
+  ]
 }

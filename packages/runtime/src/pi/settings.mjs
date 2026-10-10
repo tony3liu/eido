@@ -3,7 +3,7 @@ import { readFile, writeFile, mkdir, chmod, rename, mkdtemp, rm, access } from "
 import { dirname, join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { pathToFileURL } from "node:url";
-import { browserCredentialId, browserDecisionSettings } from "../browser/config.mjs";
+import { browserCredentialId, browserDecisionSettings, browserTextCredentialId, browserTextSettings } from "../browser/config.mjs";
 import {computerSettings} from '../computer.mjs';
 import {runtimeSettings, mergeRuntimeSettings, modelSettings, mergeModelSettings, PiRuntimeSettingsError} from './runtime-settings.mjs';
 import {httpProxyStatus, mergeHttpProxy, PiHttpSettingsError} from './http-settings.mjs';
@@ -93,6 +93,7 @@ export function createPiSettings(directory = piDirectory(root), sourceDirectory 
       httpProxy: httpProxyStatus(manager.getGlobalSettings()),
       fullAccess: (await readJson(join(directory, "settings.json"))).eido?.fullAccess === true,
       browserDecision: await browserDecisionSettings(directory),
+      browserText: await browserTextSettings(directory),
       computerUse: await computerSettings(directory),
       computerUseRevision: (await readJson(join(directory, 'settings.json'))).eido?.computerUse ?? null,
       providers, update: await readJson(join(directory, "pi-update.json"), null) };
@@ -151,17 +152,35 @@ export function createPiSettings(directory = piDirectory(root), sourceDirectory 
         return JSON.stringify(value, null, 2) + '\n';
       });
       await chmod(join(directory, 'settings.json'), 0o600);
+    } else if (operation === "browser-text") {
+      const apiUrl = text(request.apiUrl, "Text Model Base URL"), model = text(request.model, "Text Model");
+      const url = new URL(apiUrl);
+      if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.hash || url.search) throw new PiConfigError("Enter an HTTP(S) text model base URL without credentials, query or fragment.");
+      const reasoning = request.reasoning ?? 'low';
+      if (!['low','none'].includes(reasoning)) throw new PiConfigError('Choose low or none for text model reasoning.');
+      const key = request.key ? text(request.key, "Text Model API Key") : undefined;
+      if (key?.startsWith('!')) throw new PiConfigError('Use an API key or a $ENV_VAR reference for the text model.');
+      if (request.removeKey === true) await AuthStorage.create(authPath).delete(browserTextCredentialId);
+      else if (key) await AuthStorage.create(authPath).modify(browserTextCredentialId, async () => ({type:'api_key',key}));
+      new FileSettingsStorage(directory, directory).withLock('global', current => {
+        const value = current ? JSON.parse(current) : {};
+        value.eido = {...value.eido, browserText:{apiUrl,model,reasoning}};
+        return JSON.stringify(value,null,2)+'\n';
+      });
+      await chmod(join(directory,'settings.json'),0o600);
+      if (key || request.removeKey) await chmod(authPath,0o600);
     } else if (operation === "browser-decision") {
       const apiUrl = text(request.apiUrl, "Jev API URL"), model = text(request.model, "Jev model");
       const url = new URL(apiUrl);
       if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.hash) throw new PiConfigError("Enter an HTTP(S) Jev endpoint without credentials or a fragment.");
+      if (request.engine !== undefined && !['ultrafast','legacy'].includes(request.engine)) throw new PiConfigError('Choose Ultrafast or Legacy browser execution.');
       const key = request.key ? text(request.key, "Jev API Key") : undefined;
       if (key?.startsWith("!")) throw new PiConfigError("Use an API key or a $ENV_VAR reference for Jev.");
       if (request.removeKey === true) await AuthStorage.create(authPath).delete(browserCredentialId);
       else if (key) await AuthStorage.create(authPath).modify(browserCredentialId, async () => ({type: "api_key", key}));
       new FileSettingsStorage(directory, directory).withLock("global", current => {
         const value = current ? JSON.parse(current) : {};
-        value.eido = {...value.eido, browserDecision: {apiUrl, model}};
+        value.eido = {...value.eido, browserDecision: {apiUrl, model, engine:request.engine ?? value.eido?.browserDecision?.engine ?? 'ultrafast'}};
         return JSON.stringify(value, null, 2) + "\n";
       });
       await chmod(join(directory, "settings.json"), 0o600);

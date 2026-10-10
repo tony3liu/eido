@@ -5,16 +5,19 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 import { computerSettings } from '../computer.mjs';
+import { FastBrowser } from './ultrafast/browser.ts';
+import { FastAgent } from './ultrafast/agent.ts';
 import { piDirectory } from '../paths.mjs';
 
 const text = value => ({ content: [{type:'text', text:typeof value === 'string' ? value : JSON.stringify(value)}] });
 const barrier = page => /captcha|verify you are human|security verification|安全验证|人机验证/i.test(`${page.title} ${page.text}`);
 
 // Eido owns transport, serialization and handoff. All page interpretation and
-// browser actions use JevBrowser's published API; neither pi nor Jev is patched.
+// legacy actions use JevBrowser's public API; the fast loop uses the same page via CDP.
 export async function serveBrowser() {
   const server = new McpServer({name:'eido-browser', version:'0.0.1'});
-  let launch, tail = Promise.resolve(), owner = 'agent', handoffEpoch = 0;
+  let launch, tail = Promise.resolve(), owner = 'agent', handoffEpoch = 0, lifetime = new AbortController(), inputLifetime = new AbortController();
+  const engine=process.env.EIDO_BROWSER_ENGINE ?? 'ultrafast';
   const executable = chromium.executablePath();
   async function browser() {
     if (!existsSync(executable)) throw new Error(`Bundled browser unavailable at ${executable}. Reinstall Eido with its matching browser resources; do not install packages into the running app.`);
@@ -24,6 +27,8 @@ export async function serveBrowser() {
   }
   async function close() {
     handoffEpoch++;
+    lifetime.abort(new Error('Browser session closed'));
+    lifetime = new AbortController();
     const pending = launch;
     launch = undefined;
     owner = 'agent';
@@ -69,13 +74,42 @@ export async function serveBrowser() {
   },async ({accept_dialog,...args})=>{
     const b=await browser();const action=await b.actOn({...args,acceptDialog:!!accept_dialog});return text({...action,...await observe(b)});
   });
-  register('browser_do','Work toward one observable outcome using the configured Jev decision service. Put every string to type in values. Verify likely_done results; use browser_takeover for login or verification barriers.',{
-    goal:z.string(),values:z.record(z.string(),z.string()).optional(),max_actions:z.number().int().min(1).max(30).optional(),allow_irreversible:z.boolean().optional(),explain:z.boolean().optional(),
-  },async ({goal,values,max_actions,allow_irreversible,explain})=>{
-    const b=await browser(),before=await observe(b);
-    if(before.status==='needs_user')return text(before);
-    const r=await b.do(goal,{values:values??{},maxActions:max_actions??10,allowIrreversible:!!allow_irreversible});
-    return text({...r,...(!explain?{rounds:undefined}:{}),observation:await observe(b)});
+  register('browser_do','Run the complete browser goal using the globally selected Jev execution loop. Supply the entire goal and required field values in the goal. Ultrafast makes one decision request per step and generates text only for TYPE_TEXT; it does not need screenshots. Legacy uses the optional values map. Check likely_done against actual page evidence. Use browser_takeover for verification barriers; do not repeat uncertain side effects.',{
+    goal:z.string(),values:z.record(z.string(),z.string()).optional(),max_actions:z.number().int().min(1).max(60).optional(),allow_irreversible:z.boolean().optional(),explain:z.boolean().optional(),
+  },async ({goal,values,max_actions,allow_irreversible,explain},extra)=>{
+    const b=await browser();
+    if(engine==='legacy') {
+      const before=await observe(b);if(before.status==='needs_user')return text(before);
+      const r=await b.do(goal,{values:values??{},maxActions:max_actions??10,allowIrreversible:!!allow_irreversible});
+      return text({...r,engine,...(!explain?{rounds:undefined}:{}),observation:await observe(b)});
+    }
+    const signal=AbortSignal.any([extra.signal,lifetime.signal,inputLifetime.signal]);
+    const fast=await FastBrowser.attach(b.page,signal);
+    let progress=0;
+    const agent=new FastAgent(fast,goal+(values&&Object.keys(values).length?'\nRequired field values: '+JSON.stringify(values):''),{
+      signal,maxActions:max_actions??60,barrier,
+      decision:{apiUrl:process.env.JEV_API_URL,model:process.env.JEV_MODEL,key:process.env.TYPESAFE_API_KEY},
+      text:{apiUrl:process.env.TEXT_MODEL_BASE_URL,model:process.env.TEXT_MODEL,key:process.env.TEXT_MODEL_API_KEY,reasoning:process.env.TEXT_MODEL_REASONING},
+      progress:async event=>{
+        const token=extra._meta?.progressToken;
+        if(token!==undefined) await server.server.notification({method:'notifications/progress',params:{progressToken:token,progress:++progress,
+          message:event.phase==='acting'?`${event.operation}: ${event.target}`:event.phase==='generating_text'?`Preparing text: ${event.field}`:
+            event.phase==='stale'?'Page changed; observing again':event.phase==='observed'?`Observed after ${event.action}`:'Choosing the next browser action'}}).catch(()=>{});
+      },
+    });
+    try {
+      const result=await agent.run();
+      return text({...result,...(!explain?{decisions:undefined,textCalls:undefined}:{}),
+        ...(result.status==='blocked'?{recovery:'Inspect the page. For unsupported controls, choose Legacy in global browser settings for a new run. Completed actions are never replayed automatically.'}:{})});
+    } catch(error) {
+      const trace=agent.result();
+      if(owner==='user' && !extra.signal.aborted) return text({status:'needs_user',engine,history:trace.history,
+        message:'Browser automation stopped for user takeover. The pending decision was discarded; re-observe before continuing.'});
+      await close();
+      return {isError:true,...text({status:signal.aborted&&extra.signal.aborted?'cancelled':'error',engine,
+        message:String(error?.message??error).slice(0,1200),...(!explain?{history:trace.history}:{trace}),
+        recovery:'The task browser was closed. Inspect the trace before retrying any action with side effects.'})};
+    } finally {await fast.detach();}
   });
   register('browser_check','Ask a yes/no question with the configured Jev service. Probabilities between 0.15 and 0.85 require direct observation.',{question:z.string()},async ({question})=>text({question,p_yes:await (await browser()).check(question)}));
   register('browser_choose','Choose between supplied options using the configured Jev service.',{question:z.string(),options:z.array(z.string()).min(2).max(255)},async ({question,options})=>text(await (await browser()).choose(question,options)));
@@ -83,16 +117,21 @@ export async function serveBrowser() {
     const data=await (await browser()).screenshot({fullPage:!!full_page});return {content:[{type:'image',data:data.toString('base64'),mimeType:'image/png'}]};
   });
   register('browser_takeover','Pause task browser automation. For a verification barrier, let the user choose Manual Takeover or Use Computer Use for this page. Other manual steps use Manual Takeover. Wait for their response; a Computer Use choice is permission to try, not proof of success. No browser actions run while the user chooses or handles the step.',{reason:z.string().min(1).max(500)},async ({reason},extra)=>{
-    const b=await browser();await b.page.bringToFront();owner='user';handoffEpoch++;
+    const b=await browser();owner='user';handoffEpoch++;
+    const takeoverSignal=AbortSignal.any([extra.signal,lifetime.signal]);
+    inputLifetime.abort(new Error('Browser input paused for takeover'));inputLifetime=new AbortController();
+    // Drain the interrupted action before the user can interact with this window.
     try {
+      await tail.catch(()=>{});takeoverSignal.throwIfAborted();
+      await b.page.bringToFront();
       const token=extra._meta?.progressToken;
       let progress=0;
       const timer=setInterval(()=>{
         if(token !== undefined) void server.server.notification({method:'notifications/progress',params:{progressToken:token,progress:++progress,message:'Waiting for the user to choose or finish the browser step'}}).catch(()=>{});
       },10000);
       const ask=async(message,requestedSchema)=>{
-        const response=await server.server.elicitInput({mode:'form',message,requestedSchema},{signal:extra.signal,timeout:30*60*1000});
-        extra.signal.throwIfAborted();
+        const response=await server.server.elicitInput({mode:'form',message,requestedSchema},{signal:takeoverSignal,timeout:30*60*1000});
+        takeoverSignal.throwIfAborted();
         return response;
       };
       try {
@@ -118,8 +157,8 @@ export async function serveBrowser() {
         return text({status:'resumed',method:'manual',observation:await observe(b)});
       } finally {clearInterval(timer);}
     } finally {owner='agent';handoffEpoch++;}
-  });
-  register('browser_status','Check browser resources and input ownership without launching a browser.',{},async()=>text({browserPath:executable,available:existsSync(executable),open:!!launch,owner}),true);
+  },true);
+  register('browser_status','Check browser resources and input ownership without launching a browser.',{},async()=>text({browserPath:executable,available:existsSync(executable),open:!!launch,owner,engine}),true);
   register('browser_close','Close the task browser. The next browser call opens an independent session.',{},async()=>{await close();return text({closed:true});},true);
   const shutdown=async()=>{await close();await server.close();};
   process.once('SIGINT',()=>{void shutdown().finally(()=>process.exit(0));});

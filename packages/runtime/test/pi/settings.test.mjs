@@ -272,7 +272,7 @@ test("Jev configuration uses global settings and pi credentials without exposing
   assert.equal(result.defaultModel, 'test-model');
   assert.equal((await f.get(f.target, 'settings.json')).customSetting.retain, true);
   const env = await browserDecisionEnvironment(f.target);
-  assert.deepEqual(env, {JEV_API_URL:'http://127.0.0.1:19001/v1/systemone', JEV_MODEL:'jev-fixture', TYPESAFE_API_KEY:'fixture-jev-secret'});
+  assert.deepEqual(env, {JEV_API_URL:'http://127.0.0.1:19001/v1/systemone', JEV_MODEL:'jev-fixture', TYPESAFE_API_KEY:'fixture-jev-secret', EIDO_BROWSER_ENGINE:'ultrafast', TEXT_MODEL_BASE_URL:'', TEXT_MODEL:'', TEXT_MODEL_REASONING:'low', TEXT_MODEL_API_KEY:''});
   assert.equal((await stat(join(f.target, 'auth.json'))).mode & 0o777, 0o600);
   await f.bridge.execute({operation:'browser-decision', apiUrl:'https://example.invalid/v1/systemone', model:'jev-new', key:''});
   assert.equal((await browserDecisionEnvironment(f.target)).TYPESAFE_API_KEY, 'fixture-jev-secret');
@@ -284,4 +284,26 @@ test("Jev configuration uses global settings and pi credentials without exposing
   assert.equal((await browserDecisionEnvironment(f.target)).TYPESAFE_API_KEY, 'fixture-resolved-secret');
   await f.bridge.execute({operation:'browser-decision', apiUrl:'https://example.invalid/v1/systemone', model:'jev-new', removeKey:true});
   assert.equal((await f.get(f.target, 'auth.json'))['eido-jev'], undefined);
+});
+
+
+test('browser execution and text model settings are global, isolated and keep keys hidden', async t => {
+  const f=await fixture(t);
+  const {browserDecisionEnvironment}=await import('../../src/browser/config.mjs');
+  await f.bridge.execute({operation:'browser-decision',apiUrl:'https://example.invalid/jev',model:'jev',engine:'legacy',key:'decision-secret'});
+  const saved=await f.bridge.execute({operation:'browser-text',apiUrl:'https://example.invalid/v1',model:'small',reasoning:'none',key:'text-secret'});
+  assert.equal(saved.browserDecision.engine,'legacy');
+  assert.equal(saved.browserText.credential,'configured');
+  assert.ok(!JSON.stringify(saved).includes('text-secret'));
+  const env=await browserDecisionEnvironment(f.target);
+  assert.equal(env.TEXT_MODEL_API_KEY,'text-secret'); assert.equal(env.TYPESAFE_API_KEY,'decision-secret');
+  assert.equal(env.TEXT_MODEL_REASONING,'none'); assert.equal(env.EIDO_BROWSER_ENGINE,'legacy');
+  const before=await readFile(join(f.target,'settings.json'),'utf8');
+  for (const patch of [{apiUrl:'file:///private'},{reasoning:'high'},{key:'!execute-command'}]) {
+    await assert.rejects(f.bridge.execute({operation:'browser-text',apiUrl:'https://example.invalid/v1',model:'small',...patch}));
+    assert.equal(await readFile(join(f.target,'settings.json'),'utf8'),before);
+  }
+  await f.bridge.execute({operation:'browser-text',apiUrl:'https://example.invalid/v1',model:'small',removeKey:true});
+  assert.equal((await browserDecisionEnvironment(f.target)).TEXT_MODEL_API_KEY,'');
+  assert.equal((await f.get(f.target,'settings.json')).customSetting.retain,true);
 });

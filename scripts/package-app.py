@@ -23,6 +23,7 @@ RUNTIME_FILES = (
     'packages/runtime/src/lifecycle.mjs', 'packages/runtime/src/paths.mjs',
     'packages/runtime/src/computer.mjs',
     'packages/runtime/src/browser/config.mjs', 'packages/runtime/src/browser/server.mjs',
+    'packages/runtime/src/browser/ultrafast/agent.js', 'packages/runtime/src/browser/ultrafast/browser.js', 'packages/runtime/src/browser/ultrafast/model.js', 'packages/runtime/src/browser/ultrafast/types.js', 'packages/runtime/src/browser/ultrafast/transport.js', 'packages/runtime/src/browser/ultrafast/questions.js', 'packages/runtime/src/browser/ultrafast/scripts.js', 'packages/runtime/src/browser/ultrafast/snapshot.js', 'packages/runtime/src/browser/ultrafast/LICENSE',
     'packages/runtime/src/pi/settings.mjs', 'packages/runtime/src/pi/extensions.mjs',
     'packages/runtime/src/pi/http-settings.mjs', 'packages/runtime/src/pi/runtime-settings.mjs',
     'packages/runtime/src/mcp/config.mjs', 'packages/runtime/src/mcp/status.mjs',
@@ -32,6 +33,7 @@ RUNTIME_FILES = (
     'packages/acp/helpers/preview/server.mjs', 'packages/acp/helpers/preview/command.mjs',
     'packages/acp/helpers/preview/project.mjs',
 )
+RUNTIME_COMPILED = tuple(name for name in RUNTIME_FILES if '/ultrafast/' in name and name.endswith('.js') and not name.endswith('/snapshot.js'))
 RUNTIME_MODULE_ROOTS = ('packages/runtime', 'packages/acp/bin', 'packages/acp/helpers')
 EXCLUDED = {'test', 'tests', '__tests__', '__mocks__', 'fixtures', '__fixtures__',
             'examples', 'example', 'bench', 'benchmark', 'benchmarks', 'coverage',
@@ -213,7 +215,13 @@ def build():
     (runtime / 'package.json').write_text(json.dumps({'name': 'eido-runtime', 'private': True, 'type': 'module',
                                                   'license': 'GPL-3.0-or-later'}))
     for name in RUNTIME_FILES:
+        if name in RUNTIME_COMPILED:
+            if not (runtime / name).is_file():
+                raise RuntimeError(f'Missing compiled browser module: {name}')
+            continue
         copy_file(ROOT / name, runtime / name)
+    browser_server = runtime / 'packages/runtime/src/browser/server.mjs'
+    browser_server.write_text(browser_server.read_text().replace("./ultrafast/browser.ts", "./ultrafast/browser.js").replace("./ultrafast/agent.ts", "./ultrafast/agent.js"))
     count = copy_dependencies(ROOT, runtime) + copy_dependencies(ROOT / 'packages/acp', runtime / 'packages/acp')
     copy_file(ROOT / 'native/appearance.json', runtime / 'native/appearance.json')
     copy_file(node, contents / 'Helpers/node')
@@ -265,7 +273,7 @@ def build():
     with (contents / 'Info.plist').open('wb') as stream:
         plistlib.dump({'CFBundleExecutable': 'eido', 'CFBundleIdentifier': 'dev.eido.app',
             'CFBundleName': 'Eido', 'CFBundleDisplayName': 'Eido', 'CFBundleIconFile': 'Eido.icns',
-            'CFBundlePackageType': 'APPL', 'CFBundleShortVersionString': version.split('-')[0], 'CFBundleVersion': '2',
+            'CFBundlePackageType': 'APPL', 'CFBundleShortVersionString': version.split('-')[0], 'CFBundleVersion': '3',
             'NSHighResolutionCapable': True, 'NSPrincipalClass': 'NSApplication',
             'NSCameraUsageDescription': 'Eido uses the camera only when an enabled tool requests it.',
             'NSMicrophoneUsageDescription': 'Eido uses the microphone only when an enabled tool requests it.',
