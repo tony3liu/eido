@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="native/branding/eido-readme.svg" alt="Eido — AI development workspace, 0.0.1 beta2" width="100%">
+  <img src="native/branding/eido-readme.svg" alt="Eido — AI development workspace, 0.0.1 beta3" width="100%">
 </p>
 
 <h1 align="center">From intent to code you can trust.</h1>
@@ -26,16 +26,16 @@
 
 Eido keeps the conversation and the code in the same place. Describe what you want to achieve, give the agent the context it needs, and work through the result in your editor. Your task, proposed changes, and review decisions stay connected as you move between planning and implementation.
 
-**Eido 0.0.1 beta2 is the latest macOS preview.** Download the app and try a focused task on a real project.
+**Eido 0.0.1 beta3 is the latest macOS preview.** Download the app and try a focused task on a real project.
 
 <p>
-  <a href="https://github.com/tony3liu/eido/releases/download/v0.0.1-beta2/Eido-0.0.1-beta2-macos-arm64.dmg"><strong>Download for Mac · Apple Silicon</strong></a> ·
-  <a href="https://github.com/tony3liu/eido/releases/tag/v0.0.1-beta2">Release notes</a>
+  <a href="https://github.com/tony3liu/eido/releases/download/v0.0.1-beta3/Eido-0.0.1-beta3-macos-arm64.dmg"><strong>Download for Mac · Apple Silicon</strong></a> ·
+  <a href="https://github.com/tony3liu/eido/releases/tag/v0.0.1-beta3">Release notes</a>
 </p>
 
 macOS 13 or later · Apple Silicon (M-series) · Early beta
 
-Beta2 adds question copy, edit and resend controls, previous-question recall, and thread deletion. Agent activity has two levels of detail that expand from the whole header row, with Open File buttons on file tools. Review changes directly in the file tab; Keep All saves accepted edits. The Git panel opens on the first click. The app bundles official pi 1.1.0.
+Beta3 adds the Ultrafast browser agent, adapted in TypeScript from browser-use/jev-ultrafast. Each step combines the operation and indexed target in one Jev request, with text generation only when typing. Browser input reuses your main model and authentication by default; a separate text model is optional. The release also includes the inspector, trace export, recording and verification tools, with Legacy available in global settings. The app bundles official pi 1.1.0.
 
 ## The Eido experience
 
@@ -74,7 +74,7 @@ Ask the agent to inspect a page or work with a desktop application alongside you
 
 ## Download and install
 
-1. Download [Eido-0.0.1-beta2-macos-arm64.dmg](https://github.com/tony3liu/eido/releases/download/v0.0.1-beta2/Eido-0.0.1-beta2-macos-arm64.dmg).
+1. Download [Eido-0.0.1-beta3-macos-arm64.dmg](https://github.com/tony3liu/eido/releases/download/v0.0.1-beta3/Eido-0.0.1-beta3-macos-arm64.dmg).
 2. Open the disk image and drag **Eido** into **Applications**.
 3. Launch Eido and configure your model and authentication in global settings.
 
@@ -130,7 +130,7 @@ The most useful feedback starts with a real task. [Open an issue](https://github
 - **Your goal** — what you were trying to accomplish.
 - **The friction** — what you expected and what happened instead.
 - **A small example** — steps to reproduce, a screenshot, or the relevant error text.
-- **The version** — Eido **0.0.1 beta2**, plus your macOS version.
+- **The version** — Eido **0.0.1 beta3**, plus your macOS version.
 
 Please remove credentials and private project information from shared examples.
 
@@ -146,6 +146,7 @@ Eido respects and preserves the licenses and attribution of both projects. **Eid
 | Zed components marked Apache-2.0, including GPUI | [Apache-2.0](native/LICENSE-APACHE) |
 | pi | [MIT](https://github.com/earendil-works/pi/blob/main/LICENSE) |
 | Cua Driver desktop runtime | [MIT](native/cua/LICENSE-MIT) |
+| jev-ultrafast browser agent and tools | [MIT](packages/runtime/src/browser/ultrafast/LICENSE) |
 
 If you fork, modify, or distribute Eido, you must comply with the licenses that apply to each included component. Preserve license texts, copyright and attribution notices, and required modification notices. When distributing GPL-covered binaries, provide the Corresponding Source through a method permitted by the GPL and retain its licensing terms. Other dependencies retain their own licenses; see [NOTICE](NOTICE) for attribution and scope. This summary does not replace the license texts.
 
@@ -153,5 +154,5 @@ If you fork, modify, or distribute Eido, you must comply with the licenses that 
 
 <p align="center">
   <strong>Understand. Create. Evolve.</strong><br>
-  <sub>Eido · 0.0.1 beta2 · macOS preview</sub>
+  <sub>Eido · 0.0.1 beta3 · macOS preview</sub>
 </p>
