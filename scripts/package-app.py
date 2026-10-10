@@ -23,6 +23,7 @@ RUNTIME_FILES = (
     'packages/runtime/src/lifecycle.mjs', 'packages/runtime/src/paths.mjs',
     'packages/runtime/src/computer.mjs',
     'packages/runtime/src/browser/config.mjs', 'packages/runtime/src/browser/server.mjs',
+    'packages/runtime/src/browser/text-model.mjs',
     'packages/runtime/src/browser/ultrafast/agent.js', 'packages/runtime/src/browser/ultrafast/browser.js', 'packages/runtime/src/browser/ultrafast/model.js', 'packages/runtime/src/browser/ultrafast/types.js', 'packages/runtime/src/browser/ultrafast/transport.js', 'packages/runtime/src/browser/ultrafast/questions.js', 'packages/runtime/src/browser/ultrafast/scripts.js', 'packages/runtime/src/browser/ultrafast/snapshot.js', 'packages/runtime/src/browser/ultrafast/LICENSE',
     'packages/runtime/src/browser/ultrafast/render.js',
     'packages/runtime/src/browser/ultrafast/index.js', 'packages/runtime/src/browser/ultrafast/recording.js',

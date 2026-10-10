@@ -272,7 +272,7 @@ test("Jev configuration uses global settings and pi credentials without exposing
   assert.equal(result.defaultModel, 'test-model');
   assert.equal((await f.get(f.target, 'settings.json')).customSetting.retain, true);
   const env = await browserDecisionEnvironment(f.target);
-  assert.deepEqual(env, {JEV_API_URL:'http://127.0.0.1:19001/v1/systemone', JEV_MODEL:'jev-fixture', TYPESAFE_API_KEY:'fixture-jev-secret', EIDO_BROWSER_ENGINE:'ultrafast', TEXT_MODEL_BASE_URL:'https://api.deepseek.com/v1', TEXT_MODEL:'deepseek-chat', TEXT_MODEL_REASONING:'low', TEXT_MODEL_API_KEY:''});
+  assert.deepEqual(env, {JEV_API_URL:'http://127.0.0.1:19001/v1/systemone', JEV_MODEL:'jev-fixture', TYPESAFE_API_KEY:'fixture-jev-secret', EIDO_BROWSER_ENGINE:'ultrafast', TEXT_MODEL_SOURCE:'pi',TEXT_MODEL_BASE_URL:'', TEXT_MODEL:'test-model', TEXT_MODEL_REASONING:'low', TEXT_MODEL_API_KEY:''});
   assert.equal((await stat(join(f.target, 'auth.json'))).mode & 0o777, 0o600);
   await f.bridge.execute({operation:'browser-decision', apiUrl:'https://example.invalid/v1/systemone', model:'jev-new', key:''});
   assert.equal((await browserDecisionEnvironment(f.target)).TYPESAFE_API_KEY, 'fixture-jev-secret');
@@ -306,4 +306,14 @@ test('browser execution and text model settings are global, isolated and keep ke
   await f.bridge.execute({operation:'browser-text',apiUrl:'https://example.invalid/v1',model:'small',removeKey:true});
   assert.equal((await browserDecisionEnvironment(f.target)).TEXT_MODEL_API_KEY,'');
   assert.equal((await f.get(f.target,'settings.json')).customSetting.retain,true);
+  await f.bridge.execute({operation:'key',provider:'eido-fixture',key:'main-secret'});
+  const inherited=await f.bridge.execute({operation:'browser-text',source:'pi'});
+  assert.equal(inherited.browserText.source,'pi');assert.equal(inherited.browserText.model,'test-model');
+  assert.equal(inherited.browserText.credential,'configured');
+  assert.ok(!JSON.stringify(inherited).includes('main-secret'));
+  assert.equal((await browserDecisionEnvironment(f.target)).TEXT_MODEL_API_KEY,'');
+  assert.equal((await f.get(f.target,'settings.json')).eido.browserText.apiUrl,'https://example.invalid/v1','optional override is retained');
+  await f.bridge.execute({operation:'browser-text',removeKey:true});
+  assert.equal((await f.get(f.target,'auth.json'))['eido-fixture'].key,'main-secret');
+  assert.equal((await f.bridge.status()).browserText.source,'pi');
 });

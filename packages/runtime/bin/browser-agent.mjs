@@ -5,6 +5,7 @@ import {fileURLToPath} from 'node:url';
 import {createHash} from 'node:crypto';
 import {browserDirectory,piDirectory} from '../src/paths.mjs';
 import {browserDecisionEnvironment} from '../src/browser/config.mjs';
+import {createBrowserTextModel} from '../src/browser/text-model.mjs';
 process.env.PLAYWRIGHT_BROWSERS_PATH??=browserDirectory();
 Object.assign(process.env,await browserDecisionEnvironment(piDirectory()));
 const {Agent}=await import('../src/browser/ultrafast/agent.ts');
@@ -40,7 +41,7 @@ if(output)await mkdir(output,{recursive:true});
 const agent=await Agent.create(url,goals,{signal:signal.signal,screenshots:!!values.screenshots,
   maxActions,
   decision:{apiUrl:process.env.JEV_API_URL,model:process.env.JEV_MODEL,key:process.env.TYPESAFE_API_KEY},
-  text:{apiUrl:process.env.TEXT_MODEL_BASE_URL,model:process.env.TEXT_MODEL,key:process.env.TEXT_MODEL_API_KEY,reasoning:process.env.TEXT_MODEL_REASONING}});
+  text:await createBrowserTextModel(piDirectory())});
 const timings={};const raw=agent.browser.call.bind(agent.browser);
 agent.browser.call=async(method,params)=>{const start=performance.now();try{return await raw(method,params);}finally{(timings[method]??=[]).push(performance.now()-start);}};
 let recording,error;

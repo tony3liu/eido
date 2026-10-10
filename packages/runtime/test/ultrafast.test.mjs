@@ -112,7 +112,7 @@ test('full goal uses helper only for TYPE_TEXT, traces before observing, and con
 test('text output is strict, cancellation aborts HTTP, and missing helper configuration never types', async t=>{
   const {fast,controller}=await browser(t,fixture);const page=await fast.observe(false),action=page.actions.find(a=>a.kind==='fill');
   const context=fieldContext('Enter London',action,page,[]);
-  await assert.rejects(fieldText(context,{apiUrl:'',key:'',model:''}),/Configure Browser Text Model/);
+  await assert.rejects(fieldText(context,{apiUrl:'',key:'',model:''}),/Configure the main language model/);
   for(const content of ['null','{}','{"text":null}','{"text":""}','{"text":"ok","action":"click"}','{"text":123}','not json']) {
     const api=await service(t,()=>({choices:[{message:{content}}]}));await assert.rejects(fieldText(context,api.config),/no valid field value/);
   }

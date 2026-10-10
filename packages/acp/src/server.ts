@@ -74,7 +74,8 @@ export async function startEidoAgent(agentDir: string, sessionDir: string, strea
           options.resourceLoader.getExtensions = () => {
             const loaded = getExtensions();
             return { ...loaded, extensions: [...loaded.extensions, preview.extension, shell.extension, accessPolicy(agentDir,()=>liveSession,name=>browser.track(name),{
-              engine:browserDecision.EIDO_BROWSER_ENGINE,decisionConfigured:!!browserDecision.TYPESAFE_API_KEY,textConfigured:!!browserDecision.TEXT_MODEL_API_KEY,
+              engine:browserDecision.EIDO_BROWSER_ENGINE,decisionConfigured:!!browserDecision.TYPESAFE_API_KEY,
+              textConfigured:browserDecision.TEXT_MODEL_SOURCE==='pi'||!!browserDecision.TEXT_MODEL_API_KEY,textSource:browserDecision.TEXT_MODEL_SOURCE,
             })] };
           };
           const append = options.resourceLoader.getAppendSystemPrompt.bind(options.resourceLoader);

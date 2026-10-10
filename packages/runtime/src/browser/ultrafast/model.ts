@@ -90,14 +90,21 @@ export function fieldContext(goal:string,action:Action,page:Snapshot,history:His
     page:{title:page.title,text:[...page.text].slice(0,6000).join('')},recent_actions:history.slice(-6).map(h=>({action:h.action??null,text:h.text??null}))};
 }
 export async function fieldText(context:ReturnType<typeof fieldContext>,config:TextConfig,signal?:AbortSignal) {
-  if (!config.key || !config.apiUrl || !config.model) throw new Error('TYPE_TEXT needs a text model. Configure Browser Text Model in global settings; nothing was typed.');
-  const base=config.apiUrl.replace(/\/+$/,''), started=performance.now();
-  const reasoning=config.reasoning==='none'?{reasoning:{enabled:false}}:base.includes('api.deepseek.com/')?{thinking:{type:'disabled'}}:{reasoning:{effort:'low'}};
-  const result=await postJson({...config,apiUrl:base+'/chat/completions'},{model:config.model,max_tokens:1024,response_format:{type:'json_object'},...reasoning,
-    messages:[{role:'system',content:TEXT_VALUE},{role:'user',content:pythonJson(context)}]},signal);
+  const started=performance.now();let content,model,usage;
+  if(config.generate) {
+    const result=await config.generate(pythonJson(context),TEXT_VALUE,signal);
+    content=result.content;model=result.model;usage=result.usage;
+  }else {
+    if (!config.key || !config.apiUrl || !config.model) throw new Error('TYPE_TEXT needs a text model. Configure the main language model or the optional Browser Text Model override in global settings; nothing was typed.');
+    const base=config.apiUrl.replace(/\/+$/,'');
+    const reasoning=config.reasoning==='none'?{reasoning:{enabled:false}}:base.includes('api.deepseek.com/')?{thinking:{type:'disabled'}}:{reasoning:{effort:'low'}};
+    const result=await postJson({apiUrl:base+'/chat/completions',key:config.key,model:config.model},{model:config.model,max_tokens:1024,response_format:{type:'json_object'},...reasoning,
+      messages:[{role:'system',content:TEXT_VALUE},{role:'user',content:pythonJson(context)}]},signal);
+    content=result?.choices?.[0]?.message?.content;model=config.model;usage=result.usage??{};
+  }
   let output;
-  try {output=JSON.parse(result.choices[0].message.content);} catch {throw new Error('Text helper returned no valid field value; nothing typed.');}
+  try {output=JSON.parse(content);} catch {throw new Error('Text helper returned no valid field value; nothing typed.');}
   if (!output || Object.keys(output).length!==1 || typeof output.text!=='string' || !output.text.trim() || [...output.text].length>2000)
     throw new Error('Text helper returned no valid field value; nothing typed.');
-  return {text:output.text as string,helper:{model:config.model,latency_ms:Math.round(performance.now()-started),usage:result.usage??{}}};
+  return {text:output.text as string,helper:{model:model as string,latency_ms:Math.round(performance.now()-started),usage}};
 }

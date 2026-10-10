@@ -3,5 +3,5 @@ export const browserTextCredentialId: string;
 export const browserDefaults: {apiUrl: string; model: string};
 type Credential = 'configured' | 'environment' | 'none';
 export function browserDecisionSettings(directory: string): Promise<{apiUrl: string; model: string; engine:'ultrafast'|'legacy'; credential:Credential}>;
-export function browserTextSettings(directory:string):Promise<{apiUrl:string;model:string;reasoning:'low'|'none';credential:Credential}>;
+export function browserTextSettings(directory:string,runtime?:import('../../../acp/node_modules/@earendil-works/pi-coding-agent/dist/index.js').ModelRuntime):Promise<{source:'pi'|'custom';apiUrl:string;model:string;reasoning:'low'|'none';credential:Credential}>;
 export function browserDecisionEnvironment(directory: string): Promise<Record<string,string>>;

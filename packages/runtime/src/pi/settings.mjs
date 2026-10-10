@@ -93,7 +93,7 @@ export function createPiSettings(directory = piDirectory(root), sourceDirectory 
       httpProxy: httpProxyStatus(manager.getGlobalSettings()),
       fullAccess: (await readJson(join(directory, "settings.json"))).eido?.fullAccess === true,
       browserDecision: await browserDecisionSettings(directory),
-      browserText: await browserTextSettings(directory),
+      browserText: await browserTextSettings(directory,modelRuntime),
       computerUse: await computerSettings(directory),
       computerUseRevision: (await readJson(join(directory, 'settings.json'))).eido?.computerUse ?? null,
       providers, update: await readJson(join(directory, "pi-update.json"), null) };
@@ -153,6 +153,20 @@ export function createPiSettings(directory = piDirectory(root), sourceDirectory 
       });
       await chmod(join(directory, 'settings.json'), 0o600);
     } else if (operation === "browser-text") {
+      if(request.removeKey===true&&request.apiUrl===undefined&&request.model===undefined) {
+        await AuthStorage.create(authPath).delete(browserTextCredentialId);
+        await chmod(authPath,0o600);return status();
+      }
+      if(request.source==='pi') {
+        new FileSettingsStorage(directory,directory).withLock('global',current=>{
+          const value=current?JSON.parse(current):{};
+          value.eido={...value.eido,browserText:{...value.eido?.browserText,source:'pi'}};
+          return JSON.stringify(value,null,2)+'\n';
+        });
+        await chmod(join(directory,'settings.json'),0o600);
+        return status();
+      }
+      if(request.source!==undefined&&request.source!=='custom')throw new PiConfigError('Choose the main model or a custom text model.');
       const apiUrl = text(request.apiUrl, "Text Model Base URL"), model = text(request.model, "Text Model");
       const url = new URL(apiUrl);
       if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.hash || url.search) throw new PiConfigError("Enter an HTTP(S) text model base URL without credentials, query or fragment.");
@@ -164,7 +178,7 @@ export function createPiSettings(directory = piDirectory(root), sourceDirectory 
       else if (key) await AuthStorage.create(authPath).modify(browserTextCredentialId, async () => ({type:'api_key',key}));
       new FileSettingsStorage(directory, directory).withLock('global', current => {
         const value = current ? JSON.parse(current) : {};
-        value.eido = {...value.eido, browserText:{apiUrl,model,reasoning}};
+        value.eido = {...value.eido, browserText:{source:'custom',apiUrl,model,reasoning}};
         return JSON.stringify(value,null,2)+'\n';
       });
       await chmod(join(directory,'settings.json'),0o600);

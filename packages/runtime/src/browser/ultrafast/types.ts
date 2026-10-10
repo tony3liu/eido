@@ -27,4 +27,5 @@ export interface Decision {
 }
 export interface Helper {model:string;latency_ms:number;usage:unknown}
 export interface ModelConfig {apiUrl:string;model:string;key:string}
-export interface TextConfig extends ModelConfig {reasoning?:'low'|'none'}
+export interface TextConfig {apiUrl?:string;model?:string;key?:string;reasoning?:'low'|'none';source?:'pi'|'custom';
+  generate?:(context:string,instructions:string,signal?:AbortSignal)=>Promise<{content:string;model:string;usage:unknown}>}

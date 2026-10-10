@@ -13,6 +13,7 @@ import { startInspector,inspectorState } from './ultrafast/inspector.ts';
 import { FLIGHTS_URL,verifyFlights,verifyTravel } from './ultrafast/verification.ts';
 import { startRecording } from './ultrafast/recording.ts';
 import { piDirectory } from '../paths.mjs';
+import {createBrowserTextModel} from './text-model.mjs';
 
 const text = value => ({ content: [{type:'text', text:typeof value === 'string' ? value : JSON.stringify(value)}] });
 const barrier = page => /captcha|verify you are human|security verification|安全验证|人机验证/i.test(`${page.title} ${page.text}`);
@@ -20,6 +21,7 @@ const barrier = page => /captcha|verify you are human|security verification|安�
 // Eido owns transport, serialization and handoff. All page interpretation and
 // legacy actions use JevBrowser's public API; the fast loop uses the same page via CDP.
 export async function serveBrowser() {
+  const textModel=await createBrowserTextModel(piDirectory());
   const server = new McpServer({name:'eido-browser', version:'0.0.1'});
   let launch, tail = Promise.resolve(), owner = 'agent', handoffEpoch = 0, lifetime = new AbortController(), inputLifetime = new AbortController();
   const engine=process.env.EIDO_BROWSER_ENGINE ?? 'ultrafast';
@@ -59,7 +61,7 @@ export async function serveBrowser() {
     const page = b.lastPage;
     return {url:page.url, title:page.title, status:barrier(page)?'needs_user':'ready',
       execution:{engine,next_tool:process.env.TYPESAFE_API_KEY?'browser_do':'browser_act',
-        text_model_configured:!!process.env.TEXT_MODEL_API_KEY},
+        text_model_source:textModel.source,text_model_configured:textModel.source==='pi'||!!process.env.TEXT_MODEL_API_KEY},
       ...(barrier(page)?{message:'Verification required. Use browser_takeover to let the user choose Manual Takeover or Use Computer Use. Wait for their choice and re-observe before continuing.'}:{}), snapshot};
   }
   async function recordingDirectory() {
@@ -69,7 +71,7 @@ export async function serveBrowser() {
   function agentOptions(signal,extra={}) {
     return {signal,barrier,...extra,
       decision:{apiUrl:process.env.JEV_API_URL,model:process.env.JEV_MODEL,key:process.env.TYPESAFE_API_KEY},
-      text:{apiUrl:process.env.TEXT_MODEL_BASE_URL,model:process.env.TEXT_MODEL,key:process.env.TEXT_MODEL_API_KEY,reasoning:process.env.TEXT_MODEL_REASONING}};
+      text:textModel};
   }
   async function agentCommand(name,body,origin,requestSignal) {
     if(engine!=='ultrafast') throw new Error('Select Ultrafast in global browser settings to use the inspector.');
