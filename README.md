@@ -14,6 +14,7 @@
 </p>
 
 <p align="center">
+  <a href="https://cairno.cn/eido/">Website</a> ·
   <a href="#the-eido-experience">Experience</a> ·
   <a href="#download-and-install">Download</a> ·
   <a href="#your-first-task">Getting started</a> ·

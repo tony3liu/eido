@@ -14,6 +14,7 @@
 </p>
 
 <p align="center">
+  <a href="https://cairno.cn/eido/">官网</a> ·
   <a href="#eido-的核心体验">核心体验</a> ·
   <a href="#下载与安装">下载</a> ·
   <a href="#开始你的第一个任务">开始试用</a> ·
