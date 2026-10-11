@@ -138,7 +138,9 @@ Agent Access 在所有任务之间全局生效。配置与工作历史保存在�
 
 Eido 建立在 **[Zed](https://github.com/zed-industries/zed)** 与 **[pi](https://github.com/earendil-works/pi)** 的开源成果之上。Zed 提供原生编辑器基础，pi 提供编程 Agent 能力。感谢两个项目的作者、贡献者与社区，让这些优秀的工具以开源方式惠及更多开发者。
 
-Eido 尊重并保留这两个项目的许可证与署名。**Eido 自有代码采用 GPL-3.0-or-later**，与 Zed 编辑器代码的许可证一致。
+同时感谢 **[browser-use/jev-ultrafast](https://github.com/browser-use/jev-ultrafast)** 的作者与贡献者开源其浏览器 Agent 方案。Eido 借鉴该项目的思路，使用 TypeScript 重新实现相关 Agent 逻辑，并适配到 Eido 现有的 pi/ACP 浏览器链路。借用和适配的上游代码保留其 MIT 许可证与署名。
+
+Eido 尊重并保留这些项目的许可证与署名。**Eido 自有代码采用 GPL-3.0-or-later**，与 Zed 编辑器代码的许可证一致。
 
 | 代码范围 | 开源协议 |
 | :--- | :--- |

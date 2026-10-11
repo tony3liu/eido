@@ -138,7 +138,9 @@ Please remove credentials and private project information from shared examples.
 
 Eido builds on the work of **[Zed](https://github.com/zed-industries/zed)** and **[pi](https://github.com/earendil-works/pi)**. Zed provides the native editor foundation; pi powers the coding agent. We thank their authors, contributors, and communities for making these projects available as open source.
 
-Eido respects and preserves the licenses and attribution of both projects. **Eido-original code is licensed under GPL-3.0-or-later**, the same license as Zed's editor code.
+We also thank **[browser-use/jev-ultrafast](https://github.com/browser-use/jev-ultrafast)** and its authors and contributors for sharing their browser-agent approach. Eido draws on its ideas, reimplements the agent logic in TypeScript, and adapts it to Eido's existing pi/ACP browser workflow. Adapted upstream code retains its MIT license and attribution.
+
+Eido respects and preserves the licenses and attribution of these projects. **Eido-original code is licensed under GPL-3.0-or-later**, the same license as Zed's editor code.
 
 | Code | License |
 | :--- | :--- |
