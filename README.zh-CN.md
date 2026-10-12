@@ -38,6 +38,12 @@ macOS 13 及以上 · Apple Silicon（M 系列）· 早期测试版
 
 Beta3 引入基于 browser-use/jev-ultrafast 完整适配的 TypeScript 浏览器 Agent。每一步通过一次 Jev 请求同时选择操作与索引目标，仅在输入文字时调用文字生成。浏览器输入默认复用主模型和认证，独立文字模型为可选配置。包含 Inspector、trace 导出、录制与结果验证工具，并保留全局 Legacy 回退。应用内置官方 pi 1.1.0。
 
+## 观看发布影片
+
+[![观看意构 Eido 产品发布影片](native/branding/eido-launch.webp)](https://cairno.cn/eido/film/)
+
+[观看发布影片 ↗](https://cairno.cn/eido/film/) · 专业 IDE · Agent Harness · Browser & Computer Use。56 秒，走进意构。
+
 ## Eido 的核心体验
 
 ### 从目标开始

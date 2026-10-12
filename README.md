@@ -38,6 +38,12 @@ macOS 13 or later · Apple Silicon (M-series) · Early beta
 
 Beta3 adds the Ultrafast browser agent, adapted in TypeScript from browser-use/jev-ultrafast. Each step combines the operation and indexed target in one Jev request, with text generation only when typing. Browser input reuses your main model and authentication by default; a separate text model is optional. The release also includes the inspector, trace export, recording and verification tools, with Legacy available in global settings. The app bundles official pi 1.1.0.
 
+## Watch the launch film
+
+[![Watch the Eido launch film](native/branding/eido-launch.webp)](https://cairno.cn/eido/film/)
+
+[Watch the launch film ↗](https://cairno.cn/eido/film/) · Professional IDE · Agent Harness · Browser & Computer Use — 56 seconds, in Chinese.
+
 ## The Eido experience
 
 ### Start with the intent
