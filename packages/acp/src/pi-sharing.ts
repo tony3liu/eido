@@ -4,6 +4,7 @@ import {mkdir} from 'node:fs/promises';
 import {join} from 'node:path';
 import {randomUUID} from 'node:crypto';
 import type {AgentSession, ExtensionUIContext} from '@earendil-works/pi-coding-agent';
+import type {EidoPiUI} from './pi-ui.ts';
 // Reuse the bundled pi report/export implementations; only its terminal UI is replaced.
 import {collectBugReportMetadata, collectBugReportDiagnostics, writeBugReportArchive, bugReportArchiveFileName} from '../node_modules/@earendil-works/pi-coding-agent/dist/core/bug-report.js';
 import {uploadBugReport} from '../node_modules/@earendil-works/pi-coding-agent/dist/core/bug-report-upload.js';
@@ -13,10 +14,12 @@ import {getAuthCredential} from '../node_modules/@earendil-works/pi-coding-agent
 import {createShareTrailingEntries} from '../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/session-share.js';
 const exec = promisify(execFile);
 
-export async function shareCommand(pi:AgentSession, ui:ExtensionUIContext|undefined, agentDir:string, argument:string, signal?:AbortSignal) {
+export async function shareCommand(pi:AgentSession, ui:EidoPiUI|undefined, agentDir:string, argument:string, signal?:AbortSignal) {
   if(argument) throw new Error('Usage: /share (no arguments).');
   if(!ui) throw new Error('Sharing requires native confirmation.');
-  const destination=await ui.select('Share this conversation', ['Export locally','Secret GitHub gist','Radius organization','Cancel']);
+  const preferred = pi.settingsManager.getSessionShareDestination();
+  const destination=await ui.select('Share this conversation', ['Export locally','Secret GitHub gist','Radius organization','Cancel'],
+    {defaultValue: preferred === 'radius' ? 'Radius organization' : preferred === 'gist' ? 'Secret GitHub gist' : 'Export locally'});
   if(!destination || destination==='Cancel') return 'Share cancelled.';
   const directory=join(agentDir,'exports');
   await mkdir(directory,{recursive:true});

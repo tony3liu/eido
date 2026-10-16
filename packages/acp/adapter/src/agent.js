@@ -3,7 +3,7 @@ import { existsSync, statSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { isAbsolute } from "node:path";
-import { DefaultResourceLoader, SettingsManager, createBashToolDefinition, getAgentDir, } from "@earendil-works/pi-coding-agent";
+import { DefaultResourceLoader, SettingsManager, createBashToolDefinition, getAgentDir, resolveModelScopeWithDiagnostics } from "@earendil-works/pi-coding-agent";
 import { AUTH_METHODS, authenticateMethod } from "./auth.js";
 import { adapterError, isChildCleanupError, isRequestError, unexpectedError } from "./errors.js";
 import { bridgeMcpServers, } from "./mcp-bridge.js";
@@ -144,7 +144,7 @@ export class PiAcpAgent {
             agentInfo: {
                 name: "eido-pi",
                 title: "Eido pi (ACP adapter 0.9.4)",
-                version: "1.1.0",
+                version: "1.3.0",
             },
             agentCapabilities: {
                 loadSession: true,
@@ -235,6 +235,18 @@ export class PiAcpAgent {
         catch (error) {
             lifecycle.abort(new Error("MCP opening failed"));
             throw error;
+        }
+    }
+    async refreshGlobalModelScope() {
+        const models = [...await this.deps.modelRuntime.getAvailable()];
+        for (const session of this.live.values()) {
+            await session.settingsManager.reload();
+            const {scopedModels} = await resolveModelScopeWithDiagnostics(session.settingsManager.getEnabledModels() ?? [], this.deps.modelRuntime);
+            if (this.live.get(session.sessionId) !== session) continue;
+            session.pi.setScopedModels(scopedModels);
+            await session.publishAvailableModels(models);
+            session.enqueue({sessionUpdate: "config_option_update", configOptions: session.configOptions()});
+            await session.drain();
         }
     }
     async construct(opening, manager, cwd, client, mcpServers, replay, preconnected, systemPrompt) {

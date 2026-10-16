@@ -8,6 +8,7 @@ import { exportPiSession, piChangelog } from "./pi-command-files.ts";
 import { manageAgentRoles } from "./agent-roles.ts";
 import { nativeUiAction } from "./native-ui.ts";
 import { createPiSettings } from "../../runtime/src/pi/settings.mjs";
+import {refreshOpenRouterCatalog} from '../../runtime/src/pi/model-catalog.mjs';
 import { shareCommand, bugCommand } from "./pi-sharing.ts";
 import { sessionCommand, treeCommand } from "./pi-session-commands.ts";
 import { loginPiProvider } from "./pi-auth.ts";
@@ -94,7 +95,7 @@ function commandCatalogue(pi: AgentSession, nativeUi = false): AvailableCommand[
   });
 }
 
-export function installPiCommands(pi: AgentSession, client: AgentContext, supportsForms: boolean, agentDir: string, nativeUi = false) {
+export function installPiCommands(pi: AgentSession, client: AgentContext, supportsForms: boolean, agentDir: string, nativeUi = false, refreshModelScope?: () => Promise<void>) {
   const catalogue = () => commandCatalogue(pi, nativeUi);
   const supported = [...piCommands, ...(nativeUi ? nativeCommands : [])];
   let activeContext: CommandContext | undefined;
@@ -201,7 +202,8 @@ export function installPiCommands(pi: AgentSession, client: AgentContext, suppor
             break;
           }
           case "trust": {
-            const selected = argument || await ui?.select("Agent Access · Global", ["Ask Before Actions", "Full Access"]);
+            const selected = argument || await ui?.select("Agent Access · Global", ["Ask Before Actions", "Full Access"],
+              {defaultValue: (await createPiSettings(agentDir).status()).fullAccess ? "Full Access" : "Ask Before Actions"});
             if (!selected) {output = "Agent Access unchanged. Use /trust ask or /trust full."; break;}
             if (!["ask", "full", "Ask Before Actions", "Full Access"].includes(selected)) throw new Error("Usage: /trust ask or /trust full. Eido supports global access only.");
             const fullAccess = selected === "full" || selected === "Full Access";
@@ -256,7 +258,7 @@ export function installPiCommands(pi: AgentSession, client: AgentContext, suppor
             const choices = values(option);
             let selected = argument;
             if (!selected && ui && choices.length) {
-              const value = await ui.select(name === "model" ? "Select a model" : "Select thinking level", choices.map(choice => choice.value));
+              const value = await ui.select(name === "model" ? "Select a model" : "Select thinking level", choices.map(choice => choice.value), {defaultValue: typeof option?.currentValue === 'string' ? option.currentValue : undefined});
               if (value === undefined) { record(`/${name} selection cancelled.`, "cancelled"); return true; }
               selected = value;
             }
@@ -295,13 +297,18 @@ export function installPiCommands(pi: AgentSession, client: AgentContext, suppor
           }
           case "reload": {
             if (argument) throw new Error("Usage: /reload (no arguments).");
-            await pi.reload({beforeSessionStart: async () => { await pi.modelRuntime.refresh({allowNetwork: false, signal}); }});
+            let modelCatalogNotice = '';
+            await pi.reload({beforeSessionStart: async () => {
+              await pi.modelRuntime.refresh({allowNetwork: false, signal});
+              modelCatalogNotice = await refreshOpenRouterCatalog(pi.modelRuntime, signal);
+            }});
             const errors = pi.resourceLoader.getExtensions().errors;
+            await refreshModelScope?.();
             await context.publishAvailableModels(await pi.modelRuntime.getAvailable());
             context.enqueue({sessionUpdate: "available_commands_update", availableCommands: catalogue()});
             context.enqueue({sessionUpdate: "config_option_update", configOptions: context.configOptions()});
             if (errors.length) throw new Error(`Reload completed with extension errors:\n${errors.map(error => error.error).join("\n")}`);
-            output = "Reloaded global pi extensions, skills, templates and settings.";
+            output = "Reloaded global pi extensions, skills, templates and settings." + (modelCatalogNotice ? `\n${modelCatalogNotice}` : '');
             break;
           }
           case "scoped-models": {
@@ -320,6 +327,7 @@ export function installPiCommands(pi: AgentSession, client: AgentContext, suppor
             const errors = pi.settingsManager.drainErrors();
             if (errors.length) throw new Error("Could not save the global model shortlist.");
             pi.setScopedModels(resolved.scopedModels);
+            await refreshModelScope?.();
             await context.publishAvailableModels(models);
             context.enqueue({sessionUpdate: "config_option_update", configOptions: context.configOptions()});
             output = `Global model shortlist: ${patterns.length ? patterns.join(", ") : "all"}.`;

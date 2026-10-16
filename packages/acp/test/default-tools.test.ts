@@ -5,7 +5,7 @@ import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import {client, methods} from '@agentclientprotocol/sdk';
 import {startEidoAgent} from '../src/server.ts';
-import {fixtureModel} from './fixture-model.ts';
+import {fixtureModel, declaredTools} from './fixture-model.ts';
 
 const native = ['read', 'edit', 'write', 'find', 'grep', 'ls', 'bash'];
 
@@ -26,7 +26,7 @@ test('pi defaultTools controls native declarations, modifiers, reload and delaye
     pi.registerCommand('disable-read',{handler:async()=>pi.setActiveTools(pi.getActiveTools().filter(name=>name!=='read'))});
     pi.registerCommand('register-late',{handler:async()=>{register('late',true);register('late_dormant',false);}});
   };`);
-  const model = await fixtureModel(dir, []);
+  const model = await fixtureModel(dir, [context=>{assert.ok(!declaredTools(context).includes('read'));return 'Current tools recorded by pi.';}]);
   const toAgent = new TransformStream(), toClient = new TransformStream();
   const server = await startEidoAgent(dir, join(dir, 'sessions'), {readable:toAgent.readable,writable:toClient.writable}, model.runtime);
   let active: string[] = [];
@@ -60,6 +60,11 @@ test('pi defaultTools controls native declarations, modifiers, reload and delaye
     const task = await newTask();
     await send(task.sessionId,'/disable-read'); await send(task.sessionId,'/reload'); await inspect(task.sessionId);
     assert.ok(!active.includes('read'),'unchanged defaults cannot resurrect a disabled native tool');
+    await send(task.sessionId,'Record the current tool selection.');
+    await connection.agent.request(methods.agent.session.close,{sessionId:task.sessionId});
+    await connection.agent.request(methods.agent.session.load,{sessionId:task.sessionId,cwd:dir,mcpServers:[]});
+    await inspect(task.sessionId);
+    assert.ok(!active.includes('read'),'pi 1.3 restores explicitly deactivated tools across resume');
     await configure(['read','write','codemode']);
     await send(task.sessionId,'/reload'); await inspect(task.sessionId);
     assert.ok(active.includes('write') && active.includes('codemode') && !active.includes('read'));
@@ -80,6 +85,6 @@ test('pi defaultTools controls native declarations, modifiers, reload and delaye
     await configure(['read','late_dormant','new_pending']);
     await send(disabled.sessionId,'/reload'); await send(disabled.sessionId,'/register-late'); await inspect(disabled.sessionId);
     assert.ok(!active.includes('late_dormant'),'unchanged default must not reactivate a disabled pending tool');
-    assert.equal(model.requests(),0);
+    assert.equal(model.requests(),1);
   } finally {await server.agent.dispose(); connection.close(); server.connection.close(); await rm(dir,{recursive:true,force:true});}
 });

@@ -118,7 +118,14 @@ export async function startEidoAgent(agentDir: string, sessionDir: string, strea
         const browser = browserLifecycle(created.session);
         const prompt = created.session.prompt.bind(created.session);
         created.session.prompt = async (...args) => {
-          try { return await prompt(...args); } finally {
+          try {
+            const result = await prompt(...args);
+            // Extension commands can start a custom run without awaiting it.
+            // Pi 1.2+ is busy during before_agent_start as well. Keep the ACP
+            // turn and its resources alive until that public SDK run settles.
+            await created.session.waitForIdle();
+            return result;
+          } finally {
             const cleanup = await Promise.allSettled([mcp.finishTurn(created.session.sessionId), browser.close(), preview.finishTurn(!!child), shell.finishTurn()]);
             const failed = cleanup.find(result => result.status === "rejected");
             if (failed?.status === "rejected") throw failed.reason;
@@ -147,7 +154,7 @@ export async function startEidoAgent(agentDir: string, sessionDir: string, strea
           await reload(...args);
           toolPolicy.changed();
         };
-        installPiCommands(created.session, client, supportsForms, agentDir, supportsNativeUi);
+        installPiCommands(created.session, client, supportsForms, agentDir, supportsNativeUi, () => server.agent.refreshGlobalModelScope());
         const dispatch = created.session.prompt.bind(created.session);
         created.session.prompt = async (...args) => {
           toolPolicy.changed();

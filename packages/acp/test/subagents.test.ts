@@ -81,6 +81,21 @@ test('child roles select native tools independently of empty parent defaults', {
   finally {await h.dispose();}
 });
 
+test('Full Access reaches parent and child tools while preserving read-only role restrictions', {timeout:30_000}, async () => {
+  const h=await harness([
+    ()=>call('subagent',{agent:'scout',task:'Inspect source.ts.'}),
+    context=>{assert.ok(!declaredTools(context).includes('write'));return call('write',{path:'source.ts',content:'forbidden'});},
+    context=>{const last=context.messages.findLast(message=>message.role==='toolResult');assert.ok(last?.role==='toolResult'&&last.isError);return call('read',{path:'source.ts'});},
+    context=>{assert.match(lastToolText(context,'read'),/current unsaved buffer/);return 'Read verified.';},
+    context=>{assert.match(lastToolText(context,'subagent'),/Read verified/);return 'Delegation verified.';},
+  ],{prepare:async cwd=>{const path=join(cwd,'settings.json');await writeFile(path,JSON.stringify({...JSON.parse(await readFile(path,'utf8')),eido:{fullAccess:true}}));}});
+  try {
+    assert.equal((await h.prompt('Inspect with Full Access.')).stopReason,'end_turn');
+    assert.deepEqual(h.permissions,[]);assert.equal(h.writes(),0);assert.equal(h.readSessions.length,1);assert.equal(h.requests(),5);
+    assert.equal(await readFile(join(h.cwd,'source.ts'),'utf8'),'disk content');
+  } finally {await h.dispose();}
+});
+
 test("delegation registers an independent pi child, reads native buffers and replays its ownership", {timeout: 30_000}, async () => {
   const h = await harness([
     () => call("subagent", {title: "Inspect current buffer", task: "Read source.ts and report its state."}),

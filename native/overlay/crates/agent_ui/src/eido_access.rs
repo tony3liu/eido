@@ -56,7 +56,7 @@ pub(crate) fn render<T: 'static>(_window: &mut Window, cx: &mut Context<T>) -> i
     let full_access = state.full_access;
     let busy = state.busy;
     let tooltip = state.error.clone().unwrap_or_else(|| if full_access {
-        "Full Access · Global. pi decides and runs enabled tools without approval prompts. Stop remains available."
+        "Full Access · Global. pi runs enabled tools autonomously until the turn completes. Stop remains available."
     } else {
         "Ask Before Actions · Global. Review tool permissions before pi acts."
     }.to_owned());

@@ -55,7 +55,7 @@ test('bundled desktop runtime owns its MCP child and custom paths retain precede
 test("defaults roundtrip uses pi model validation and preserves unrelated settings", async t => {
   const f=await fixture(t);
   const result=await f.bridge.execute({operation:"defaults",provider:"eido-fixture",model:"test-model",thinking:"off"});
-  assert.equal(result.version,"1.1.0");
+  assert.equal(result.version,"1.3.0");
   assert.equal(result.defaultModel,"test-model");
   assert.deepEqual((await f.get(f.target,"settings.json")).customSetting,{retain:true});
   const before=await readFile(join(f.target,"settings.json"),"utf8");
@@ -128,9 +128,10 @@ test('runtime controls save sparse pi settings, validate values and reject stale
   await f.put(f.target,'settings.json',original);
   const before=(await f.bridge.status()).runtime;
   assert.equal(before.find(field=>field.path==='images.autoResize').effective,true);
+  assert.equal(before.find(field=>field.path==='sessionShareDestination').effective,'auto');
   const expected=Object.fromEntries(before.map(field=>[field.path,field.value]));
   const changes={'transport':'sse','images.blockImages':true,'retry.baseDelayMs':100,'thinkingBudgets.low':2048,
-    'branchSummary.reserveTokens':4096,'branchSummary.skipPrompt':true,'steeringMode':'all','followUpMode':'one-at-a-time'};
+    'branchSummary.reserveTokens':4096,'branchSummary.skipPrompt':true,'steeringMode':'all','followUpMode':'one-at-a-time','sessionShareDestination':'radius'};
   const result=await f.bridge.execute({operation:'runtime',changes,expected});
   for(const [path,value] of Object.entries(changes)) assert.equal(result.runtime.find(field=>field.path===path).effective,value);
   let stored=await f.get(f.target,'settings.json');
@@ -138,7 +139,7 @@ test('runtime controls save sparse pi settings, validate values and reject stale
   assert.equal(stored.retry.provider.maxRetries,7);
   assert.equal(stored.customSetting.retain,true);
   const saved=await readFile(join(f.target,'settings.json'),'utf8');
-  for(const changes of [{'transport':'invalid'},{'steeringMode':'invalid'},{'followUpMode':2},{'images.blockImages':1},{'retry.maxRetries':-1},{'retry.maxRetries':1.5},{'eido.fullAccess':true},{'thinkingBudgets.low':Infinity}]) {
+  for(const changes of [{'sessionShareDestination':'invalid'},{'transport':'invalid'},{'steeringMode':'invalid'},{'followUpMode':2},{'images.blockImages':1},{'retry.maxRetries':-1},{'retry.maxRetries':1.5},{'eido.fullAccess':true},{'thinkingBudgets.low':Infinity}]) {
     await assert.rejects(f.bridge.execute({operation:'runtime',changes,expected}));
     assert.equal(await readFile(join(f.target,'settings.json'),'utf8'),saved);
   }
@@ -243,7 +244,8 @@ test("update detection compares registry versions without installing packages", 
     return {ok:true,json:async()=>({name:"@earendil-works/pi-coding-agent",version})};
   };
   assert.equal((await checkPiUpdate(response(bundledVersion))).status,"up_to_date");
-  assert.equal((await checkPiUpdate(response("1.1.1"))).status,"update_available");
+  const nextVersion = bundledVersion.split('.').map((part, index) => index === 2 ? Number(part) + 1 : part).join('.');
+  assert.equal((await checkPiUpdate(response(nextVersion))).status,"update_available");
   assert.equal((await checkPiUpdate(response("0.99.9"))).status,"ahead");
   const failed=await checkPiUpdate(async()=>{throw new Error("private-network-error")});
   assert.equal(failed.status,"error"); assert.ok(!JSON.stringify(failed).includes("private-network-error"));

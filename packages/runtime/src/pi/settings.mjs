@@ -7,6 +7,7 @@ import { browserCredentialId, browserDecisionSettings, browserTextCredentialId, 
 import {computerSettings} from '../computer.mjs';
 import {runtimeSettings, mergeRuntimeSettings, modelSettings, mergeModelSettings, PiRuntimeSettingsError} from './runtime-settings.mjs';
 import {httpProxyStatus, mergeHttpProxy, PiHttpSettingsError} from './http-settings.mjs';
+import {refreshOpenRouterCatalog} from './model-catalog.mjs';
 
 export class PiConfigError extends Error {}
 
@@ -20,7 +21,7 @@ const { ModelConfig } = await import(new URL("core/model-config.js", piEntry).hr
 const { getSupportedThinkingLevels } = await import(pathToFileURL(join(root, "packages/acp/node_modules/@earendil-works/pi-ai/dist/index.js")).href);
 const manifest = JSON.parse(await readFile(new URL("../package.json", piEntry), "utf8"));
 export const bundledVersion = manifest.version;
-if (bundledVersion !== "1.1.0") throw new PiConfigError("Eido requires bundled pi 1.1.0. Run setup:acp.");
+if (bundledVersion !== "1.3.0") throw new PiConfigError("Eido requires bundled pi 1.3.0. Run setup:acp.");
 
 async function readJson(path, fallback = {}) {
   try { return JSON.parse(await readFile(path, "utf8")); }
@@ -49,7 +50,7 @@ export function createPiSettings(directory = piDirectory(root), sourceDirectory 
   const authPath = join(directory, "auth.json");
   const modelsPath = join(directory, "models.json");
   const settings = () => SettingsManager.create(directory, directory, { projectTrusted: false });
-  const runtime = () => ModelRuntime.create({ authPath, modelsPath, refreshOnCreate: false, allowModelNetwork: false });
+  const runtime = () => ModelRuntime.create({ authPath, modelsPath, allowModelNetwork: false });
   const validateModels = async (path) => {
     const config = await ModelConfig.load(path);
     if (config.getError()) throw new PiConfigError("models.json did not pass pi validation. Check the provider, model, and API fields.");
@@ -69,12 +70,13 @@ export function createPiSettings(directory = piDirectory(root), sourceDirectory 
     } finally { await rm(temporary, { recursive: true, force: true }); }
   };
 
-  async function status() {
+  async function status(refreshModels = false) {
     const manager = settings();
     if (manager.drainErrors().length) throw new PiConfigError("Unable to read pi settings.json. Fix the configuration and try again.");
     await validateModels(modelsPath);
     const modelRuntime = await runtime();
     if (modelRuntime.getError()) throw new PiConfigError("Invalid pi model configuration. Fix models.json and try again.");
+    const modelCatalogNotice = refreshModels ? await refreshOpenRouterCatalog(modelRuntime) : '';
     const credentials = await new ReadOnlyAuthStorage(authPath).list();
     const providers = modelRuntime.getProviders().map(provider => {
       const credential = credentials.find(entry => entry.providerId === provider.id);
@@ -84,7 +86,7 @@ export function createPiSettings(directory = piDirectory(root), sourceDirectory 
         models: modelRuntime.getModels(provider.id).map(model => ({ id: model.id, name: model.name,
           thinkingLevels: getSupportedThinkingLevels(model), settings: modelSettings(manager, model) })) };
     }).filter(provider => provider.models.length).sort((a, b) => a.name.localeCompare(b.name));
-    return { version: bundledVersion, adapterVersion: "0.9.4", directory,
+    return { version: bundledVersion, adapterVersion: "0.9.4", directory, modelCatalogNotice,
       defaultProvider: manager.getDefaultProvider() ?? "",
       defaultModel: manager.getDefaultModel() ?? "",
       defaultThinkingLevel: manager.getDefaultThinkingLevel() ?? "off",
@@ -297,7 +299,7 @@ export function createPiSettings(directory = piDirectory(root), sourceDirectory 
     } else if (operation !== "status") {
       throw new PiConfigError("Unsupported pi settings operation.");
     }
-    return status();
+    return status(operation === 'status' && request.refreshModels === true);
   }
   return { execute, status };
 }

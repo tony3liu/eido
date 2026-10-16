@@ -11,6 +11,52 @@ import {createExtensionCenter} from '../../runtime/src/pi/extensions.mjs';
 import {mcpHarness, policyRemote} from './fixture-mcp-policy.ts';
 import {readMcpStatus} from '../../runtime/src/mcp/status.mjs';
 
+test('Full Access runs direct and nested MCP calls, and revocation applies inside a running script', {timeout:20_000}, async () => {
+  const remote = await policyRemote();
+  const h = await mcpHarness({mcpServers:{remote:{url:remote.url,exposure:'codemode'}}}, [
+    () => call('codemode',{code:'text(await describeNamespace("remote")); text(await tools.mcp__remote__ping({}));'}),
+    context => {assert.match(lastToolText(context,'codemode'),/mcp__remote__ping/); assert.match(lastToolText(context,'codemode'),/ping fixture reached/); return 'Verified.';},
+    () => call('codemode',{code:'text(await tools.revoke_access({})); try { text(await tools.mcp__remote__ping({})); } catch(error) { text(error.message); }'}),
+    context => {assert.match(lastToolText(context,'codemode'),/denied by user/); return 'Revocation verified.';},
+    () => call('codemode',{code:'text(await tools.mcp__remote__ping({}));'}),
+    context => {assert.match(lastToolText(context,'codemode'),/ping fixture reached/); return 'Other task verified.';},
+  ], `import {readFileSync,writeFileSync} from 'node:fs'; import {resolve} from 'node:path';
+export default pi => pi.registerTool({name:'revoke_access',label:'Revoke',description:'Fixture global revocation',parameters:{type:'object',properties:{}},execute:async(_id,_args,_signal,_update,ctx)=>{
+ const path=resolve(ctx.cwd,'../settings.json');const settings=JSON.parse(readFileSync(path,'utf8'));settings.eido.fullAccess=false;writeFileSync(path,JSON.stringify(settings));return {content:[{type:'text',text:'Access revoked'}]};
+}});`);
+  const path=join(h.dir,'settings.json');
+  const enable=async()=>writeFile(path,JSON.stringify({...JSON.parse(await readFile(path,'utf8')),eido:{fullAccess:true}}));
+  try {
+    await enable();
+    const a=await h.newTask(),b=await h.newTask();
+    await h.prompt(a.sessionId);
+    assert.deepEqual(h.permissions,[]);assert.deepEqual(remote.calls,['ping']);
+    h.reject('mcp__remote__ping');
+    await h.prompt(a.sessionId);
+    assert.deepEqual(h.permissions,['mcp__remote__ping']);assert.deepEqual(remote.calls,['ping']);
+    await enable();
+    await h.prompt(b.sessionId);
+    assert.deepEqual(h.permissions,['mcp__remote__ping']);assert.deepEqual(remote.calls,['ping','ping']);
+    assert.equal(h.model.requests(),6);
+  } finally {await h.close();await remote.close();}
+});
+
+test('Full Access remains cancellable during an MCP call and closes the response stream', {timeout:20_000}, async () => {
+  const remote=await policyRemote();
+  const h=await mcpHarness({mcpServers:{remote:{url:remote.url,exposure:'direct'}}},[()=>call('mcp__remote__slow')]);
+  try {
+    const path=join(h.dir,'settings.json');
+    await writeFile(path,JSON.stringify({...JSON.parse(await readFile(path,'utf8')),eido:{fullAccess:true}}));
+    const task=await h.newTask(),pending=h.prompt(task.sessionId);
+    for(let i=0;i<200&&!remote.calls.length;i++)await new Promise(resolve=>setTimeout(resolve,10));
+    assert.deepEqual(remote.calls,['slow']);
+    await h.connection.agent.notify(methods.agent.session.cancel,{sessionId:task.sessionId});
+    assert.equal((await pending).stopReason,'cancelled');
+    for(let i=0;i<100&&remote.streams.size;i++)await new Promise(resolve=>setTimeout(resolve,10));
+    assert.equal(remote.streams.size,0);assert.deepEqual(h.permissions,[]);
+  } finally {await h.close();await remote.close();}
+});
+
 async function remoteFixture(type: 'http'|'sse') {
   const streams = new Set<ServerResponse>();
   let calls = 0, denied = 0;

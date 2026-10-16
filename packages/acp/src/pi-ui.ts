@@ -9,8 +9,12 @@ import {createPiDecorations} from './pi-decorations.ts';
 import {createPiAutocomplete, PI_AUTOCOMPLETE} from './pi-autocomplete.ts';
 import {createPiEditor} from './pi-editor.ts';
 
+export type EidoPiUI = Omit<ExtensionUIContext, 'select'> & {
+  select(title: string, options: string[], opts?: ExtensionUIDialogOptions & {defaultValue?: string}): Promise<string | undefined>;
+};
+
 /** Use the native ACP form surface for pi's dialog API. */
-export function createPiUI(pi: AgentSession, client: AgentContext, turnSignal: () => AbortSignal | undefined, emit: (update: SessionUpdate) => void, native = false, agentDir = pi.sessionManager.getCwd(), catalogue: () => AvailableCommand[] = () => []): ExtensionUIContext {
+export function createPiUI(pi: AgentSession, client: AgentContext, turnSignal: () => AbortSignal | undefined, emit: (update: SessionUpdate) => void, native = false, agentDir = pi.sessionManager.getCwd(), catalogue: () => AvailableCommand[] = () => []): EidoPiUI {
   let lifetime = new AbortController();
   let activeComponent = false;
   const findTheme = (name:string) => pi.resourceLoader.getThemes().themes.find(theme => theme.name === name) ?? getThemeByName(name);
@@ -117,7 +121,8 @@ export function createPiUI(pi: AgentSession, client: AgentContext, turnSignal: (
       setFooter:decorations.setFooter,setStatus:decorations.setStatus} : {}),
     async select(title, options, opts) {
       if (!options.length) return undefined;
-      const value = await request(title, {type: "string", title: "Choose an option", enum: options}, opts);
+      const value = await request(title, {type: "string", title: "Choose an option", enum: options,
+        ...(opts?.defaultValue && options.includes(opts.defaultValue) ? {default: opts.defaultValue} : {})}, opts);
       return typeof value === "string" && options.includes(value) ? value : undefined;
     },
     async confirm(title, message, opts) { return await request(`${title}\n\n${message}`, undefined, opts) === true; },

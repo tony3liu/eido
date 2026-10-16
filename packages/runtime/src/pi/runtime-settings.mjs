@@ -1,6 +1,7 @@
 // Native controls edit only these audited pi settings. Other pi/plugin fields
 // remain in the same global file and are preserved by the locked merge.
 const fields = [
+  ['sessionShareDestination','Sessions','Preferred share destination',['auto','gist','radius'],m=>m.getSessionShareDestination()],
   ['steeringMode','Messages','Steering messages per boundary',['one-at-a-time','all'],m=>m.getSteeringMode()],
   ['followUpMode','Messages','Follow-up messages per boundary',['one-at-a-time','all'],m=>m.getFollowUpMode()],
   ['images.autoResize','Images','Resize large images','boolean',m=>m.getImageAutoResize()],

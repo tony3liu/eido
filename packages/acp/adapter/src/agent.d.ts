@@ -16,6 +16,7 @@ export declare class PiAcpAgent {
     private disposePromise;
     private disposeSucceeded;
     constructor(deps: PiAcpDeps);
+    refreshGlobalModelScope(): Promise<void>;
     initialize(_context: AgentRequestContext<InitializeRequest>): {
         protocolVersion: number;
         agentInfo: {

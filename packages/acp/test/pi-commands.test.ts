@@ -12,10 +12,14 @@ import { NATIVE_UI_ACTION } from "../src/native-ui.ts";
 import type { AgentSession, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import {createPiUIState} from '../src/pi-ui-state.ts';
 import {setTimeout as delay} from 'node:timers/promises';
+import {createServer} from 'node:http';
+import {ModelRuntime as PiModelRuntime} from '@earendil-works/pi-coding-agent';
+import {createPiSettings} from '../../runtime/src/pi/settings.mjs';
 
 async function harness(steps: FixtureStep[] = [], options: {
   setup?: (cwd: string) => Promise<void>;
   configureRuntime?: (runtime: ModelRuntime) => void;
+  createRuntime?: (cwd: string) => Promise<ModelRuntime>;
   form?: (params: CreateElicitationRequest, signal: AbortSignal) => Promise<CreateElicitationResponse>;
   native?: (params: {sessionId: string; action: string; data: Record<string, unknown>}) => Promise<Record<string, unknown>>;
   terminal?: (method:string, params:any) => Promise<any>;
@@ -24,7 +28,7 @@ async function harness(steps: FixtureStep[] = [], options: {
   const settings = JSON.stringify({defaultProvider: "eido-fixture", defaultModel: "scripted", defaultThinkingLevel: "off", compaction: {enabled: false, keepRecentTokens: 100, reserveTokens: 1000}});
   await writeFile(join(cwd, "settings.json"), settings);
   await options.setup?.(cwd);
-  const fixture = await fixtureModel(cwd, steps);
+  const fixture = await fixtureModel(cwd, steps, {runtime:await options.createRuntime?.(cwd)});
   options.configureRuntime?.(fixture.runtime);
   const toAgent = new TransformStream(), toClient = new TransformStream();
   const server = await startEidoAgent(cwd, join(cwd, "sessions"), {readable: toAgent.readable, writable: toClient.writable}, fixture.runtime);
@@ -298,7 +302,9 @@ test("native model form selection applies config; cancelling a dialog releases t
   let began!: () => void;
   const started = new Promise<void>(resolve => {began = resolve;});
   let dismissed = false;
-  const h = await harness([], {form: async (_params, signal) => {
+  const h = await harness([], {form: async (params, signal) => {
+    assert.ok('requestedSchema' in params);
+    assert.equal((params.requestedSchema as {properties:{value:{default?:string}}}).properties.value.default, 'off');
     if (!cancelForm) return {action: "accept", content: {value: "off"}};
     began();
     await new Promise<void>(resolve => {
@@ -365,19 +371,115 @@ test("reload refreshes commands and templates while preserving the session and m
   } finally { await h.dispose(); }
 });
 
+test('reload personalizes OpenRouter models across tasks with offline, failure and cancellation recovery', {timeout:30_000}, async () => {
+  const requests:string[]=[];
+  let mode='ok',selected='';
+  let pendingRequest!:()=>void;
+  const remote=createServer((req,res)=>{
+    requests.push(req.url!);
+    if(req.url?.startsWith('/api/models/providers/openrouter')) {res.writeHead(404).end();return;}
+    assert.equal(req.url,'/v1/models/user');
+    assert.equal(req.headers.authorization,'Bearer local-fixture-key');
+    if(mode==='fail') {res.writeHead(500).end();return;}
+    if(mode==='hang') {pendingRequest();return;}
+    res.setHeader('content-type','application/json');
+    res.end(JSON.stringify({data:[{id:selected,context_length:123456,top_provider:{max_completion_tokens:7777},pricing:{prompt:'0.000001',completion:'0.000002'}}]}));
+  });
+  await new Promise<void>(resolve=>remote.listen(0,'127.0.0.1',resolve));
+  const endpoint=`http://127.0.0.1:${(remote.address() as import('node:net').AddressInfo).port}`;
+  let runtime!:ModelRuntime;
+  const h=await harness([],{createRuntime:async cwd=>{
+    await writeFile(join(cwd,'models.json'),JSON.stringify({providers:{openrouter:{baseUrl:endpoint+'/v1'}}}));
+    await writeFile(join(cwd,'auth.json'),JSON.stringify({openrouter:{type:'api_key',key:'local-fixture-key'}}));
+    runtime=await PiModelRuntime.create({authPath:join(cwd,'auth.json'),modelsPath:join(cwd,'models.json'),catalogBaseUrl:endpoint,allowModelNetwork:false});
+    selected=runtime.getModels('openrouter')[0]!.id;
+    return runtime;
+  }});
+  try {
+    const a=await h.newTask(),b=await h.newTask();
+    assert.deepEqual(requests,[],'startup reads only the saved model catalog');
+    await h.prompt(a.sessionId,'/reload');
+    assert.match(h.text(a.sessionId),/OpenRouter model catalog refreshed/);
+    assert.equal(requests.length,2);
+    const models=runtime.getModels('openrouter');
+    assert.equal(models.length,1);assert.equal(models[0]!.id,selected);
+    assert.equal(models[0]!.contextWindow,123456);assert.equal(models[0]!.maxTokens,7777);
+    assert.equal(models[0]!.cost.input,1);
+    const broadcast=h.updates.findLast(({sessionId,update})=>sessionId===b.sessionId && update.sessionUpdate==='config_option_update')!.update;
+    assert.ok(broadcast.sessionUpdate==='config_option_update');
+    const modelOption=broadcast.configOptions.find(option=>option.id==='model')!;
+    assert.ok(modelOption.type==='select');
+    assert.deepEqual(modelOption.options.flatMap(option=>'value' in option && option.value.startsWith('openrouter/') ? [option.value] : []),[`openrouter/${selected}`]);
+    const settings=await createPiSettings(h.cwd).status();
+    const providers=settings.providers as {id:string;models:{id:string}[]}[];
+    assert.deepEqual(providers.find(p=>p.id==='openrouter')!.models.map(m=>m.id),[selected],'native settings loads pi saved personalized catalog');
+    assert.equal(requests.length,2,'settings reads do not perform background network refresh');
+    const offline=process.env.PI_OFFLINE;
+    try {
+      process.env.PI_OFFLINE='1';
+      await h.prompt(a.sessionId,'/reload');
+      assert.equal(requests.length,2,'PI_OFFLINE suppresses model-list network access');
+    } finally {if(offline===undefined) delete process.env.PI_OFFLINE; else process.env.PI_OFFLINE=offline;}
+    mode='fail';
+    await h.prompt(a.sessionId,'/reload');
+    assert.match(h.text(a.sessionId),/could not be refreshed; using cached models/);
+    assert.equal(runtime.getModels('openrouter').length,1);
+    assert.equal(runtime.getModel('openrouter',selected)!.contextWindow,123456);
+    mode='hang';
+    const requested=new Promise<void>(resolve=>{pendingRequest=resolve;});
+    const pending=h.prompt(a.sessionId,'/reload');
+    await requested;
+    await h.connection.agent.notify(methods.agent.session.cancel,{sessionId:a.sessionId});
+    assert.equal((await pending).stopReason,'cancelled');
+    mode='ok';
+    assert.equal((await h.prompt(a.sessionId,'/reload')).stopReason,'end_turn');
+    assert.equal(runtime.getModels('openrouter').length,1);
+    assert.equal(h.requests(),0);
+  } finally {await h.dispose();remote.closeAllConnections();await new Promise<void>(resolve=>remote.close(()=>resolve()));}
+});
+
+test('extension-triggered runs receive pi 1.3 setup, global access and queued context', {timeout:30_000}, async () => {
+  const h=await harness([context=>{
+    const text=JSON.stringify(context);
+    assert.match(text,/Eido access mode: Full Access/);
+    assert.match(text,/custom-start-marker/);assert.match(text,/queued-next-turn-marker/);
+    return 'Custom run verified.';
+  }],{setup:async cwd=>{
+    const path=join(cwd,'settings.json');await writeFile(path,JSON.stringify({...JSON.parse(await readFile(path,'utf8')),eido:{fullAccess:true}}));
+    await mkdir(join(cwd,'extensions'));
+    await writeFile(join(cwd,'extensions/custom.js'),`export default pi => {
+      pi.on('before_agent_start',(event,ctx)=>{if(event.messageType==='custom'){
+        if('prompt' in event)throw new Error('Custom event must not masquerade as user input');
+        if(ctx.isIdle())throw new Error('Run setup must be busy');
+        event.systemPromptOptions.appendSystemPrompt+=' custom-start-marker';
+      }});
+      pi.registerCommand('custom-run',{handler:async(_args,ctx)=>{
+        pi.sendMessage({customType:'queued',content:'queued-next-turn-marker',display:false},{deliverAs:'nextTurn'});
+        pi.sendMessage({customType:'custom-start',content:'Start the custom run.',display:true},{triggerTurn:true});
+      }});
+    };`);
+  }});
+  try {const task=await h.newTask();assert.equal((await h.prompt(task.sessionId,'/custom-run')).stopReason,'end_turn');assert.equal(h.requests(),1);assert.match(h.text(task.sessionId),/Custom run verified/);}
+  finally {await h.dispose();}
+});
+
 test("model shortlist saves global pi preferences and rejects unmatched patterns", {timeout: 30_000}, async () => {
   const h = await harness();
   try {
     const a = await h.newTask();
+    const b = await h.newTask();
     await h.prompt(a.sessionId, "/scoped-models eido-fixture/*");
     assert.match(h.text(a.sessionId), /Global model shortlist: eido-fixture\/\*/);
     const saved = await readFile(join(h.cwd, "settings.json"), "utf8");
     assert.deepEqual(JSON.parse(saved).enabledModels, ["eido-fixture/*"]);
     assert.ok(h.updates.some(({update}) => update.sessionUpdate === "config_option_update" && JSON.stringify(update.configOptions).includes('"preferred":["eido-fixture/scripted"]')));
+    assert.ok(h.updates.some(({sessionId,update}) => sessionId===b.sessionId && update.sessionUpdate === "config_option_update" && JSON.stringify(update.configOptions).includes('"preferred":["eido-fixture/scripted"]')));
     await assert.rejects(h.prompt(a.sessionId, "/scoped-models missing/no-such-model"));
     assert.match(h.text(a.sessionId), /Unmatched model patterns/);
     assert.equal(await readFile(join(h.cwd, "settings.json"), "utf8"), saved);
+    h.updates.length=0;
     await h.prompt(a.sessionId, "/scoped-models all");
+    assert.ok(h.updates.some(({sessionId,update}) => sessionId===b.sessionId && update.sessionUpdate === "config_option_update" && !JSON.stringify(update.configOptions).includes('"preferred"')));
     assert.equal(JSON.parse(await readFile(join(h.cwd, "settings.json"), "utf8")).enabledModels, undefined);
     assert.equal(h.requests(), 0);
   } finally { await h.dispose(); }
@@ -900,8 +1002,15 @@ test("all bundled pi commands are discoverable and native quit follows command j
 test("sharing prepares a local artifact and cancellation never publishes", async () => {
   let selection='Export locally';
   let confirmations=0;
-  const h=await harness([()=> 'Share fixture response'],{form:async params=>{
-    if(params.message==='Share this conversation') return {action:'accept',content:{value:selection}};
+  const h=await harness([()=> 'Share fixture response'],{setup:async cwd=>{
+    const path=join(cwd,'settings.json');
+    await writeFile(path,JSON.stringify({...JSON.parse(await readFile(path,'utf8')),sessionShareDestination:'radius'}));
+  },form:async params=>{
+    if(params.message==='Share this conversation') {
+      assert.ok('requestedSchema' in params);
+      assert.equal((params.requestedSchema as {properties:{value:{default?:string}}}).properties.value.default, 'Radius organization');
+      return {action:'accept',content:{value:selection}};
+    }
     confirmations++;
     return {action:'cancel'};
   }});

@@ -31,6 +31,7 @@ RUNTIME_FILES = (
     'packages/runtime/src/browser/ultrafast/static/index.html', 'packages/runtime/src/browser/ultrafast/static/app.js', 'packages/runtime/src/browser/ultrafast/static/style.css', 'packages/runtime/src/browser/ultrafast/static/scenarios.html',
     'packages/runtime/src/pi/settings.mjs', 'packages/runtime/src/pi/extensions.mjs',
     'packages/runtime/src/pi/http-settings.mjs', 'packages/runtime/src/pi/runtime-settings.mjs',
+    'packages/runtime/src/pi/model-catalog.mjs',
     'packages/runtime/src/mcp/config.mjs', 'packages/runtime/src/mcp/status.mjs',
     'packages/runtime/bin/pi-settings.mjs', 'packages/runtime/bin/pi-extensions.mjs',
     'packages/runtime/bin/browser-agent.mjs',
@@ -274,7 +275,7 @@ def build():
         if file.is_file() and LEGAL.match(file.name):
             copy_file(file, resources / 'licenses/zed' / file.name)
     version = json.loads((ROOT / 'package.json').read_text())['version']
-    (runtime / 'eido-runtime.json').write_text(json.dumps({'version': 1, 'pi': '1.1.0', 'acp': '0.9.4',
+    (runtime / 'eido-runtime.json').write_text(json.dumps({'version': 1, 'pi': '1.3.0', 'acp': '0.9.4',
         'productVersion': version, 'nativeProfile': 'dev', 'testFeatures': False,
         'productionPackages': count, 'sourceFingerprint': record['sourceFingerprint'],
         'computerDriver': json.loads(cua.RECORD.read_text())}))

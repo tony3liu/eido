@@ -114,6 +114,7 @@ impl PiSettingsView {
                 view.busy = false;
                 match result {
                     Ok(data) => {
+                        let model_catalog_notice = data["modelCatalogNotice"].as_str().unwrap_or_default().to_owned();
                         if view.data.is_none() || matches!(operation.as_str(), "status" | "http-proxy" | "import") {
                             view.http_proxy_expected = data["httpProxy"]["revision"].clone();
                             view.http_proxy.update(cx, |editor, cx| editor.set_text("", window, cx));
@@ -164,7 +165,8 @@ impl PiSettingsView {
                         }
                         view.ensure_model_settings(window, cx);
                         view.notice = match operation.as_str() {
-                            "status" | "check-update" => String::new(),
+                            "status" => model_catalog_notice,
+                            "check-update" => String::new(),
                             "import" => "Local pi configuration imported. New tasks will use these settings.".into(),
                             "defaults" => "Defaults saved for new tasks. Existing tasks keep their models.".into(),
                             "model-settings" => "Model overrides saved. New tasks use them; /reload updates compaction in open tasks. Thinking applies when selecting this model.".into(),
@@ -427,7 +429,7 @@ impl Render for PiSettingsView {
         let model_name = self.models().iter().find(|m| m["id"].as_str() == Some(self.model.as_str())).and_then(|m| m["name"].as_str()).unwrap_or("Select a model").to_owned();
         let credential = self.selected_provider().and_then(|p| p["credential"].as_str()).unwrap_or("none");
         let auth_label = match credential { "oauth" => "OAuth configured", "api_key" => "API key configured", "none" => "No credentials configured", _ => "Environment or custom credentials" };
-        let version = self.data.as_ref().and_then(|d| d["version"].as_str()).unwrap_or("1.1.0");
+        let version = self.data.as_ref().and_then(|d| d["version"].as_str()).unwrap_or("1.3.0");
         let update = self.data.as_ref().map(|d| &d["update"]);
         let update_label = match update.and_then(|u| u["status"].as_str()) {
             Some("up_to_date") => "You are using the latest stable pi release.".to_owned(),
@@ -450,7 +452,7 @@ impl Render for PiSettingsView {
                     .child(Button::new("pi-save-defaults", "Save Defaults").style(ButtonStyle::Filled).disabled(self.busy || self.model.is_empty())
                         .on_click(cx.listener(|this, _, window, cx| this.request(json!({"operation":"defaults", "provider":this.provider,"model":this.model,"thinking":this.thinking}), window, cx))))
                     .child(Button::new("pi-refresh", "Reload").disabled(self.busy)
-                        .on_click(cx.listener(|this, _, window, cx| this.request(json!({"operation":"status"}), window, cx))))))
+                        .on_click(cx.listener(|this, _, window, cx| this.request(json!({"operation":"status", "refreshModels":true}), window, cx))))))
             .child(self.model_settings_section(window, cx))
             .child(v_flex().gap_3().pt_4().border_t_1().border_color(cx.theme().colors().border_variant)
                 .child(Label::new("Tool Defaults"))

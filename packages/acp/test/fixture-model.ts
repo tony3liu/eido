@@ -4,8 +4,8 @@ import { ModelRuntime } from "@earendil-works/pi-coding-agent";
 
 export type FixtureStep = (context: TranscriptContext, signal?: AbortSignal, options?: SimpleStreamOptions) => ToolCall[] | string | Promise<ToolCall[] | string>;
 
-export async function fixtureModel(directory: string, steps: FixtureStep[], options: {reasoning?: boolean} = {}) {
-  const runtime = await ModelRuntime.create({
+export async function fixtureModel(directory: string, steps: FixtureStep[], options: {reasoning?: boolean; runtime?: ModelRuntime} = {}) {
+  const runtime = options.runtime ?? await ModelRuntime.create({
     authPath: join(directory, "fixture-auth.json"), modelsPath: null,
     modelsStorePath: join(directory, "fixture-models.json"), refreshOnCreate: false,
   });

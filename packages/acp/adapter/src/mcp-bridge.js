@@ -12,7 +12,7 @@ function toolPolicy(state, name, synthetic = false) {
         exposure: toToolExposure(exposure),
         eidoMcpExposure: exposure,
         eidoMcpAutoEnableCodemode: options?.autoEnableCodemode !== false,
-        namespace: { name: "mcp__" + state.token, description: config?.description, instructions: state.handle.getInstructions?.() },
+        namespace: { name: "mcp__" + state.token, aliases: [state.server.name], description: config?.description, instructions: state.handle.getInstructions?.() },
     };
 }
 import { pathToFileURL } from "node:url";
