@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="native/branding/eido-readme.svg" alt="Eido — AI 开发工作空间，0.0.1 beta3" width="100%">
+  <img src="native/branding/eido-readme.svg" alt="Eido — AI 开发工作空间，0.0.1" width="100%">
 </p>
 
 <h1 align="center">让想法成为你能掌握的代码。</h1>
@@ -18,7 +18,7 @@
   <a href="#eido-的核心体验">核心体验</a> ·
   <a href="#下载与安装">下载</a> ·
   <a href="#开始你的第一个任务">开始试用</a> ·
-  <a href="#关于这个-beta-版本">版本范围</a> ·
+  <a href="#版本范围">版本范围</a> ·
   <a href="#一起打磨下一个版本">反馈建议</a> ·
   <a href="#致谢与开源协议">开源致谢</a>
 </p>
@@ -27,16 +27,18 @@
 
 Eido 将 AI 对话与代码放在一起。描述你想实现的目标，提供必要的上下文，再到编辑器里理解和完善结果。从讨论方案到落地实现，任务、改动与审阅决定始终保持关联。
 
-**Eido 0.0.1 beta3 是最新的 macOS 预览版本。** 下载应用，从真实项目中的一个明确任务开始试用。
+**Eido 0.0.1 是首个 macOS 正式发布版本。** 下载应用，从真实项目中的一个明确任务开始试用。
 
 <p>
-  <a href="https://github.com/tony3liu/eido/releases/download/v0.0.1-beta3/Eido-0.0.1-beta3-macos-arm64.dmg"><strong>下载 Mac 版 · Apple Silicon</strong></a> ·
-  <a href="https://github.com/tony3liu/eido/releases/tag/v0.0.1-beta3">版本说明</a>
+  <a href="https://github.com/tony3liu/eido/releases/download/v0.0.1/Eido-0.0.1-macos-arm64.dmg"><strong>下载 Mac 版 · Apple Silicon</strong></a> ·
+  <a href="https://github.com/tony3liu/eido/releases/tag/v0.0.1">版本说明</a>
 </p>
 
-macOS 13 及以上 · Apple Silicon（M 系列）· 早期测试版
+macOS 13 及以上 · Apple Silicon（M 系列）
 
-Beta3 引入基于 browser-use/jev-ultrafast 完整适配的 TypeScript 浏览器 Agent。每一步通过一次 Jev 请求同时选择操作与索引目标，仅在输入文字时调用文字生成。浏览器输入默认复用主模型和认证，独立文字模型为可选配置。包含 Inspector、trace 导出、录制与结果验证工具，并保留全局 Legacy 回退。应用内置官方 pi 1.1.0。
+本版内置官方未修改的 **pi 1.3.0**。Full Access 直接使用 pi 自动执行已启用的工具，覆盖 Code Mode 和子 Agent，并在所有任务间全局生效。新增 OpenRouter 模型目录刷新、分享偏好、表单当前项默认值和会话恢复时的工具状态保留；扩展触发的任务会在实际运行结束后再清理浏览器等资源。
+
+保留基于 browser-use/jev-ultrafast 适配的 TypeScript 浏览器 Agent、主模型文字输入、Inspector、录制、验证工具及 Legacy 回退。浏览器和桌面自动化仍属实验功能，后台桌面输入与焦点隔离尚不能保证适用于所有应用。
 
 ## 观看发布影片
 
@@ -77,15 +79,15 @@ Beta3 引入基于 browser-use/jev-ultrafast 完整适配的 TypeScript 浏览�
 
 ### 将工作延伸到编辑器之外
 
-让 AI 配合代码任务查看网页、操作桌面应用。本版提供 Browser Use 和 Computer Use，已启用工具的使用遵循你选择的 Agent Access。不同网站与应用的适配仍在持续完善。
+让 AI 配合代码任务查看网页、操作桌面应用。本版提供实验性的 Browser Use 和 Computer Use，已启用工具的使用遵循你选择的 Agent Access。不同网站与应用的适配仍在持续完善。
 
 ## 下载与安装
 
-1. 下载 [Eido-0.0.1-beta3-macos-arm64.dmg](https://github.com/tony3liu/eido/releases/download/v0.0.1-beta3/Eido-0.0.1-beta3-macos-arm64.dmg)。
+1. 下载 [Eido-0.0.1-macos-arm64.dmg](https://github.com/tony3liu/eido/releases/download/v0.0.1/Eido-0.0.1-macos-arm64.dmg)。
 2. 打开磁盘映像，将 **Eido** 拖入 **Applications**。
 3. 启动 Eido，在全局设置中配置模型与认证信息。
 
-此测试版已做本地签名，尚未通过 Apple 公证。如果 macOS 阻止首次启动，请确认下载来源后，按照 Apple 的[打开未知开发者应用说明](https://support.apple.com/zh-cn/guide/mac-help/mh40616/mac)操作。Release 同时提供 SHA-256 校验文件与源码包。
+本版已做本地签名，尚未通过 Apple 公证。如果 macOS 阻止首次启动，请确认下载来源后，按照 Apple 的[打开未知开发者应用说明](https://support.apple.com/zh-cn/guide/mac-help/mh40616/mac)操作。Release 同时提供 SHA-256 校验文件与源码包。
 
 ### 在 Mac 上开启 Computer Use
 
@@ -116,7 +118,7 @@ Beta3 引入基于 browser-use/jev-ultrafast 完整适配的 TypeScript 浏览�
 
 Agent Access 在所有任务之间全局生效。配置与工作历史保存在应用安装包之外，本地更新时会保留。模型请求会发送给你配置的服务提供方。
 
-## 关于这个 beta 版本
+## 版本范围
 
 首版围绕一个可用的开发流程展开：**描述目标 → 调查问题 → 修改代码 → 审阅改动 → 验证结果**。
 
@@ -128,7 +130,7 @@ Agent Access 在所有任务之间全局生效。配置与工作历史保存在�
 | 任务历史、支持的文件操作审阅与恢复。 | 大项目性能，以及更多升级和恢复场景。 |
 | Browser Use，以及内置桌面驱动的 Computer Use。 | 不同网站与应用的兼容性，以及 macOS 权限引导。 |
 
-智能代码辅助取决于已配置的语言支持。这个预览版本用于发现实际使用中的问题，推动下一版改进；目前不承诺完整适配所有项目或插件。应用界面的文案为英文，本文中的控件名称与界面一致。
+智能代码辅助取决于已配置的语言支持。不同项目和插件的适配仍在完善，Computer Use 后台输入、焦点隔离及复杂浏览器流程仍属实验范围。应用界面的文案为英文，本文中的控件名称与界面一致。
 
 ## 一起打磨下一个版本
 
@@ -137,7 +139,7 @@ Agent Access 在所有任务之间全局生效。配置与工作历史保存在�
 - **你的目标**：当时想完成什么。
 - **遇到的阻碍**：预期怎样，实际发生了什么。
 - **一个简短示例**：复现步骤、截图或相关错误信息。
-- **版本信息**：Eido **0.0.1 beta3**，以及 macOS 版本。
+- **版本信息**：Eido **0.0.1**，以及 macOS 版本。
 
 分享示例前，请移除凭据和不适合公开的项目内容。
 
@@ -163,5 +165,5 @@ Eido 尊重并保留这些项目的许可证与署名。**Eido 自有代码采�
 
 <p align="center">
   <strong>理解。创造。演进。</strong><br>
-  <sub>Eido · 0.0.1 beta3 · macOS 预览版</sub>
+  <sub>Eido · 0.0.1 · macOS</sub>
 </p>

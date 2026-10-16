@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="native/branding/eido-readme.svg" alt="Eido — AI development workspace, 0.0.1 beta3" width="100%">
+  <img src="native/branding/eido-readme.svg" alt="Eido — AI development workspace, 0.0.1" width="100%">
 </p>
 
 <h1 align="center">From intent to code you can trust.</h1>
@@ -18,7 +18,7 @@
   <a href="#the-eido-experience">Experience</a> ·
   <a href="#download-and-install">Download</a> ·
   <a href="#your-first-task">Getting started</a> ·
-  <a href="#about-this-beta">Beta scope</a> ·
+  <a href="#release-scope">Release scope</a> ·
   <a href="#help-shape-the-next-version">Feedback</a> ·
   <a href="#acknowledgments-and-licensing">Open source</a>
 </p>
@@ -27,16 +27,18 @@
 
 Eido keeps the conversation and the code in the same place. Describe what you want to achieve, give the agent the context it needs, and work through the result in your editor. Your task, proposed changes, and review decisions stay connected as you move between planning and implementation.
 
-**Eido 0.0.1 beta3 is the latest macOS preview.** Download the app and try a focused task on a real project.
+**Eido 0.0.1 is the first stable-channel release for macOS.** Download the app and try a focused task on a real project.
 
 <p>
-  <a href="https://github.com/tony3liu/eido/releases/download/v0.0.1-beta3/Eido-0.0.1-beta3-macos-arm64.dmg"><strong>Download for Mac · Apple Silicon</strong></a> ·
-  <a href="https://github.com/tony3liu/eido/releases/tag/v0.0.1-beta3">Release notes</a>
+  <a href="https://github.com/tony3liu/eido/releases/download/v0.0.1/Eido-0.0.1-macos-arm64.dmg"><strong>Download for Mac · Apple Silicon</strong></a> ·
+  <a href="https://github.com/tony3liu/eido/releases/tag/v0.0.1">Release notes</a>
 </p>
 
-macOS 13 or later · Apple Silicon (M-series) · Early beta
+macOS 13 or later · Apple Silicon (M-series)
 
-Beta3 adds the Ultrafast browser agent, adapted in TypeScript from browser-use/jev-ultrafast. Each step combines the operation and indexed target in one Jev request, with text generation only when typing. Browser input reuses your main model and authentication by default; a separate text model is optional. The release also includes the inspector, trace export, recording and verification tools, with Legacy available in global settings. The app bundles official pi 1.1.0.
+This release bundles the official, unmodified **pi 1.3.0**. Full Access uses pi's autonomous execution for enabled tools across tasks, including Code Mode and subagents. It adds OpenRouter model-list refresh, saved sharing preferences, current-value form defaults and improved tool restoration when resuming sessions. Extension-triggered runs now finish before their browser and task resources are cleaned up.
+
+The Ultrafast browser agent, adapted in TypeScript from browser-use/jev-ultrafast, shares your main model for text input and retains its inspector, recording, verification tools and Legacy fallback. Browser and desktop automation remain experimental; background desktop input and focus isolation are not reliable across all applications.
 
 ## Watch the launch film
 
@@ -77,21 +79,21 @@ Revisit earlier tasks with their conversations and review context. Continue inte
 
 ### Reach beyond the editor
 
-Ask the agent to inspect a page or work with a desktop application alongside your code. Browser Use and Computer Use are available in this beta, with enabled tools governed by your Agent Access choice. These workflows are still being refined across websites and applications.
+Ask the agent to inspect a page or work with a desktop application alongside your code. Browser Use and Computer Use are available as experimental features, with enabled tools governed by your Agent Access choice. These workflows are still being refined across websites and applications.
 
 ## Download and install
 
-1. Download [Eido-0.0.1-beta3-macos-arm64.dmg](https://github.com/tony3liu/eido/releases/download/v0.0.1-beta3/Eido-0.0.1-beta3-macos-arm64.dmg).
+1. Download [Eido-0.0.1-macos-arm64.dmg](https://github.com/tony3liu/eido/releases/download/v0.0.1/Eido-0.0.1-macos-arm64.dmg).
 2. Open the disk image and drag **Eido** into **Applications**.
 3. Launch Eido and configure your model and authentication in global settings.
 
-This beta is locally signed and has not been notarized by Apple. If macOS blocks the first launch, follow Apple's [instructions for opening an app from an unidentified developer](https://support.apple.com/guide/mac-help/open-a-mac-app-from-an-unknown-developer-mh40616/mac) after checking the download source. Release assets include SHA-256 checksums and source archives.
+This release is locally signed and has not been notarized by Apple. If macOS blocks the first launch, follow Apple's [instructions for opening an app from an unidentified developer](https://support.apple.com/guide/mac-help/open-a-mac-app-from-an-unknown-developer-mh40616/mac) after checking the download source. Release assets include SHA-256 checksums and source archives.
 
 ### Enable Computer Use on Mac
 
 Enable **Computer Use** in Eido's global settings. The app includes its desktop driver; leave the driver path empty to use it.
 
-In **System Settings → Privacy & Security**, allow **Eido** under both **Accessibility** and **Screen & System Audio Recording** (called **Screen Recording** on some macOS versions), then restart Eido. These permissions let the agent operate applications and capture their windows. Permission previously granted to a standalone Cua Driver does not apply to Eido. The beta currently requires these steps to be completed manually.
+In **System Settings → Privacy & Security**, allow **Eido** under both **Accessibility** and **Screen & System Audio Recording** (called **Screen Recording** on some macOS versions), then restart Eido. These permissions let the agent operate applications and capture their windows. Permission previously granted to a standalone Cua Driver does not apply to Eido. Eido currently requires these steps to be completed manually.
 
 ## Your first task
 
@@ -116,9 +118,9 @@ Inspect the changes, run the relevant checks, and decide what to keep. Continue 
 
 Agent Access applies globally across tasks. Your configuration and work history are kept outside the application bundle and preserved during local updates. Model requests go to the provider you configure.
 
-## About this beta
+## Release scope
 
-The first beta focuses on a usable coding loop: **describe → investigate → edit → review → verify**.
+The first stable-channel release focuses on the coding loop: **describe → investigate → edit → review → verify**.
 
 | Available to try | Still being refined |
 | :--- | :--- |
@@ -128,7 +130,7 @@ The first beta focuses on a usable coding loop: **describe → investigate → e
 | Task history, supported file-operation review, and recovery. | Large-project performance and broader upgrade and recovery scenarios. |
 | Browser Use and Computer Use with a bundled desktop driver. | Website and application compatibility, and macOS permission onboarding. |
 
-Smart code assistance depends on the language support you configure. This preview is intended to surface practical problems and improve the next version; it is not a promise of complete support for every project or plugin.
+Smart code assistance depends on the language support you configure. Coverage across projects and plugins continues to improve. Computer Use background input, focus isolation and more complex browser workflows remain experimental.
 
 ## Help shape the next version
 
@@ -137,7 +139,7 @@ The most useful feedback starts with a real task. [Open an issue](https://github
 - **Your goal** — what you were trying to accomplish.
 - **The friction** — what you expected and what happened instead.
 - **A small example** — steps to reproduce, a screenshot, or the relevant error text.
-- **The version** — Eido **0.0.1 beta3**, plus your macOS version.
+- **The version** — Eido **0.0.1**, plus your macOS version.
 
 Please remove credentials and private project information from shared examples.
 
@@ -163,5 +165,5 @@ If you fork, modify, or distribute Eido, you must comply with the licenses that 
 
 <p align="center">
   <strong>Understand. Create. Evolve.</strong><br>
-  <sub>Eido · 0.0.1 beta3 · macOS preview</sub>
+  <sub>Eido · 0.0.1 · macOS</sub>
 </p>
