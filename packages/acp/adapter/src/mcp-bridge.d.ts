@@ -26,6 +26,8 @@ export interface McpListResult {
     nextCursor?: string;
     raw?: unknown;
 }
+export declare function withMcpModelContent(result: CallToolResult, content: ContentBlock[]): CallToolResult;
+export declare function getMcpModelContent(result: CallToolResult): ContentBlock[] | undefined;
 export interface McpClientHandle {
     listTools(cursor: string | undefined, signal: AbortSignal, timeoutMs: number): Promise<McpListResult>;
     callTool(name: string, args: unknown, signal: AbortSignal, timeoutMs: number, onprogress?: (progress: unknown) => void): Promise<CallToolResult>;

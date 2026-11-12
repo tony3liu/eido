@@ -627,6 +627,15 @@ pub fn front_process_matches(target_pid: libc::pid_t, target_wid: u32) -> Option
     Some(front_psn == target_psn)
 }
 
+/// Read WindowServer's current front process directly. NSWorkspace can retain
+/// its first answer in a headless process whose Cocoa run loop is not pumped.
+/// Foreground input must compare live identity, never that cached answer.
+pub fn front_process_identity() -> Option<[u8; 8]> {
+    let get_front = get_front_process_fn()?;
+    let mut psn = [0u8; 8];
+    (unsafe { get_front(psn.as_mut_ptr() as *mut c_void) } == 0).then_some(psn)
+}
+
 /// Make `target_pid` and `target_wid` WindowServer-frontmost and leave them
 /// there. Unlike [`with_foreground_assist`], this deliberately does not save or
 /// restore the previous process. It is the persistent counterpart required by

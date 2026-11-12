@@ -799,14 +799,23 @@ export function convertMcpContent(content) {
         default: throw new Error("Unsupported MCP content block");
     }
 }
+// Only the Eido-owned adapter can attach a model projection. Remote metadata
+// cannot suppress evidence. Keep the complete MCP result for UI and Code Mode.
+const mcpModelContent = new WeakMap();
+export function withMcpModelContent(result, content) {
+    mcpModelContent.set(result, content);
+    return result;
+}
+export function getMcpModelContent(result) { return mcpModelContent.get(result); }
 export function convertMcpResult(result) {
     const { _meta, ...structuredContent } = result;
-    const content = result.content.map(convertMcpContent);
+    const projected = mcpModelContent.get(result);
+    const content = (projected ?? result.content).map(convertMcpContent);
     // MCP servers may provide actionable handles only in structuredContent.
     // pi's model transcript consumes content, while details are UI metadata.
     // Keep the original result for Code Mode and expose missing structured data
     // as text without duplicating servers that already return its JSON.
-    if (result.structuredContent !== undefined) {
+    if (!projected && result.structuredContent !== undefined) {
         const encoded = JSON.stringify(result.structuredContent);
         const included = result.content.some(block => {
             if (block.type !== "text") return false;

@@ -247,7 +247,8 @@ fn def() -> &'static ToolDef {
              AX path: \"right\" maps to AXShowMenu (same surface as the dedicated `right_click` \
              tool); \"middle\" has no AX equivalent and falls back to a pixel middle-click at the \
              element's center.\n\
-             action: press (default), show_menu, pick, confirm, cancel, open.\n\
+             action: press (default), focus, show_menu, pick, confirm, cancel, open. \
+             focus on an element_token sets and verifies native AX focus without raising the window.\n\
              from_zoom: set true after a zoom call to auto-translate zoom-image pixel \
              coordinates to full-window space."
             .into(),
@@ -267,7 +268,7 @@ fn def() -> &'static ToolDef {
                 "capture_id": { "type": "string", "description": "Optional immutable source capture ID returned by get_window_state or get_desktop_state. With x,y, Driver atomically admits and consumes that exact capture before dispatch; stale, mismatched, or out-of-bounds captures are refused without fallback." },
                 "x":             { "type": "number",  "description": "X in screenshot pixels. A window target uses the get_window_state PNG; a desktop target uses the native get_desktop_state PNG. The driver reverses Retina backing scale and any window-image downscale." },
                 "y":             { "type": "number",  "description": "Y in screenshot pixels from the image selected by target." },
-                "action":        { "type": "string",  "description": "AX action: press, show_menu, pick, confirm, cancel, open." },
+                "action":        { "type": "string",  "description": "AX action: press, focus, show_menu, pick, confirm, cancel, open. focus verifies native AX focus without raising the window." },
                 "button":        {
                     "type": "string",
                     "enum": ["left", "right", "middle"],
@@ -1363,6 +1364,12 @@ fn perform_ax_click(
     let (pid, window_id) = window;
     let ax_action = map_action(action_str);
     let element = element_ptr as AXUIElementRef;
+
+    if action_str == "focus" {
+        anyhow::ensure!(modifiers.is_empty(), "semantic focus does not accept modifiers");
+        crate::ax::exact_target::focus_native_element(pid, window_id, element_ptr)?;
+        return Ok((format!("Focused exact native element [{idx}] in window {window_id}; AX focus confirmed."), false, false, true, false));
+    }
 
     // Check the live value immediately before dispatch. Foreground assist can
     // enable menu items that were disabled in the cached snapshot, while a

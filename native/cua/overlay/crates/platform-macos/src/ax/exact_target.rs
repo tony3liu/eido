@@ -25,6 +25,49 @@ const MAX_ANCESTRY_DEPTH: usize = 40;
 /// Bounded sheet chain followed when mapping a sheet to its parent window.
 const MAX_SHEET_NESTING: usize = 8;
 
+/// Focus an exact native control and verify its own focus or its field editor.
+/// No application activation, window raise, or PID keyboard permission follows
+/// from this semantic write. Web renderer focus must use a different route.
+pub fn focus_native_element(pid: i32, window_id: u32, element_ptr: usize) -> anyhow::Result<()> {
+    unsafe {
+        let element = element_ptr as AXUIElementRef;
+        anyhow::ensure!(element_window_id(element) == Some(window_id), "focus target is outside the requested window");
+        anyhow::ensure!(!crate::tools::type_text::target_in_web_area(pid, Some((element_ptr, None)), Some(window_id)), "native AX focus cannot verify web renderer focus");
+        let error = super::bindings::set_bool_attr_true(element, "AXFocused");
+        anyhow::ensure!(error == super::bindings::kAXErrorSuccess, "AXFocused write failed: {error}");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(200);
+        loop {
+            cua_driver_core::input_cancellation::check()?;
+            anyhow::ensure!(element_window_id(element) == Some(window_id), "focus target changed windows");
+            if copy_bool_attr(element, "AXFocused") == Some(true) { return Ok(()); }
+            if let Some(focused) = focused_element_in_window(pid, window_id) {
+                let matched = focused_is_control_or_editor(focused, element);
+                CFRelease(focused as CFTypeRef);
+                if matched { return Ok(()); }
+            }
+            if std::time::Instant::now() >= deadline { anyhow::bail!("AX focus was not confirmed in the exact target window"); }
+            cua_driver_core::input_cancellation::wait(std::time::Duration::from_millis(10));
+        }
+    }
+}
+
+unsafe fn focused_is_control_or_editor(focused: AXUIElementRef, target: AXUIElementRef) -> bool {
+    let mut current = focused;
+    let mut owned = false;
+    for _ in 0..MAX_ANCESTRY_DEPTH {
+        if core_foundation::base::CFEqual(current as CFTypeRef, target as CFTypeRef) != 0 {
+            if owned { CFRelease(current as CFTypeRef); }
+            return true;
+        }
+        let parent = copy_element_attr(current, "AXParent");
+        if owned { CFRelease(current as CFTypeRef); }
+        let Some(parent) = parent else { return false; };
+        current = parent; owned = true;
+    }
+    if owned { CFRelease(current as CFTypeRef); }
+    false
+}
+
 /// Resolve the CGWindowID of the top-level AX window that owns `element`.
 ///
 /// Prefers the element's `AXWindow` attribute and falls back to a bounded

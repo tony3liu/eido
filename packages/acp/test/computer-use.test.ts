@@ -4,6 +4,7 @@ import type {AgentSession} from '@earendil-works/pi-coding-agent';
 import type {CallToolResult} from '@modelcontextprotocol/sdk/types.js';
 import type {McpClientHandle, McpSessionBinding} from '../adapter/src/mcp-bridge.js';
 import {computerUse, computerGuidance} from '../src/computer-use.ts';
+import {convertMcpResult} from '../adapter/src/mcp-bridge.js';
 import {mkdtemp, realpath, writeFile, readFile, rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
@@ -16,7 +17,7 @@ const observationId = (r: CallToolResult) => /Eido observation ([\w-]+)\./.exec(
 const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/lpEAAAAASUVORK5CYII=';
 async function fixture() {
   let vision = true, blocked = false, rich = false, clock = 1000, snapshot = 0;
-  let failure: string | undefined, abortAction: (() => void) | undefined, mismatched = false, missing = false, menuOnly = false;
+  let failure: string | undefined, abortAction: (() => void) | undefined, mismatched = false, missing = false, menuOnly = false, pendingCleanup = 0;
   const calls: {name: string; args: Record<string, unknown>}[] = [];
   const pi = {get model() {return {provider: 'fixture', id: vision ? 'vision' : 'text', input: vision ? ['text','image'] : ['text']};},
     settingsManager: {getBlockImages: () => blocked}} as unknown as AgentSession;
@@ -24,6 +25,7 @@ async function fixture() {
     async listTools() {return {tools: ['get_window_state','get_desktop_state','click','type_text','type_text_chars','press_key','hotkey','set_value','end_session','bring_to_front','list_windows'].map(name => ({name,inputSchema:{type:'object',properties:{session:{type:'string'}}}}))};},
     async callTool(name, value, signal) {
       const args = value as Record<string, unknown>; calls.push({name,args});
+      if (name === 'end_session' && pendingCleanup-- > 0) return {isError:true,content:[{type:'text',text:'Still unwinding admitted input'}],structuredContent:{code:'session_cleanup_pending'}};
       if (name === failure) return {isError: true, content: [{type:'text',text:'Intentional driver failure'}]};
       if (name === 'press_key' && abortAction) {abortAction();signal.throwIfAborted();}
       if (name === 'get_window_state' || name === 'get_desktop_state') {
@@ -48,7 +50,7 @@ async function fixture() {
   return {computer,pi,calls,listed,signal,call,observe:()=>call('get_window_state',{pid:7,window_id:10}),
     vision:(v:boolean)=>{vision=v;},blocked:(v:boolean)=>{blocked=v;},rich:(v:boolean)=>{rich=v;},
     advance:()=>{clock+=61000;},fail:(name?:string)=>{failure=name;},mismatch:()=>{mismatched=true;},
-    missing:()=>{missing=true;},menuOnly:()=>{menuOnly=true;},onAction:(f:()=>void)=>{abortAction=f;}};
+    missing:()=>{missing=true;},menuOnly:()=>{menuOnly=true;},pendingCleanup:(n:number)=>{pendingCleanup=n;},onAction:(f:()=>void)=>{abortAction=f;}};
 }
 
 test('weak AX automatically gets pixels; inputs require a current exact target and return new evidence',async()=>{
@@ -85,6 +87,41 @@ test('text-only, image-blocked and changed models cannot use old visual evidence
   await f.computer.finishTurn();
 });
 
+test('model observations omit default menu trees and duplicates while UI and explicit queries retain evidence',async()=>{
+  const f=await fixture();f.rich(true);f.menuOnly();
+  const observed=await f.observe();
+  const converted=convertMcpResult(observed);
+  const projected=JSON.stringify(converted.content);
+  assert.match(projected,/Test phrase/);assert.doesNotMatch(projected,/help-search/);
+  assert.match(JSON.stringify(converted.details),/help-search/,'full evidence stays in UI/Code Mode');
+  const queried=await f.call('get_window_state',{pid:7,window_id:10,query:'Help'});
+  assert.match(JSON.stringify(convertMcpResult(queried).content),/help-search/);
+  const token=(observed.structuredContent!.elements as {element_token?:string}[])[1]!.element_token;
+  const after=await f.call('set_value',{pid:7,window_id:10,element_token:(queried.structuredContent!.elements as {element_token?:string}[])[1]!.element_token,value:'Known field'});
+  const model=convertMcpResult(after);
+  const id=observationId(after);
+  assert.equal(JSON.stringify(model.content).split(id).length-1,2,'one structured ID and one concise guard notice');
+  assert.ok(after.structuredContent!.eido_post_observation);
+  assert.ok(token);
+  await f.computer.finishTurn();
+});
+
+test('turn completion aborts admitted input and rejects queued old-turn work before cleanup',async()=>{
+  const calls:string[]=[];let started:()=>void=()=>{};
+  const ready=new Promise<void>(resolve=>{started=resolve;});
+  const raw:McpClientHandle={async listTools(){return {tools:[{name:'list_windows',inputSchema:{type:'object',properties:{session:{type:'string'}}}}]};},
+    async callTool(name,_args,signal){calls.push(name);if(name==='list_windows'){started();await new Promise<void>((_resolve,reject)=>signal.addEventListener('abort',()=>reject(signal.reason),{once:true}));}return {content:[]};},async close(){}};
+  const computer=computerUse(raw,{sessionId:'cancel-turn',getPi:()=>undefined} as McpSessionBinding);
+  const signal=new AbortController().signal;await raw.listTools(undefined,signal,1000);
+  const running=raw.callTool('list_windows',{},signal,1000).catch(error=>error);
+  await ready;
+  const queued=raw.callTool('list_windows',{},signal,1000);
+  await computer.finishTurn();
+  assert.ok(await running instanceof Error);
+  assert.equal((await queued).isError,true);
+  assert.deepEqual(calls,['list_windows','end_session']);
+});
+
 test('text models retain semantic AX controls, but pixel input and expired observations are refused',async()=>{
   const f=await fixture();f.vision(false);f.rich(true);
   const observed=await f.observe();const token=(observed.structuredContent!.elements as {element_token?:string}[])[1]!.element_token;
@@ -106,6 +143,15 @@ test('failed post-action capture prevents replay and cleanup uses a task-owned l
   const labels=new Set(f.calls.map(c=>c.args.session));assert.equal(labels.size,1);assert.ok(!labels.has('someone-else'));
   f.fail();await f.observe();assert.equal(new Set(f.calls.map(c=>c.args.session)).size,2,'next turn owns a new desktop session');
   await f.computer.handle.close();
+});
+
+test('cleanup waits for the owned pending lifecycle and next turn uses a fresh session',async()=>{
+  const f=await fixture();await f.observe();f.pendingCleanup(2);
+  await f.computer.finishTurn();
+  const ends=f.calls.filter(c=>c.name==='end_session');assert.equal(ends.length,3);
+  assert.equal(new Set(ends.map(c=>c.args.session)).size,1);
+  await f.observe();assert.notEqual(f.calls.at(-1)!.args.session,ends[0]!.args.session);
+  await f.computer.finishTurn();
 });
 
 test('a capture for a different window invalidates earlier evidence',async()=>{

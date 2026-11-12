@@ -18,7 +18,7 @@ mod right_click;
 mod scroll;
 mod set_value;
 mod set_window_frame;
-mod type_text;
+pub(crate) mod type_text;
 // `screenshot` / `screenshot_compat` modules removed in PR #1692 —
 // `get_window_state` capture_mode:"vision" is the canonical screenshot
 // path. The capture functions they wrapped (ScreenCaptureKit, CGWindow,
