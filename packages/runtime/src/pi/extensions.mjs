@@ -2,11 +2,13 @@ import {piDirectory, runtimeRoot as root, bundledPiEntry} from '../paths.mjs';
 import {validateMcp, credentials, usesOAuth} from '../mcp/config.mjs';
 import {readMcpStatus, mcpRevision} from '../mcp/status.mjs';
 import {computerSettings} from '../computer.mjs';
+import {pokiConfiguration} from '../mcp/poki.mjs';
 export {validateMcp, configuredMcp} from '../mcp/config.mjs';
 import { mkdir, readFile, writeFile, rename, rm, readdir } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { createHash } from "node:crypto";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
+import {isDeepStrictEqual} from 'node:util';
 
 const entry = bundledPiEntry;
 const { DefaultPackageManager, SettingsManager, parseFrontmatter } = await import(entry.href);
@@ -180,6 +182,23 @@ export function createExtensionCenter(directory = piDirectory(root), fetcher = f
           } else c[kind] = [...(c[kind] ?? []).filter(v => ![`+${request.path}`, `-${request.path}`, `!${request.path}`].includes(v)), `${request.enabled ? "+" : "-"}${request.path}`];
           return c;
         });
+      } else if (operation === "mcp-poki") {
+        const {server, skill} = await pokiConfiguration(request);
+        const value = validateMcp(await readJson(join(directory, "mcp.json"), {mcpServers: {}}));
+        const existing = value.mcpServers['poki-mcp'];
+        if (existing && !isDeepStrictEqual(existing, server)) {
+          throw new Error('poki-mcp is already configured. Use Extensions > MCP > Edit Configuration to change it.');
+        }
+        // Add the upstream skill by reference, using pi's global resource list.
+        // Existing skill filters and all unrelated configuration stay intact.
+        mutateSettings(c => {
+          const paths = c.skills ?? [];
+          if (!Array.isArray(paths) || paths.some(path => typeof path !== 'string')) throw new Error('Fix pi skills in settings.json before adding Poki.');
+          if (!paths.some(path => [skill, `+${skill}`, `-${skill}`, `!${skill}`].includes(path))) c.skills = [...paths, skill];
+          return c;
+        });
+        value.mcpServers['poki-mcp'] = server;
+        await atomic(join(directory, "mcp.json"), value);
       } else if (operation === "mcp-save") {
         const value = validateMcp(JSON.parse(request.text));
         const current = validateMcp(await readJson(join(directory, "mcp.json"), {mcpServers: {}}));
