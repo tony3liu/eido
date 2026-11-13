@@ -1,6 +1,7 @@
 import importlib.util
 import json
 from pathlib import Path
+import plistlib
 import shutil
 import subprocess
 import tempfile
@@ -12,6 +13,29 @@ spec.loader.exec_module(package)
 
 
 class ProductionPackageTests(unittest.TestCase):
+    def test_native_repack_rejects_changed_sources_binary_and_test_builds(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            bundle = root / 'Eido.app'
+            binary = bundle / 'Contents/MacOS/eido'
+            binary.parent.mkdir(parents=True)
+            binary.write_bytes(b'verified production editor')
+            (bundle / 'Contents/Info.plist').write_bytes(plistlib.dumps({'CFBundleIdentifier': 'dev.eido.app'}))
+            metadata = bundle / 'Contents/Resources/runtime/eido-runtime.json'
+            metadata.parent.mkdir(parents=True)
+            metadata.write_text(json.dumps({'sourceFingerprint': 'current-source', 'testFeatures': False}))
+            (root / 'production-manifest.json').write_text(json.dumps({'files': package.audit(bundle)}))
+            self.assertEqual(package.verified_native_bundle(bundle, 'current-source'), binary.resolve())
+            with self.assertRaisesRegex(RuntimeError, 'current production source'):
+                package.verified_native_bundle(bundle, 'new-source')
+            binary.write_bytes(b'changed editor')
+            with self.assertRaisesRegex(RuntimeError, 'production manifest'):
+                package.verified_native_bundle(bundle, 'current-source')
+            binary.write_bytes(b'verified production editor')
+            metadata.write_text(json.dumps({'sourceFingerprint': 'current-source', 'testFeatures': True}))
+            with self.assertRaisesRegex(RuntimeError, 'current production source'):
+                package.verified_native_bundle(bundle, 'current-source')
+
     def test_filtered_playwright_cli_keeps_its_production_mcp_modules(self):
         with tempfile.TemporaryDirectory(prefix='eido-package-playwright-') as directory:
             root = Path(directory)

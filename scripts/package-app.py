@@ -33,8 +33,10 @@ RUNTIME_FILES = (
     'packages/runtime/src/pi/http-settings.mjs', 'packages/runtime/src/pi/runtime-settings.mjs',
     'packages/runtime/src/pi/model-catalog.mjs',
     'packages/runtime/src/mcp/config.mjs', 'packages/runtime/src/mcp/status.mjs',
+    'packages/runtime/src/mcp/poki.mjs',
     'packages/runtime/bin/pi-settings.mjs', 'packages/runtime/bin/pi-extensions.mjs',
     'packages/runtime/bin/browser-agent.mjs',
+    'packages/runtime/bin/poki-connect.mjs',
     'packages/runtime/bin/mcp-auth.mjs', 'packages/runtime/bin/browser-server.mjs',
     'packages/acp/bin/component-terminal.mjs',
     'packages/acp/helpers/preview/server.mjs', 'packages/acp/helpers/preview/command.mjs',
@@ -193,14 +195,43 @@ def audit(bundle):
     return files
 
 
-def build():
+def verified_native_bundle(bundle, source_fingerprint):
+    bundle = bundle.expanduser().resolve()
+    with (bundle / 'Contents/Info.plist').open('rb') as stream:
+        if plistlib.load(stream).get('CFBundleIdentifier') != 'dev.eido.app':
+            raise RuntimeError('The native bundle must be an audited Eido application')
+    previous = json.loads((bundle / 'Contents/Resources/runtime/eido-runtime.json').read_text())
+    if previous.get('sourceFingerprint') != source_fingerprint or previous.get('testFeatures') is not False:
+        raise RuntimeError('The native bundle does not match the current production source')
+    manifest = json.loads((bundle.parent / 'production-manifest.json').read_text())
+    if audit(bundle) != manifest.get('files'):
+        raise RuntimeError('The native bundle differs from its production manifest')
+    return bundle / 'Contents/MacOS/eido'
+
+
+def build(native_bundle=None):
     spec = importlib.util.spec_from_file_location('eido_native', ROOT / 'scripts/native.py')
     native = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(native)
     record = json.loads((ROOT / '.local/native-build.json').read_text())
     executable = ROOT / '.local/native-target/debug/eido'
-    if record['sourceFingerprint'] != native.source_fingerprint() or record['binarySha256'] != native.digest(executable):
+    source_fingerprint = native.source_fingerprint()
+    if record['sourceFingerprint'] != source_fingerprint:
         raise RuntimeError('Build the current native product with npm run native:build first')
+    with tempfile.TemporaryDirectory(prefix='eido-package-native-', dir=ROOT / '.local') as temporary:
+        if native_bundle is not None:
+            previous = verified_native_bundle(native_bundle, source_fingerprint)
+            run(['codesign', '--verify', '--deep', '--strict', native_bundle])
+            # Preserve the verified binary before replacing the staging folder.
+            executable = Path(temporary) / 'eido'
+            copy_file(previous, executable)
+            print('Reusing the audited native editor; rebuilding the application runtime.')
+        elif not executable.is_file() or record['binarySha256'] != native.digest(executable):
+            raise RuntimeError('Build the current native product with npm run native:build first')
+        build_payload(native, record, executable)
+
+
+def build_payload(native, record, executable):
     stage = ROOT / '.local/package-stage'
     if stage.exists():
         shutil.rmtree(stage)
@@ -306,12 +337,14 @@ def build():
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--audit', type=Path)
+    parser.add_argument('--native-bundle', type=Path,
+                        help='Reuse an audited native editor with unchanged source and a matching production manifest')
     args = parser.parse_args()
     if args.audit:
         files = audit(args.audit)
         print(f'Validated {len(files)} production files.')
     else:
-        build()
+        build(args.native_bundle)
 
 
 if __name__ == '__main__':
