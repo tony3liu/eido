@@ -598,7 +598,7 @@ impl Component for ExtensionCard {
                     &remote_extension(
                         "preview-overridden-theme",
                         "Local Theme",
-                        "1.3.0",
+                        "1.5.2",
                         "The published version of a locally developed extension.",
                         36_512,
                         [ExtensionProvides::Themes],

@@ -8,6 +8,8 @@ import {mkdtemp, writeFile, rm} from 'node:fs/promises';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import {gzipSync} from 'node:zlib';
+import {createRequire} from 'node:module';
+import {pathToFileURL} from 'node:url';
 
 test('pi network startup uses its proxy, env precedence, NO_PROXY and reloaded idle timeout', {timeout:25_000}, async t => {
   const dir = await mkdtemp(join(tmpdir(),'eido-pi-network-'));
@@ -35,7 +37,7 @@ test('pi network startup uses its proxy, env precedence, NO_PROXY and reloaded i
   const proxyUrl = `http://fixture-user:fixture-password@127.0.0.1:${proxyPort}`;
   const networkModule = new URL('../src/pi-network.ts',import.meta.url).href;
   const settingsModule = new URL('../node_modules/@earendil-works/pi-coding-agent/dist/index.js',import.meta.url).href;
-  const undiciModule = new URL('../node_modules/@earendil-works/pi-coding-agent/node_modules/undici/index.js',import.meta.url).href;
+  const undiciModule = pathToFileURL(createRequire(settingsModule).resolve('undici')).href;
   const env = Object.fromEntries(Object.entries(process.env).filter(([key])=>!['http_proxy','https_proxy','all_proxy','no_proxy'].includes(key.toLowerCase())));
   await writeFile(join(dir,'settings.json'),JSON.stringify({httpProxy:proxyUrl,httpIdleTimeoutMs:1000}));
   const script = `

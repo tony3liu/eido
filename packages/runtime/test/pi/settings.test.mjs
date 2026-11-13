@@ -55,7 +55,7 @@ test('bundled desktop runtime owns its MCP child and custom paths retain precede
 test("defaults roundtrip uses pi model validation and preserves unrelated settings", async t => {
   const f=await fixture(t);
   const result=await f.bridge.execute({operation:"defaults",provider:"eido-fixture",model:"test-model",thinking:"off"});
-  assert.equal(result.version,"1.3.0");
+  assert.equal(result.version,"1.5.2");
   assert.equal(result.defaultModel,"test-model");
   assert.deepEqual((await f.get(f.target,"settings.json")).customSetting,{retain:true});
   const before=await readFile(join(f.target,"settings.json"),"utf8");

@@ -61,7 +61,11 @@ export async function showPiComponent<T>(pi: AgentSession, client: AgentContext,
     moveBy: lines => write(`\x1b[${Math.abs(lines)}${lines > 0 ? 'B':'A'}`),
     hideCursor: () => write('\x1b[?25l'), showCursor: () => write('\x1b[?25h'),
     clearLine: () => write('\x1b[2K'), clearFromCursor: () => write('\x1b[J'), clearScreen: () => write('\x1b[2J\x1b[H'),
-    setTitle: title => write(`\x1b]0;${title.replace(/[\x00-\x1f\x7f]/g, '')}\x07`), setProgress() {}, setProgramStatus() {},
+    setTitle: title => write(`\x1b]0;${title.replace(/[\x00-\x1f\x7f]/g, '')}\x07`), setProgress() {},
+    setProgramStatus(status) {
+      if (!host?.mount && !closing) emit({sessionUpdate:'tool_call_update',toolCallId:callId,
+        title:status.state === 'blocked' ? 'Extension interface · waiting for input' : 'Extension interface'});
+    },
   };
   // Renderer exceptions must fail this view instead of crashing the shared ACP process.
   class ComponentScreen extends TuiMainScreen {
@@ -108,7 +112,7 @@ export async function showPiComponent<T>(pi: AgentSession, client: AgentContext,
     signal?.throwIfAborted();
     await new Promise<void>((resolve,reject) => {server.once('error',reject); server.listen(socketPath, () => {server.off('error',reject); resolve();});});
     if (process.platform !== 'win32') await chmod(socketPath, 0o600);
-    if(!host?.mount)emit({sessionUpdate:'tool_call', toolCallId:callId, title:'Extension interface', kind:'other', status:'in_progress',
+    if(!host?.mount)emit({sessionUpdate:'tool_call', toolCallId:callId, title:options?.blocked ? 'Extension interface · waiting for input' : 'Extension interface', kind:'other', status:'in_progress',
       content:[{type:'content',content:{type:'text',text:'Use the embedded terminal to interact with this pi extension. Ctrl+C closes it.'}}]});
     // Own a late response as well, so cancellation never leaks the terminal process.
     const creatingTerminal=client.request(methods.client.terminal.create,{sessionId:pi.sessionId,command:process.execPath,

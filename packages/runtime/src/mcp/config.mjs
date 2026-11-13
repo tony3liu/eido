@@ -133,16 +133,14 @@ export async function signIn(directory, name, prompt, signal) {
   if (!server || !usesOAuth(server)) throw new Error('Choose an MCP server that uses account sign-in.');
   const store = credentials(directory).forServer(name,server.url);
   signal?.throwIfAborted();
-  await store.withRefreshLock(async()=> {
+  // pi 1.5 owns the refresh lock inside sign-in, including cancellation while
+  // waiting for another process. Do not hold that same lock around the flow.
+  const checkedStore = {...store, save:async state=> {
     signal?.throwIfAborted();
-    // Refuse late credential writes after cancellation or a changed/removed server.
-    const checkedStore = {load:()=>store.load(), save:async state=> {
-      signal?.throwIfAborted();
-      const current = (await readMcp(directory)).mcpServers[name];
-      if (JSON.stringify(current) !== JSON.stringify(server)) throw new Error('MCP configuration changed during sign-in.');
-      return store.save(state);
-    }};
-    await signInMcpServer({serverUrl:server.url,store:checkedStore,settings:oauthSettings(server),prompt,signal});
-    signal?.throwIfAborted();
-  });
+    const current = (await readMcp(directory)).mcpServers[name];
+    if (JSON.stringify(current) !== JSON.stringify(server)) throw new Error('MCP configuration changed during sign-in.');
+    return store.save(state);
+  }};
+  await signInMcpServer({serverUrl:server.url,store:checkedStore,settings:oauthSettings(server),prompt,signal});
+  signal?.throwIfAborted();
 }

@@ -1,7 +1,10 @@
 import {SettingsManager} from '@earendil-works/pi-coding-agent';
 import {applyHttpProxySettings, configureHttpDispatcher} from '../node_modules/@earendil-works/pi-coding-agent/dist/core/http-dispatcher.js';
-import {getGlobalDispatcher} from '../node_modules/@earendil-works/pi-coding-agent/node_modules/undici/index.js';
+import {createRequire} from 'node:module';
 import {normalizeHttpProxy} from '../../runtime/src/pi/http-settings.mjs';
+
+// Resolve from pi so npm may hoist the dependency without changing the client.
+const {getGlobalDispatcher} = createRequire(import.meta.resolve('@earendil-works/pi-coding-agent'))('undici') as typeof import('undici');
 
 let configuredTimeout: number | undefined;
 

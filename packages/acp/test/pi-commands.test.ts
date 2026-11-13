@@ -533,7 +533,7 @@ test("exports use pi formats, refuse overwrite and clean temporary files; change
     assert.equal(exports.length, 1);
     assert.ok(exports[0]?.endsWith(".html"));
     await h.prompt(a.sessionId, "/changelog");
-    assert.match(h.text(a.sessionId), /1\.1\.0/);
+    assert.match(h.text(a.sessionId), /\[1\.5\.2\]/);
     assert.equal(h.requests(), 0);
   } finally { await h.dispose(); }
 });
@@ -819,6 +819,39 @@ test("native new/resume retains IDs and extension hooks can cancel a transition"
     assert.match(h.text(a.sessionId),/already open/);
     await assert.rejects(h.prompt(a.sessionId,'/resume missing'));
     assert.equal(actions.length,1);
+    assert.equal(h.requests(),0);
+  } finally {await h.dispose();}
+});
+
+test('resume recovers a missing folder as a new task and preserves the original journal', async () => {
+  const actions: {sessionId:string;action:string;data:Record<string,unknown>}[]=[];
+  let recover=false;
+  const h=await harness([], {
+    form:async params=>params.message.startsWith('Task folder is unavailable:')
+      ? {action:'accept',content:{value:recover?'Fork into current folder':'Cancel'}} : {action:'cancel'},
+    native:async request=>{actions.push(request);return {};},
+  });
+  try {
+    const other=join(h.cwd,'gone'); await mkdir(other);
+    const a=await h.newTask(); await h.prompt(a.sessionId,'/name Current workspace');
+    const b=await h.connection.agent.request(methods.agent.session.new,{cwd:other,mcpServers:[]});
+    await h.prompt(b.sessionId,'/name Lost folder');
+    await h.connection.agent.request(methods.agent.session.close,{sessionId:b.sessionId});
+    const journals=await readdir(join(h.cwd,'sessions'));
+    const source=join(h.cwd,'sessions',journals.find(file=>file.includes(b.sessionId))!);
+    const before=await readFile(source,'utf8');
+    await rm(other,{recursive:true});
+    await h.prompt(a.sessionId,`/resume ${b.sessionId}`);
+    assert.match(h.text(a.sessionId),/Resume cancelled/); assert.equal(actions.length,0);
+    assert.deepEqual(await readdir(join(h.cwd,'sessions')),journals);
+    recover=true;
+    await h.prompt(a.sessionId,`/resume ${b.sessionId}`);
+    const opened=actions.at(-1)!;
+    assert.equal(opened.action,'open_session'); assert.notEqual(opened.data.id,b.sessionId);
+    assert.equal(opened.data.title,'Recovered · Lost folder');
+    assert.equal(await readFile(source,'utf8'),before);
+    const entries=await h.entries();
+    assert.ok(entries.some(entry=>entry.type==='session' && entry.id===opened.data.id && entry.cwd===h.cwd));
     assert.equal(h.requests(),0);
   } finally {await h.dispose();}
 });

@@ -54,6 +54,7 @@ function validateImport(source: string) {
 export async function sessionCommand(pi: AgentSession, client: AgentContext, ui: ExtensionUIContext | undefined,
   name: string, argument: string, signal?: AbortSignal) {
   const manager = pi.sessionManager, directory = manager.getSessionDir(), cwd = manager.getCwd();
+  let recoveredName: string | undefined, recovering = false;
   const open = async (id: string, title?: string, draft?: string) => {
     signal?.throwIfAborted();
     await nativeUiAction(client, pi.sessionId, 'open_session', {id, title, draft}, signal);
@@ -67,8 +68,13 @@ export async function sessionCommand(pi: AgentSession, client: AgentContext, ui:
   if (name === 'resume') {
     // A concrete task ID may belong to another open workspace. Let the native
     // owner focus it; never load that journal against this workspace's Project.
-    const candidates = argument ? await SessionManager.listAll(directory, undefined, signal)
-      : await SessionManager.list(cwd, directory, undefined, signal);
+    const all = await SessionManager.listAll(directory, undefined, signal);
+    const missing = new Set<string>();
+    for (const item of all) {
+      try { if (!(await stat(item.cwd)).isDirectory()) missing.add(item.id); }
+      catch (error) { if (['ENOENT','ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '')) missing.add(item.id); }
+    }
+    const candidates = argument ? all : all.filter(item => resolve(item.cwd) === resolve(cwd) || missing.has(item.id));
     const roots = candidates.filter(item => !SessionManager.open(item.path, directory).getEntries().some(entry =>
       entry.type === 'custom' && entry.customType === 'eido.subagent.v1' && (entry.data as {kind?:string})?.kind === 'child'));
     const label = (item: typeof roots[number]) => `${item.name || item.firstMessage.slice(0,80) || 'Untitled'} · ${item.id}`;
@@ -78,13 +84,21 @@ export async function sessionCommand(pi: AgentSession, client: AgentContext, ui:
     if (!target) throw new Error('Task not found in this workspace. Use /resume to select one.');
     if (target.id === pi.sessionId) return 'This task is already open.';
     if ((await pi.extensionRunner.emit({type:'session_before_switch',reason:'resume',targetSessionFile:target.path}))?.cancel) return 'Resume cancelled by extension.';
-    if (resolve(target.cwd) !== resolve(cwd)) {
+    if (missing.has(target.id)) {
+      const choice = await ui?.select(`Task folder is unavailable: ${target.cwd}`, ['Fork into current folder', 'Cancel']);
+      if (choice !== 'Fork into current folder') return 'Resume cancelled.';
+      // A native workspace owns its Project and cwd. Recover through pi's public
+      // fork API so neither the source journal nor another workspace is rebound.
+      name = 'import'; argument = target.path; recovering = true;
+      recoveredName = target.name || target.firstMessage.slice(0,80) || 'Task';
+    } else if (resolve(target.cwd) !== resolve(cwd)) {
       const result = await nativeUiAction(client, pi.sessionId, 'focus_session', {id:target.id}, signal);
       if (result.focused !== true) throw new Error(`Open this task's workspace (${target.cwd}) before resuming it.`);
       return `Switched to task ${target.name || target.id} in its workspace.`;
+    } else {
+      await open(target.id, target.name);
+      return `Opening task ${target.name || target.id}.`;
     }
-    await open(target.id, target.name);
-    return `Opening task ${target.name || target.id}.`;
   }
   let leaf = manager.getLeafId(), draft: string | undefined;
   if (name === 'clone' && argument) throw new Error('Usage: /clone (no arguments).');
@@ -106,7 +120,7 @@ export async function sessionCommand(pi: AgentSession, client: AgentContext, ui:
   }
   const requested = /^(["'])([\s\S]*)\1$/.exec(argument)?.[2] ?? argument;
   if (name === 'import' && !requested) throw new Error('Usage: /import <path.jsonl>.');
-  if (name === 'import' && !await ui?.confirm('Import pi session?', `Open ${requested} as a new task in ${cwd}? The original file is preserved.`)) return 'Import cancelled.';
+  if (name === 'import' && !recovering && !await ui?.confirm('Import pi session?', `Open ${requested} as a new task in ${cwd}? The original file is preserved.`)) return 'Import cancelled.';
   signal?.throwIfAborted();
   await mkdir(directory, {recursive:true});
   const temporary = await mkdtemp(join(directory,'.session-copy-'));
@@ -120,7 +134,7 @@ export async function sessionCommand(pi: AgentSession, client: AgentContext, ui:
       const source = await readFile(sourcePath,'utf8');
       if (Buffer.byteLength(source) > 32 * 1024 * 1024) throw new Error('Import exceeds 32 MB.');
       validateImport(source);
-      if ((await pi.extensionRunner.emit({type:'session_before_switch',reason:'resume',targetSessionFile:sourcePath}))?.cancel) return 'Import cancelled by extension.';
+      if (!recovering && (await pi.extensionRunner.emit({type:'session_before_switch',reason:'resume',targetSessionFile:sourcePath}))?.cancel) return 'Import cancelled by extension.';
       await writeFile(snapshot,source,{mode:0o600});
       createdPath = SessionManager.forkFrom(snapshot,cwd,directory).getSessionFile();
     } else {
@@ -139,7 +153,7 @@ export async function sessionCommand(pi: AgentSession, client: AgentContext, ui:
     if (!createdPath) throw new Error('pi did not create a session journal.');
     await detachHistoricalAgents(createdPath, name === 'import' ? resolve(cwd,requested) : manager.getSessionFile());
     const created = SessionManager.open(createdPath,directory);
-    const id = created.getSessionId(), title = `${name === 'import' ? 'Imported' : name === 'fork' ? 'Fork' : 'Clone'} · ${pi.sessionName || 'Task'}`;
+    const id = created.getSessionId(), title = `${recovering ? 'Recovered' : name === 'import' ? 'Imported' : name === 'fork' ? 'Fork' : 'Clone'} · ${recoveredName || pi.sessionName || 'Task'}`;
     created.appendSessionInfo(title);
     // Once navigation is sent, a timeout cannot prove that the client did not load it.
     // Retain the journal so a cancelled/failed UI request remains recoverable.
