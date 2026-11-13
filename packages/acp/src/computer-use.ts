@@ -12,7 +12,15 @@ const toolDescriptions: Record<string,string> = {
   get_window_state: 'Observe one exact pid/window_id from list_windows. Returns live AX element_token handles, current values, target/route facts and an optional screenshot. Use query to narrow AX content; missing rows in a bounded or incomplete walk do not prove absence. Screenshot coordinates address the returned PNG. Prefer semantic handles for native controls; weak AX requires a usable screenshot and an image-capable model. Each input already returns a fresh post-action observation. Re-observe after an error or before using old handles.',
   set_value: 'Set the whole value of an exact observed native AX control. Use type_text for insertion at the current selection. Web AXValue readback does not establish renderer/DOM acceptance; verify actual content in the returned observation. A successful mutation is not proof of sending or task completion. Never repeat an uncertain send.',
   type_text: 'Insert at the current selection using the observed exact element_token, or x/y to focus an observed pixel control. Native controls use exact AX focus and selected-text insertion. Keyboard fallback stays subject to same-process window ambiguity checks. Web AX readback is not renderer proof; inspect the returned screenshot or use browser DOM tools. Background is the default; foreground briefly activates the target and can disturb user work. delay_ms paces synthesized characters. Cancellation stops the unposted suffix; re-observe partial results before continuing.',
-  click: 'Act on an observed exact element_token or x/y in the returned screenshot PNG. action:focus verifies native AX focus without raising the window; press invokes AXPress. Background coordinates require a valid capture. Use delivery_mode:foreground only as an explicit last resort. Inspect the fresh post-action observation; successful event delivery alone is not proof of its effect.',
+  click: 'Act on an observed exact element_token or x/y in the returned screenshot PNG. action:focus verifies native AX focus; action:select verifies AXSelected on an exact native control without raising the window; press invokes AXPress. Background coordinates require a valid capture. Inspect the fresh post-action observation; successful event delivery alone is not proof of its effect.',
+  press_key: 'Send one key and optional modifiers to the exact observed window/control. Background delivery requires a proven local key window; unsupported shortcuts cannot be fixed by repeating them. Use invoke_menu for application menu commands. The post-action observation verifies state, not task completion.',
+  hotkey: 'Send modifiers followed by one key to an exact observed target. Background shortcuts may be unsupported; use invoke_menu when a native menu command is available. A delivered chord remains unverified until the returned state changes. Never repeat an uncertain paste or send.',
+  invoke_menu: 'Invoke an observed application menu path on the exact window. Prefer this over background menu shortcuts. Inspect the returned state and any new window inventory before entering a dialog.',
+  list_windows: 'List current native windows, optionally restricted to a pid. Select the exact pid/window_id; titles can be duplicated. Refresh after a dialog opens or closes. Listing a window does not authorize input.',
+  scroll: 'Scroll an observed exact element or pixel region. AX scroll requires a supported action; pixel scrolling requires usable visual evidence. Inspect the returned state before continuing.',
+  double_click: 'Double-click an exact observed element or screenshot point. Inspect the returned state; do not reuse consumed screenshot coordinates.',
+  right_click: 'Open the context menu of an exact observed element or screenshot point. Inspect the new menu/window before selecting an item.',
+  drag: 'Drag between points in the current exact-window screenshot. Old coordinates are invalid after a frame change. Inspect the returned state.',
 };
 const propertyDescriptions: Record<string,string> = {
   session:'Eido owns this label and overrides caller values.',
@@ -26,7 +34,8 @@ const propertyDescriptions: Record<string,string> = {
 };
 
 // Preserve every application row and its live handles; omit default menu-bar
-// subtrees and repeated markdown only in the model transcript. Explicit AX
+// subtrees, repeated markdown and duplicate screen-space geometry only in the
+// model transcript. Pixel tools address screenshot_frame. Explicit AX
 // queries retain menu matches. Full structured evidence stays available to UI
 // and Code Mode, including truncation, route refusals and exact-target facts.
 export function compactComputerObservation(data: RecordValue, includeMenus = false) {
@@ -37,6 +46,11 @@ export function compactComputerObservation(data: RecordValue, includeMenus = fal
     if (menuDepth !== undefined && depth <= menuDepth) menuDepth = undefined;
     if (String(element.role).startsWith('AXMenu')) menuDepth ??= depth;
     return includeMenus || menuDepth === undefined;
+  }).map(element => {
+    const {frame, actions, identifier, ...rest} = element;
+    return {...rest, ...(element.screenshot_frame ? {} : frame ? {frame} : {}),
+      ...(Array.isArray(actions) ? {actions: [...new Set(actions)]} : {}),
+      ...(identifier ? {identifier} : {})};
   });
   return {...metadata, elements: rows, model_projection: {omitted_menu_rows: (Array.isArray(elements) ? elements.length : 0) - rows.length,
     detail: 'Application rows retain their original indices and tokens. Use an explicit query to inspect menus. The AX walk may be incomplete; missing rows are not proof of absence.'}};
@@ -61,6 +75,7 @@ export function computerGuidance(session: AgentSession | undefined) {
 
 type Target = {pid: number; window_id: number} | {desktop: true};
 type Observation = {id: string; target: Target; at: number; signature: string; visual: boolean; meaningfulAx: boolean; tokens: Set<string>; capture?: string};
+const observationDefaults = {max_elements: 180, max_depth: 14, max_image_dimension: 1600, timeout_ms: 2500};
 const targetKey = (target: Target) => 'desktop' in target ? 'desktop' : `${target.pid}:${target.window_id}`;
 function explicitTarget(args: RecordValue): Target | undefined {
   const target = record(args.target);
@@ -85,7 +100,8 @@ export function computerUse(handle: McpClientHandle, binding: McpSessionBinding,
   const serial = <T>(work: () => Promise<T>): Promise<T> => {
     const next = queue.then(work, work); queue = next.catch(() => {}); return next;
   };
-  const failure = (message: string): CallToolResult => ({isError: true, content: [notice(message)]});
+  const failure = (message: string, code = 'observation_required'): CallToolResult => ({isError: true, content: [notice(message)],
+    structuredContent: {code, effect: 'refused', delivery: 'not_sent', recovery: {strategy: 'observe_exact_target', retry: 'after_observation'}}});
   const withSession = (name: string, args: RecordValue) => {
     if (!supportsSession.has(name)) return args;
     label ??= `eido-${binding.sessionId}-${randomUUID()}`;
@@ -141,23 +157,61 @@ export function computerUse(handle: McpClientHandle, binding: McpSessionBinding,
     else observations.delete(targetKey(target));
     const guidance = notice(`Eido observation ${obs.id}. ${visual || meaningfulAx ? 'Confirm the exact target/control and verify the outcome after input.' : 'Application content is not observable. Do not guess coordinates, focus or recipients; input is blocked until a usable observation is available.'}`);
     const full: CallToolResult = {...result, structuredContent: {...data, eido_observation: obs.id}, content: [...result.content, guidance]};
-    return {obs, result: result.isError ? full : withMcpModelContent(full, [notice(JSON.stringify(compactComputerObservation(full.structuredContent!, includeMenus))),
-      ...result.content.filter(c => c.type !== 'text'), guidance])};
+    return {obs, result: withMcpModelContent(full, [notice(JSON.stringify(compactComputerObservation(full.structuredContent!, includeMenus))),
+      ...result.content.filter(c => c.type !== 'text'), ...(result.isError ? result.content.filter(c => c.type === 'text').map(c => notice(c.text.slice(0, 1200))) : []), guidance])};
   }
   async function observe(target: Target, signal: AbortSignal, timeout: number, progress?: (p: unknown) => void, requested: RecordValue = {}) {
     observations.delete(targetKey(target));
     const vision = computerVision(binding.getPi());
     const name = 'desktop' in target ? 'get_desktop_state' : 'get_window_state';
-    const args = 'desktop' in target ? {...requested} : {...requested, ...target, include_screenshot: vision.enabled && requested.include_screenshot !== false};
-    const result = await rawCall(name, withSession(name, args), signal, timeout, progress);
+    const args = 'desktop' in target ? {...requested} : {...observationDefaults, ...requested, ...target, include_screenshot: vision.enabled && requested.include_screenshot !== false};
+    let result = await rawCall(name, withSession(name, args), signal, timeout, progress);
+    // AXWindows can lag WindowServer while an app or dialog is materializing.
+    // Retry only this read, once, against the same exact target. Never turn a
+    // weak AX match into permission to act on another window.
+    if (record(record(record(result.structuredContent).background_input).exact_window).status === 'ax_unresolved') {
+      signal.throwIfAborted();
+      result = await rawCall(name, withSession(name, args), signal, timeout, progress);
+    }
     let observed = remember(result, target, typeof requested.query === 'string' && !!requested.query.trim());
     if (!observed.result.isError && !('desktop' in target) && vision.enabled && !observed.obs.visual && !observed.obs.meaningfulAx) {
       // A text-only AX request is insufficient for Qt/canvas UIs. Capture once,
       // without the caller's file-only output or AX filters suppressing pixels.
-      const image = await rawCall(name, withSession(name, {...target, include_screenshot: true, include_accessibility_tree: true}), signal, timeout, progress);
+      const image = await rawCall(name, withSession(name, {...observationDefaults, ...target, include_screenshot: true, include_accessibility_tree: true}), signal, timeout, progress);
       observed = remember(image, target);
     }
     return observed.result;
+  }
+  async function postAction(result: CallToolResult, target: Target, signal: AbortSignal, timeout: number, progress?: (p: unknown) => void) {
+    let after: CallToolResult;
+    try { after = await observe(target, signal, timeout, progress); }
+    catch (error) {
+      if (signal.aborted) throw error;
+      return {...result, isError: true, structuredContent: {...record(result.structuredContent), eido_recovery: {
+        strategy: 'observe_exact_target', retry: 'unsafe_without_verification', observation_error: String(error).slice(0, 500)}},
+        content: [...result.content, notice('The action result is preserved, but its post-action observation failed. Re-observe; do not replay an uncertain input.')]};
+    }
+    const data = record(after.structuredContent);
+    const missing = data.code === 'window_id_not_found' || record(data.screenshot_error).code === 'px_window_not_found';
+    let windows: unknown[] | undefined;
+    if (missing && !('desktop' in target)) {
+      const inventory = await rawCall('list_windows', withSession('list_windows', {pid: target.pid}), signal, timeout, progress);
+      if (!inventory.isError && Array.isArray(record(inventory.structuredContent).windows)) {
+        windows = (record(inventory.structuredContent).windows as unknown[]).filter(w => record(w).pid === target.pid);
+      }
+    }
+    const closed = windows !== undefined && !windows.some(w => record(w).window_id === ('desktop' in target ? undefined : target.window_id));
+    const current = observations.get(targetKey(target));
+    const recovery = {strategy: closed ? 'select_window_then_observe' : result.isError ? 'inspect_fresh_state' : 'verify_outcome',
+      retry: result.isError && record(result.structuredContent).effect === 'refused' ? 'after_observation' : 'unsafe_without_verification',
+      ...(closed ? {target_closed: true, windows} : {})};
+    const guidance = closed ? 'The addressed window closed. Current windows follow; select and observe the intended window before input. The action is not replayed.'
+      : 'Post-action observation follows. Verify the actual outcome; do not repeat an uncertain input.';
+    const full: CallToolResult = {...result, structuredContent: {...record(result.structuredContent), eido_post_observation: after.structuredContent, eido_recovery: recovery},
+      isError: result.isError === true || (!closed && (after.isError === true || !current || !(current.visual || current.meaningfulAx))),
+      content: [...result.content, notice(guidance), ...after.content]};
+    return withMcpModelContent(full, [...result.content, notice(JSON.stringify({...record(result.structuredContent), eido_recovery: recovery})),
+      notice(guidance), ...(getMcpModelContent(after) ?? after.content)]);
   }
   handle.listTools = async (...args) => {
     const listed = await rawList(...args);
@@ -176,18 +230,18 @@ export function computerUse(handle: McpClientHandle, binding: McpSessionBinding,
     const admittedEpoch = epoch;
     return serial(async () => {
     const controller = new AbortController();
-    const signal = AbortSignal.any([outerSignal, controller.signal]);
+    const signal = AbortSignal.any([outerSignal, controller.signal, AbortSignal.timeout(timeout)]);
     signal.throwIfAborted();
     if (admittedEpoch !== epoch) return failure('Input was not sent. The Computer Use turn has ended.');
     if (closing) return failure('Computer Use connection is closing.');
     active.add(controller);
     try {
       const args = {...record(value)};
-      if (name === 'end_session') return end();
+      if (name === 'end_session') return await end();
       if (name === 'get_window_state' || name === 'get_desktop_state') {
         const target = name === 'get_desktop_state' ? {desktop: true as const} : explicitTarget(args);
         if (!target) return failure('Observe an exact pid and window_id from list_windows.');
-        return observe(target, signal, timeout, progress, args);
+        return await observe(target, signal, timeout, progress, args);
       }
       const input = inputTools.has(name);
       let target = explicitTarget(args);
@@ -213,18 +267,11 @@ export function computerUse(handle: McpClientHandle, binding: McpSessionBinding,
         const result = await rawCall(name, withSession(name, args), signal, timeout, progress);
         if (result.isError) {
           observations.clear();
+          if (input && target) return await postAction(result, target, signal, timeout, progress);
           return {...result, content: [...result.content, notice('Stop and re-observe before another input. This action may have partially executed; do not repeat an uncertain send.')]};
         }
         if (target && (input || name === 'bring_to_front')) {
-          const after = await observe(target, signal, timeout, progress);
-          const current = observations.get(targetKey(target));
-          const full: CallToolResult = {...result, structuredContent: {...record(result.structuredContent), eido_post_observation: after.structuredContent},
-            isError: after.isError === true || !current || !(current.visual || current.meaningfulAx), content: [...result.content,
-            notice('Post-action observation follows. Check the target and actual result; successful input delivery alone is not success.'),
-            ...after.content, ...(after.structuredContent ? [notice(JSON.stringify(after.structuredContent))] : [])]};
-          return withMcpModelContent(full, [...result.content, ...(result.structuredContent ? [notice(JSON.stringify(result.structuredContent))] : []),
-            notice('Post-action observation follows. Verify the actual outcome.'), ...(getMcpModelContent(after) ?? [...after.content,
-              ...(after.structuredContent ? [notice(JSON.stringify(after.structuredContent))] : [])])]);
+          return await postAction(result, target, signal, timeout, progress);
         }
         return result;
       } catch (error) {

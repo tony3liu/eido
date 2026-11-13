@@ -445,7 +445,7 @@ impl Tool for TypeTextTool {
             Ok(Ok(outcome)) if outcome.delivered_chars.is_some_and(|n| n < char_count) => {
                 let delivered_chars = outcome.delivered_chars.unwrap_or_default();
                 ToolResult::error(format!(
-                    "type_text incomplete: delivered {delivered_chars} of {char_count} character(s){}; retry only the remaining suffix",
+                    "type_text incomplete: observed {delivered_chars} of {char_count} character(s){}; input may still be queued, inspect the target before retrying",
                     outcome.detail
                 ))
                 .with_structured(serde_json::json!({
@@ -454,8 +454,8 @@ impl Tool for TypeTextTool {
                     "effect": "partial",
                     "requested_chars": char_count,
                     "delivered_chars": delivered_chars,
-                    "retryable": true,
-                    "retry_from_character": delivered_chars,
+                    "retryable": false,
+                    "recovery": "inspect_state_before_retry",
                 }))
             }
             Ok(Ok(outcome)) => {
@@ -914,12 +914,9 @@ fn foreground_settle_ms(pid: i32, frontmost_pid: Option<i32>) -> u64 {
 /// - `after` contains the complete text → `Complete`.
 /// - empty input text → trivially `Complete`.
 ///
-/// Otherwise classify an observable insertion without mistaking a prefix for
-/// complete delivery. A positive length delta is an exact delivered-character
-/// count for insert-at-cursor typing; it is capped at the request size
-/// defensively. Apps that normalize input (smart quotes, autocomplete) may fail
-/// the substring/length test even though something landed — we report it as
-/// unverified rather than erroring, so the agent can still confirm.
+/// Existing text and unrelated value growth do not prove delivery. A partial
+/// count requires an actual prefix of the payload in the changed span. It is
+/// diagnostic evidence, never permission to replay an asynchronous input tail.
 fn typed_progress(before: Option<&str>, after: Option<&str>, text: &str) -> TypedProgress {
     if text.is_empty() {
         return TypedProgress::Complete;
@@ -927,22 +924,35 @@ fn typed_progress(before: Option<&str>, after: Option<&str>, text: &str) -> Type
     let Some(after) = after else {
         return TypedProgress::Unverifiable;
     };
-    if after.contains(text) {
-        return TypedProgress::Complete;
-    }
     let Some(before) = before else {
         return TypedProgress::Unverifiable;
     };
-    let delivered = after
-        .chars()
-        .count()
-        .saturating_sub(before.chars().count())
-        .min(text.chars().count());
-    if delivered == 0 {
-        TypedProgress::Unchanged
-    } else {
-        TypedProgress::Partial(delivered)
+    if before == after {
+        // An AX echo of text that was already present cannot prove that an
+        // insert/selection replacement ran. Avoid falling through to synthesis.
+        return if before.contains(text) { TypedProgress::Unverifiable } else { TypedProgress::Unchanged };
     }
+    if after == text { return TypedProgress::Complete; }
+    if !after.is_empty() && text.starts_with(after) { return TypedProgress::Partial(after.chars().count()); }
+    let prefix = before.chars().zip(after.chars()).take_while(|(a,b)| a == b).map(|(a,_)| a.len_utf8()).sum::<usize>();
+    // Detect an insertion at any UTF-8 boundary, including repeated characters
+    // where the longest common prefix alone would hide the inserted payload.
+    for index in before.char_indices().map(|(i, _)| i).chain(std::iter::once(before.len()))
+        .filter(|&i| i <= prefix && i >= prefix.saturating_sub(text.len())) {
+        if let Some(inserted) = after.strip_prefix(&before[..index]).and_then(|rest| rest.strip_suffix(&before[index..])) {
+            if inserted == text { return TypedProgress::Complete; }
+            if !inserted.is_empty() && text.starts_with(inserted) {
+                return TypedProgress::Partial(inserted.chars().count());
+            }
+        }
+    }
+    // A selection replacement can shorten the value. Compare the changed span
+    // rather than treating a saturating length delta as zero delivered chars.
+    let suffix = before[prefix..].chars().rev().zip(after[prefix..].chars().rev()).take_while(|(a,b)| a == b).map(|(a,_)| a.len_utf8()).sum::<usize>();
+    let changed = &after[prefix..after.len()-suffix];
+    if changed == text { TypedProgress::Complete }
+    else if !changed.is_empty() && text.starts_with(changed) { TypedProgress::Partial(changed.chars().count()) }
+    else { TypedProgress::Unverifiable }
 }
 
 /// Read the focused/target field's `AXValue`, for before/after read-back.
@@ -1117,7 +1127,17 @@ fn cgevent_type_verified(
     // it rather than being clobbered by it. Re-applying once on a failed
     // read-back covers apps that install their responder slightly late.
     if let Some((ptr, _)) = element_ptr_and_idx {
-        let _ = crate::input::ax_actions::focus_element(ptr);
+        if let Some(wid) = window_id {
+            if !target_in_web_area(pid, element_ptr_and_idx, window_id) {
+                crate::ax::exact_target::focus_native_element(pid, wid, ptr)?;
+            } else {
+                crate::input::ax_actions::focus_element(ptr)?;
+                anyhow::ensure!(crate::input::ax_actions::is_element_focused(pid, ptr), "the addressed text control did not acquire focus; no keyboard input was sent");
+            }
+        } else {
+            crate::input::ax_actions::focus_element(ptr)?;
+            anyhow::ensure!(crate::input::ax_actions::is_element_focused(pid, ptr), "the addressed text control did not acquire focus; no keyboard input was sent");
+        }
         if settle_ms > 0 && !crate::input::ax_actions::is_element_focused(pid, ptr) {
             std::thread::sleep(FOCUS_REAPPLY_DELAY);
             let _ = crate::input::ax_actions::focus_element(ptr);
@@ -1444,6 +1464,14 @@ fn type_text_blocking(
             None => AxAttempt::Rejected,
             Some(TypedProgress::Complete | TypedProgress::Partial(_)) => unreachable!(),
         };
+        if ax_attempt == AxAttempt::Unverifiable {
+            return Ok(TypeTextDelivery::Typed(TypeTextOutcome {
+                detail: format!(" via AX write into {role} \"{title}\"; read-back is indeterminate, no keyboard replay"),
+                path: PATH_AX,
+                verified: false,
+                delivered_chars: None,
+            }));
+        }
         tracing::debug!(
             "AX write did not land for {role} \"{title}\" (err={err}); \
              falling back to CGEvent keystrokes"
@@ -1564,7 +1592,7 @@ mod tests {
     fn large_atomic_ax_payloads_are_not_subject_to_the_synthesis_budget() {
         assert!(synthesis_preflight(TextDeliveryRoute::AtomicAx, 100_000, 200).is_none());
         assert_eq!(
-            typed_progress(None, Some(&"x".repeat(11_500)), &"x".repeat(11_500)),
+            typed_progress(Some(""), Some(&"x".repeat(11_500)), &"x".repeat(11_500)),
             TypedProgress::Complete,
             "a successful one-call AX insertion remains eligible regardless of size"
         );
@@ -1604,7 +1632,12 @@ mod tests {
             (Some(""), None, "hi", Unverifiable),
             (None, Some("h"), "hi", Unverifiable),
             (Some(""), Some("hi"), "hi", Complete),
-            (Some("ab"), Some("ab hi"), "hi", Complete),
+            (Some("ab "), Some("ab hi"), "hi", Complete),
+            (Some("already hi"), Some("already hi"), "hi", Unverifiable),
+            (Some("ab"), Some("ab unrelated"), "hi", Unverifiable),
+            (Some("long selection"), Some("can"), "cancelled", Partial(3)),
+            (Some("long selection"), Some("hi"), "hi", Complete),
+            (Some("fo"), Some("foo"), "o", Complete),
             // An observable prefix is partial delivery, never completion.
             (
                 Some(""),

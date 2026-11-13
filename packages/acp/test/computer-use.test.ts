@@ -87,6 +87,50 @@ test('text-only, image-blocked and changed models cannot use old visual evidence
   await f.computer.finishTurn();
 });
 
+test('a refused action refreshes evidence without replaying input and auto observations stay bounded',async()=>{
+  const f=await fixture();f.rich(true);
+  const old=await f.observe();f.fail('click');
+  const result=await f.call('click',{pid:7,window_id:10,element_token:(old.structuredContent!.elements as {element_token?:string}[])[1]!.element_token});
+  assert.equal(result.isError,true);
+  assert.notEqual(observationId(result),observationId(old));
+  assert.equal(f.calls.filter(c=>c.name==='click').length,1);
+  assert.equal((await f.call('type_text',{pid:7,window_id:10,text:'No stale replay',eido_observation:observationId(old)})).isError,true);
+  const post=f.calls.filter(c=>c.name==='get_window_state').at(-1)!.args;
+  assert.equal(post.max_elements,180);assert.equal(post.max_depth,14);assert.equal(post.timeout_ms,2500);
+  await f.computer.finishTurn();
+});
+
+test('dialog closure returns exact process inventory without guessing or authorizing the next window',async()=>{
+  let closed=false;const calls:string[]=[];
+  const pi={model:{provider:'fixture',id:'vision',input:['text','image']},settingsManager:{getBlockImages:()=>false}} as unknown as AgentSession;
+  const raw:McpClientHandle={async listTools(){return {tools:['get_window_state','click','list_windows'].map(name=>({name,inputSchema:{type:'object',properties:{session:{type:'string'}}}}))};},
+    async callTool(name,args){calls.push(name);if(name==='click'){closed=true;return {content:[{type:'text',text:'AXPress attempted'}],structuredContent:{effect:'unverifiable'}};}
+      if(name==='list_windows')return {content:[],structuredContent:{windows:[{pid:7,window_id:11},{pid:8,window_id:12}]}};
+      if(name==='get_window_state'&&closed)return {isError:true,content:[{type:'text',text:'Window closed'}],structuredContent:{pid:7,window_id:10,code:'window_id_not_found'}};
+      return {content:[{type:'image',mimeType:'image/png',data:png}],structuredContent:{pid:7,window_id:10,capture_id:'dialog-frame',elements:[]}};},async close(){}};
+  const c=computerUse(raw,{sessionId:'dialog',getPi:()=>pi} as McpSessionBinding);
+  const signal=new AbortController().signal;await raw.listTools(undefined,signal,1000);
+  const obs=await raw.callTool('get_window_state',{pid:7,window_id:10},signal,1000);
+  const result=await raw.callTool('click',{pid:7,window_id:10,x:1,y:1,eido_observation:observationId(obs)},signal,1000);
+  assert.notEqual(result.isError,true,'a verified closed dialog is a transition, not a failed AXPress');
+  assert.deepEqual((result.structuredContent!.eido_recovery as any).windows,[{pid:7,window_id:11}]);
+  assert.equal((result.structuredContent!.eido_recovery as any).target_closed,true);
+  assert.equal((await raw.callTool('click',{pid:7,window_id:11,x:1,y:1,eido_observation:observationId(obs)},signal,1000)).isError,true);
+  assert.equal(calls.filter(n=>n==='click').length,1);await c.finishTurn();
+});
+
+test('turn cancellation remains active while post-action observation is pending',async()=>{
+  let observations=0,ready:()=>void=()=>{};const waiting=new Promise<void>(resolve=>{ready=resolve;});
+  const pi={model:{provider:'fixture',id:'vision',input:['text','image']},settingsManager:{getBlockImages:()=>false}} as unknown as AgentSession;
+  const raw:McpClientHandle={async listTools(){return {tools:['get_window_state','click'].map(name=>({name,inputSchema:{type:'object',properties:{session:{type:'string'}}}}))};},
+    async callTool(name,_args,signal){if(name==='get_window_state'&&++observations>1){ready();await new Promise<void>((_resolve,reject)=>signal.addEventListener('abort',()=>reject(signal.reason),{once:true}));}
+      return name==='get_window_state'?{content:[{type:'image',mimeType:'image/png',data:png}],structuredContent:{pid:7,window_id:10,capture_id:'frame',elements:[]}}:{content:[]};},async close(){}};
+  const c=computerUse(raw,{sessionId:'cancel-post',getPi:()=>pi} as McpSessionBinding);const signal=new AbortController().signal;
+  await raw.listTools(undefined,signal,5000);const obs=await raw.callTool('get_window_state',{pid:7,window_id:10},signal,5000);
+  const action=raw.callTool('click',{pid:7,window_id:10,x:1,y:1,eido_observation:observationId(obs)},signal,5000).catch(e=>e);
+  await waiting;await c.finishTurn();assert.ok(await action instanceof Error);
+});
+
 test('model observations omit default menu trees and duplicates while UI and explicit queries retain evidence',async()=>{
   const f=await fixture();f.rich(true);f.menuOnly();
   const observed=await f.observe();

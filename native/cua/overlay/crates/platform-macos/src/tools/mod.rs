@@ -349,8 +349,23 @@ pub(crate) async fn focus_by_pixel(
         // whenever the click was a silent no-op — advancing on transport
         // success alone, which is exactly what the ladder forbids. Confirm the
         // focus actually moved before claiming this rung worked.
-        if !foreground || pixel_focus_landed(pid, window_id, x, y).await {
+        if pixel_focus_landed(pid, window_id, x, y).await {
             return Ok(());
+        }
+        if !foreground {
+            let editable = tokio::task::spawn_blocking(move || unsafe {
+                let Some(wid) = window_id else { return true; };
+                let Some(focused) = crate::ax::exact_target::focused_element_in_window(pid, wid) else { return false; };
+                let role = crate::ax::bindings::copy_string_attr(focused, "AXRole");
+                core_foundation::base::CFRelease(focused as _);
+                matches!(role.as_deref(), Some("AXTextField" | "AXTextArea" | "AXComboBox"))
+            }).await.unwrap_or(true);
+            // Keep the exact-window gate for weak-AX canvases. An observable
+            // text control elsewhere proves this focus click missed its field.
+            if !editable { return Ok(()); }
+            return Err(cua_driver_core::protocol::ToolResult::error(
+                "The focus click did not confirm the requested text control. No text/key was sent; inspect fresh state before continuing."
+            ).with_structured(serde_json::json!({"code":"pixel_focus_unconfirmed","effect":"unverifiable","keyboard_sent":false,"retryable":false})));
         }
     } else if !foreground {
         return Err(cua_driver_core::protocol::ToolResult::error(format!(
@@ -404,7 +419,7 @@ pub(crate) async fn focus_by_pixel(
 /// conservative direction: an unprovable focus escalates to the stronger rung
 /// rather than being reported as success.
 async fn pixel_focus_landed(pid: i32, window_id: Option<u32>, x: f64, y: f64) -> bool {
-    focused_element_holds_point(pid, window_id, x, y, false).await
+    focused_element_holds_point(pid, window_id, x, y, true).await
 }
 
 /// Whether the application's focused element covers the window-local pixel

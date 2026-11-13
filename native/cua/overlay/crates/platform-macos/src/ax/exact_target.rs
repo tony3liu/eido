@@ -25,6 +25,47 @@ const MAX_ANCESTRY_DEPTH: usize = 40;
 /// Bounded sheet chain followed when mapping a sheet to its parent window.
 const MAX_SHEET_NESTING: usize = 8;
 
+/// Select one exact native control without pixel hit-testing or activation.
+/// Rejected or ignored writes never fall through to physical input.
+pub fn select_native_element(pid: i32, window_id: u32, element_ptr: usize) -> anyhow::Result<()> {
+    unsafe {
+        let element = element_ptr as AXUIElementRef;
+        anyhow::ensure!(element_window_id(element) == Some(window_id), "selection target is outside the requested window");
+        anyhow::ensure!(!crate::tools::type_text::target_in_web_area(pid, Some((element_ptr, None)), Some(window_id)), "native selection cannot verify web renderer selection");
+        anyhow::ensure!(copy_bool_attr(element, "AXSelected").is_some(), "target does not expose AXSelected");
+        cua_driver_core::input_cancellation::check()?;
+        let mut error = super::bindings::set_bool_attr_true(element, "AXSelected");
+        // Some native tables expose selection on their container rather than
+        // as a writable property of each cell. Address only the proven parent
+        // of this exact element; never search by label or choose another row.
+        if error == super::bindings::kAXErrorAttributeUnsupported
+            || error == super::bindings::kAXErrorSuccess && copy_bool_attr(element, "AXSelected") != Some(true) {
+            if let Some(parent) = copy_element_attr(element, "AXParent") {
+                let parent_guard = RetainedElement::retain(parent as usize);
+                CFRelease(parent as CFTypeRef);
+                let parent = parent_guard.as_ptr() as AXUIElementRef;
+                if element_window_id(parent) == Some(window_id)
+                    && matches!(copy_string_attr(parent, "AXRole").as_deref(), Some("AXTable" | "AXList" | "AXOutline")) {
+                    use core_foundation::{array::CFArray, base::{CFType, TCFType}, string::CFString};
+                    let child = CFType::wrap_under_get_rule(element as CFTypeRef);
+                    let children = CFArray::from_CFTypes(&[child]);
+                    let attribute = CFString::new("AXSelectedChildren");
+                    error = super::bindings::AXUIElementSetAttributeValue(parent, attribute.as_concrete_TypeRef(), children.as_CFTypeRef());
+                }
+            }
+        }
+        anyhow::ensure!(error == super::bindings::kAXErrorSuccess, "AXSelected write failed: {error}");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(200);
+        loop {
+            cua_driver_core::input_cancellation::check()?;
+            anyhow::ensure!(element_window_id(element) == Some(window_id), "selection target changed windows");
+            if copy_bool_attr(element, "AXSelected") == Some(true) { return Ok(()); }
+            anyhow::ensure!(std::time::Instant::now() < deadline, "AX selection was not confirmed on the exact target");
+            cua_driver_core::input_cancellation::wait(std::time::Duration::from_millis(10));
+        }
+    }
+}
+
 /// Focus an exact native control and verify its own focus or its field editor.
 /// No application activation, window raise, or PID keyboard permission follows
 /// from this semantic write. Web renderer focus must use a different route.
