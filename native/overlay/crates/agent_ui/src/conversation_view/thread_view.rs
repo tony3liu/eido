@@ -578,7 +578,7 @@ pub struct ThreadView {
     pub parent_session_id: Option<acp::SessionId>,
     pub thread: Entity<AcpThread>,
     eido_recipient: Option<WeakEntity<ThreadView>>,
-    pub eido_delivery_status: Option<SharedString>,
+    pub eido_delivery_status: Option<eido_i18n::UiMessage>,
     pub(crate) conversation: Entity<super::Conversation>,
     pub server_view: WeakEntity<ConversationView>,
     pub agent_icon: IconName,
@@ -632,12 +632,14 @@ pub struct ThreadView {
     _sandbox_status_refresh_task: Option<Task<()>>,
     pub hovered_edited_file_buttons: Option<usize>,
     pub in_flight_prompt: Option<Vec<acp::ContentBlock>>,
+    in_flight_documents: Vec<crate::eido_document::DocumentDescriptor>,
     pub _subscriptions: Vec<Subscription>,
     pub message_editor: Entity<MessageEditor>,
     eido_verification: crate::eido_verification::State,
     pub(crate) eido_pi_ui: crate::eido_pi_ui::PiUiState,
     eido_editor_instance: String,
     eido_editor_revision: u64,
+    eido_locale_revision: u64,
     eido_last_editor_text: Option<String>,
     eido_ui_columns: usize,
     eido_last_ui_columns: usize,
@@ -822,6 +824,10 @@ impl ThreadView {
     ) -> Self {
         crate::eido_access::init(cx);
         subscriptions.push(cx.observe_global::<crate::eido_access::EidoAccess>(|_, cx| cx.notify()));
+        subscriptions.push(cx.observe_global_in::<eido_i18n::LocaleState>(window, |this, window, cx| {
+            this.eido_refresh_language(window, cx);
+            cx.notify();
+        }));
         let session_id = thread.read(cx).session_id().clone();
         let parent_session_id = thread.read(cx).parent_session_id().cloned();
 
@@ -832,7 +838,7 @@ impl ThreadView {
 
         let has_slash_completions = session_capabilities.read().has_slash_completions();
         let placeholder = if std::env::var_os("EIDO_ROOT").is_some() {
-            "Describe a task, or use @ to reference code…".to_string()
+            eido_i18n::tr(cx, "composer.placeholder").to_string()
         } else {
             placeholder_text(agent_display_name.as_ref(), has_slash_completions)
         };
@@ -1088,11 +1094,13 @@ impl ThreadView {
             _sandbox_status_refresh_task: None,
             hovered_edited_file_buttons: None,
             in_flight_prompt: None,
+            in_flight_documents: Vec::new(),
             message_editor,
             eido_pi_ui: Default::default(),
             eido_verification: Default::default(),
             eido_editor_instance: uuid::Uuid::new_v4().to_string(),
             eido_editor_revision: 0,
+            eido_locale_revision: u64::MAX,
             eido_last_editor_text: None,
             eido_ui_columns: 80,
             eido_last_ui_columns: 0,
@@ -1269,7 +1277,7 @@ impl ThreadView {
         &self,
         message_editor: &Entity<MessageEditor>,
         cx: &mut App,
-    ) -> Task<Result<(Vec<acp::ContentBlock>, Vec<Entity<Buffer>>)>> {
+    ) -> Task<Result<crate::message_editor::MessageContents>> {
         let expand = self.as_native_thread(cx).is_some_and(|thread| {
             let thread = thread.read(cx);
             AgentSettings::get_global(cx)
@@ -1313,6 +1321,16 @@ impl ThreadView {
             editor
         } else {
             self.message_editor.clone()
+        }
+    }
+
+    fn eido_refresh_language(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let revision = cx.try_global::<eido_i18n::LocaleState>().map(|locale| locale.revision).unwrap_or(0);
+        if self.eido_locale_revision == revision { return; }
+        self.eido_locale_revision = revision;
+        if std::env::var_os("EIDO_ROOT").is_some() {
+            let placeholder = eido_i18n::tr(cx, "composer.placeholder");
+            self.message_editor.update(cx, |editor, cx| editor.set_placeholder_text(&placeholder, window, cx));
         }
     }
 
@@ -1597,7 +1615,7 @@ impl ThreadView {
                         }
                         Err(error) => {
                             for id in ids { this.eido_delivery_settled(id, false, cx); }
-                            this.eido_delivery_status = Some(format!("Check agent history before resending: {error}").into());
+                            this.eido_delivery_status = Some(eido_i18n::UiMessage::Key("composer.check_delivery_history", vec![("error", error.to_string())]));
                             cx.notify();
                         }
                     }
@@ -1628,12 +1646,12 @@ impl ThreadView {
         let is_command = snapshot.trim_start().starts_with('/');
         let contents = self.resolve_message_contents(&editor, cx);
         self.is_loading_contents = true;
-        self.eido_delivery_status = Some(format!("Sending to {target}…").into());
+        self.eido_delivery_status = Some(eido_i18n::UiMessage::Key("composer.sending_target", vec![("target", target.to_string())]));
         cx.notify();
         cx.spawn_in(window, async move |this, cx| {
             let mut delivery_id = None;
             let result: Result<()> = async {
-                let (content, tracked_buffers) = contents.await?;
+                let (content, tracked_buffers, _documents) = contents.await?;
                 if content.is_empty() { return Ok(()); }
                 let (id, queue_id, persisted) = recipient.update_in(cx, |recipient, window, cx| {
                     recipient.add_to_queue(content.clone(), tracked_buffers, window, cx);
@@ -1670,7 +1688,7 @@ impl ThreadView {
                 this.update_in(cx, |this, window, cx| {
                     if editor.read(cx).text(cx) == snapshot { editor.update(cx, |editor, cx| editor.clear(window, cx)); }
                     this.eido_recipient = None;
-                    this.eido_delivery_status = is_command.then(|| format!("Command queued first for {target}").into());
+                    this.eido_delivery_status = is_command.then(|| eido_i18n::UiMessage::Key("composer.command_queued", vec![("target", target.to_string())]));
                 })?;
                 Ok(())
             }.await;
@@ -1679,7 +1697,7 @@ impl ThreadView {
             }
             this.update(cx, |this, cx| {
                 this.is_loading_contents = false;
-                if let Err(error) = result { this.eido_delivery_status = Some(format!("Message not delivered: {error}").into()); }
+                if let Err(error) = result { this.eido_delivery_status = Some(eido_i18n::UiMessage::Key("composer.not_delivered", vec![("error", error.to_string())])); }
                 cx.notify();
             }).ok();
         }).detach();
@@ -1694,26 +1712,26 @@ impl ThreadView {
                 self.is_loading_contents = true;
                 cx.spawn_in(window, async move |this, cx| {
                     let result: Result<()> = async {
-                        let (content, tracked_buffers) = contents.await?;
+                        let (content, tracked_buffers, documents) = contents.await?;
                         if content.is_empty() { return Ok(()); }
                         recipient.update_in(cx, |recipient, window, cx| {
                             recipient.message_queue.resume();
                             if recipient.eido_is_generating(cx) {
                                 recipient.add_to_queue(content, tracked_buffers, window, cx);
                             } else {
-                                recipient.send_content(Task::ready(Ok(Some((content, tracked_buffers)))), false, window, cx);
+                                recipient.send_content(Task::ready(Ok(Some((content, tracked_buffers, documents)))), false, window, cx);
                             }
                         })?;
                         this.update_in(cx, |this, window, cx| {
                             if editor.read(cx).text(cx) == snapshot { editor.update(cx, |editor, cx| editor.clear(window, cx)); }
                             this.eido_recipient = None;
-                            this.eido_delivery_status = Some("Message submitted to selected agent".into());
+                            this.eido_delivery_status = Some(eido_i18n::UiMessage::Key("composer.delivered", vec![]));
                         })?;
                         Ok(())
                     }.await;
                     this.update(cx, |this, cx| {
                         this.is_loading_contents = false;
-                        if let Err(error) = result { this.eido_delivery_status = Some(format!("Message not delivered: {error}").into()); }
+                        if let Err(error) = result { this.eido_delivery_status = Some(eido_i18n::UiMessage::Key("composer.not_delivered", vec![("error", error.to_string())])); }
                         cx.notify();
                     }).ok();
                 }).detach();
@@ -1815,7 +1833,7 @@ impl ThreadView {
         self.editing_message.take();
 
         cx.spawn_in(window, async move |this, cx| {
-            let (mut content, tracked_buffers) = contents.await?;
+            let (mut content, tracked_buffers, _documents) = contents.await?;
 
             cx.update(|window, cx| {
                 message_editor.update(cx, |message_editor, cx| {
@@ -1846,7 +1864,7 @@ impl ThreadView {
                     this.add_to_queue(content, tracked_buffers, window, cx);
                 }
                 this.send_content(
-                    Task::ready(Ok(Some((vec![command_block], Vec::new())))),
+                    Task::ready(Ok(Some((vec![command_block], Vec::new(), Vec::new())))),
                     true,
                     window,
                     cx,
@@ -1881,7 +1899,7 @@ impl ThreadView {
         }
 
         let contents_task = cx.spawn_in(window, async move |_this, cx| {
-            let (contents, tracked_buffers) = contents.await?;
+            let (contents, tracked_buffers, documents) = contents.await?;
 
             if contents.is_empty() {
                 return Ok(None);
@@ -1893,7 +1911,7 @@ impl ThreadView {
                 });
             });
 
-            Ok(Some((contents, tracked_buffers)))
+            Ok(Some((contents, tracked_buffers, documents)))
         });
 
         self.send_content(contents_task, false, window, cx);
@@ -1901,7 +1919,7 @@ impl ThreadView {
 
     pub fn send_content(
         &mut self,
-        contents_task: Task<anyhow::Result<Option<(Vec<acp::ContentBlock>, Vec<Entity<Buffer>>)>>>,
+        contents_task: Task<anyhow::Result<Option<crate::message_editor::MessageContents>>>,
         is_native_command: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -1911,7 +1929,7 @@ impl ThreadView {
 
     fn eido_send_content(
         &mut self,
-        contents_task: Task<anyhow::Result<Option<(Vec<acp::ContentBlock>, Vec<Entity<Buffer>>)>>>,
+        contents_task: Task<anyhow::Result<Option<crate::message_editor::MessageContents>>>,
         is_native_command: bool,
         delivery_id: Option<String>,
         window: &mut Window,
@@ -1938,7 +1956,7 @@ impl ThreadView {
 
         let sending_id = delivery_id.clone();
         let task = cx.spawn_in(window, async move |this, cx| {
-            let Some((contents, tracked_buffers)) = contents_task.await? else {
+            let Some((contents, tracked_buffers, documents)) = contents_task.await? else {
                 return Ok(true);
             };
 
@@ -1946,6 +1964,7 @@ impl ThreadView {
                 this.clear_external_source_prompt_warning(cx);
                 let generation = this.start_turn(cx);
                 this.in_flight_prompt = Some(contents.clone());
+                this.in_flight_documents = documents;
                 generation
             })?;
 
@@ -2027,7 +2046,7 @@ impl ThreadView {
             let turn_time_ms = turn_start_time.elapsed().as_millis();
             drop(_stop_turn);
             let status = if res.is_ok() {
-                let _ = this.update(cx, |this, _| this.in_flight_prompt.take());
+                let _ = this.update(cx, |this, _| {this.in_flight_documents.clear();this.in_flight_prompt.take()});
                 "success"
             } else {
                 "failure"
@@ -2290,16 +2309,16 @@ impl ThreadView {
                 this.update_in(cx, |this, window, cx| {
                     this.is_loading_contents = false;
                     match result {
-                        Ok((content, buffers)) if !content.is_empty() => {
+                        Ok((content, buffers, documents)) if !content.is_empty() => {
                             this.cancel_editing(&Default::default(), window, cx);
                             cx.emit(AcpThreadViewEvent::Interacted);
                             if this.eido_is_generating(cx) {
                                 this.add_to_queue(content, buffers, window, cx);
                             } else {
-                                this.send_content(Task::ready(Ok(Some((content, buffers)))), false, window, cx);
+                                this.send_content(Task::ready(Ok(Some((content, buffers, documents)))), false, window, cx);
                             }
                         }
-                        Err(error) => this.eido_delivery_status = Some(format!("Message not sent: {error}").into()),
+                        Err(error) => this.eido_delivery_status = Some(eido_i18n::UiMessage::Key("composer.not_sent", vec![("error", error.to_string())])),
                         _ => {}
                     }
                     cx.notify();
@@ -2381,7 +2400,7 @@ impl ThreadView {
         let contents = self.resolve_message_contents(&message_editor, cx);
 
         cx.spawn_in(window, async move |this, cx| {
-            let (content, tracked_buffers) = contents.await?;
+            let (content, tracked_buffers, _documents) = contents.await?;
 
             if content.is_empty() {
                 return Ok::<(), anyhow::Error>(());
@@ -2414,7 +2433,7 @@ impl ThreadView {
         cx.spawn(async move |this, cx| {
             if let Err(error) = observer.await {
                 this.update(cx, |this, cx| {
-                    this.eido_delivery_status = Some(format!("Queue could not be saved: {error}").into());
+                    this.eido_delivery_status = Some(eido_i18n::UiMessage::Key("composer.queue_save_error", vec![("error", error.to_string())]));
                     this.message_queue.pause();
                     cx.notify();
                 }).ok();
@@ -2429,7 +2448,7 @@ impl ThreadView {
         let saved = match crate::eido_queue::read(&key, cx) {
             Ok(saved) => saved,
             Err(error) => {
-                self.eido_delivery_status = Some(format!("Queue could not be restored: {error}").into());
+                self.eido_delivery_status = Some(eido_i18n::UiMessage::Key("composer.queue_restore_error", vec![("error", error.to_string())]));
                 return;
             }
         };
@@ -2457,7 +2476,7 @@ impl ThreadView {
                     this.update(cx, |this, cx| {
                         match result {
                             Ok(result) => { this.message_queue.reconcile(&result); let _ = this.eido_persist_queue(cx); }
-                            Err(error) => { this.eido_delivery_status = Some(format!("Check agent history before resending: {error}").into()); }
+                            Err(error) => { this.eido_delivery_status = Some(eido_i18n::UiMessage::Key("composer.check_delivery_history", vec![("error", error.to_string())])); }
                         }
                         cx.notify();
                     }).ok();
@@ -2502,6 +2521,7 @@ impl ThreadView {
                 this.handle_queue_editor_event(id, event, window, cx);
             });
 
+        let document_selections=editor.update(cx,|editor,cx|editor.take_document_selections(cx));
         self.message_queue.enqueue(QueueEntry {
             id,
             content,
@@ -2509,6 +2529,7 @@ impl ThreadView {
             needs_review: false,
             boundary: false,
             tracked_buffers,
+            document_selections,
             steer: false,
             editor,
             _subscription: subscription,
@@ -2559,12 +2580,14 @@ impl ThreadView {
             .update(cx, |editor, cx| editor.contents(false, cx));
 
         cx.spawn(async move |this, cx| {
-            let (content, tracked_buffers) = contents_task.await?;
+            let (content, tracked_buffers, _documents) = contents_task.await?;
 
             this.update(cx, |this, cx| {
                 if let Some(entry) = this.message_queue.entry_by_id_mut(id) {
                     entry.content = content;
                     entry.tracked_buffers = tracked_buffers;
+                    entry.document_selections = _documents;
+                    let _=entry.editor.update(cx,|editor,cx|editor.take_document_selections(cx));
                 }
                 let _ = this.eido_persist_queue(cx);
                 cx.notify();
@@ -2643,6 +2666,7 @@ impl ThreadView {
         let delivery_id = entry.delivery_id.clone();
         let content = entry.content.clone();
         let tracked_buffers = entry.tracked_buffers.clone();
+        let documents=entry.document_selections.clone();
         self.message_queue.begin_delivery(entry);
         let persisted = self.eido_persist_queue(cx);
         self.sync_queue_flag_to_native_thread(cx);
@@ -2683,7 +2707,7 @@ impl ThreadView {
                     .ok();
             }
 
-            Ok(Some((content, tracked_buffers)))
+            Ok(Some((content, tracked_buffers, documents)))
         });
 
         self.eido_send_content(contents_task, is_native_command, Some(delivery_id), window, cx);
@@ -3444,7 +3468,7 @@ impl ThreadView {
                     .dismiss_action(
                         IconButton::new("dismiss-refusal-fallback", IconName::Close)
                             .icon_size(IconSize::Small)
-                            .tooltip(Tooltip::text("Dismiss"))
+                            .tooltip(Tooltip::text(eido_i18n::tr(cx, "review.dismiss")))
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.thread_retry_status = None;
                                 cx.notify();
@@ -3532,7 +3556,11 @@ impl ThreadView {
         let edits_expanded = self.edits_expanded;
         let queue_expanded = self.queue_expanded;
 
-        let max_content_width = AgentSettings::get_global(cx).max_content_width;
+        let max_content_width = if std::env::var_os("EIDO_ROOT").is_some() {
+            Some(self.eido_content_width(cx))
+        } else {
+            AgentSettings::get_global(cx).max_content_width
+        };
         // Drop shadows have no opaque surface to blend into on a transparent
         // window, so they render as a dark halo; only apply them when opaque.
         let opaque_window =
@@ -3549,12 +3577,14 @@ impl ThreadView {
                     .flex_shrink_1()
                     .flex_grow_0()
                     .max_w_full()
-                    .bg(self.activity_bar_bg(cx))
-                    .border_1()
-                    .border_b_0()
-                    .border_color(cx.theme().colors().border)
-                    .rounded_t_md()
-                    .when(opaque_window, |this| {
+                    .bg(if std::env::var_os("EIDO_ROOT").is_some() { cx.theme().colors().editor_background } else { self.activity_bar_bg(cx) })
+                    .when(std::env::var_os("EIDO_ROOT").is_some(), |this| {
+                        this.border_t_1().border_color(cx.theme().colors().border_variant)
+                    })
+                    .when(std::env::var_os("EIDO_ROOT").is_none(), |this| {
+                        this.border_1().border_b_0().border_color(cx.theme().colors().border).rounded_t_md()
+                    })
+                    .when(opaque_window && std::env::var_os("EIDO_ROOT").is_none(), |this| {
                         this.shadow(vec![
                             gpui::BoxShadow::new(px(1.), px(-1.), gpui::black().opacity(0.12))
                                 .blur_radius(px(2.)),
@@ -3792,7 +3822,7 @@ impl ThreadView {
                 cx.notify();
             }))
             .child(
-                Button::new("review", "Review")
+                Button::new("review", eido_i18n::tr(cx, "review.review"))
                     .label_size(LabelSize::Small)
                     .on_click({
                         let buffer = buffer.clone();
@@ -3802,7 +3832,7 @@ impl ThreadView {
                     }),
             )
             .child(
-                Button::new(("reject-file", index), "Reject")
+                Button::new(("reject-file", index), eido_i18n::tr(cx, "review.reject"))
                     .label_size(LabelSize::Small)
                     .disabled(pending_edits || reason.is_some())
                     .when_some(reason, |this, reason| this.tooltip(Tooltip::text(reason)))
@@ -3912,7 +3942,7 @@ impl ThreadView {
                         .border_b_1()
                         .border_color(cx.theme().colors().border)
                         .child(
-                            Label::new("Subagents Awaiting Permission:")
+                            Label::new(eido_i18n::tr(cx, "task.awaiting_permission"))
                                 .size(LabelSize::Small)
                                 .color(Color::Muted),
                         )
@@ -3956,7 +3986,7 @@ impl ThreadView {
                                 )
                                 .child(
                                     div().visible_on_hover(&group).child(
-                                        Label::new("Scroll to Subagent")
+                                        Label::new(eido_i18n::tr(cx, "task.scroll_subagent"))
                                             .size(LabelSize::Small)
                                             .color(Color::Muted)
                                             .truncate(),
@@ -4039,7 +4069,7 @@ impl ThreadView {
                     .child(Label::new(label).size(LabelSize::Small).color(Color::Muted)),
             )
             .child(
-                Button::new("main-agent-permission-scroll-to", "Scroll")
+                Button::new("main-agent-permission-scroll-to", eido_i18n::tr(cx, "task.scroll"))
                     .label_size(LabelSize::Small)
                     .end_icon(
                         Icon::new(scroll_icon)
@@ -4064,11 +4094,7 @@ impl ThreadView {
         cx: &Context<Self>,
     ) -> impl IntoElement {
         let queue_count = self.message_queue.len();
-        let title: SharedString = if queue_count == 1 {
-            "1 Queued Message".into()
-        } else {
-            format!("{} Queued Messages", queue_count).into()
-        };
+        let title: SharedString = eido_i18n::tr_args(cx, "composer.queue_count", &[("count", queue_count.to_string())]);
 
         h_flex()
             .p_1()
@@ -4090,7 +4116,7 @@ impl ThreadView {
                     })),
             )
             .child(
-                Button::new("clear_queue", "Clear All")
+                Button::new("clear_queue", eido_i18n::tr(cx, "task.clear_all"))
                     .label_size(LabelSize::Small)
                     .key_binding(
                         KeyBinding::for_action(&ClearMessageQueue, cx)
@@ -4128,7 +4154,7 @@ impl ThreadView {
                 .gap_1()
                 .truncate()
                 .child(
-                    Label::new("Current:")
+                    Label::new(eido_i18n::tr(cx, "task.current"))
                         .size(LabelSize::Small)
                         .color(Color::Muted),
                 )
@@ -4177,7 +4203,7 @@ impl ThreadView {
                 .gap_1()
                 .justify_between()
                 .child(
-                    Label::new("Plan")
+                    Label::new(eido_i18n::tr(cx, "task.plan"))
                         .size(LabelSize::Small)
                         .color(Color::Muted),
                 )
@@ -4203,7 +4229,7 @@ impl ThreadView {
                 IconButton::new("dismiss-plan", IconName::Close)
                     .icon_size(IconSize::XSmall)
                     .shape(ui::IconButtonShape::Square)
-                    .tooltip(Tooltip::text("Clear Plan"))
+                    .tooltip(Tooltip::text(eido_i18n::tr(cx, "task.clear_plan")))
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.thread.update(cx, |thread, cx| thread.clear_plan(cx));
                         cx.stop_propagation();
@@ -4317,7 +4343,7 @@ impl ThreadView {
                             .border_b_1()
                             .border_color(self.tool_card_border_color(cx))
                             .child(
-                                Label::new("Completed Plan")
+                                Label::new(eido_i18n::tr(cx, "task.completed_plan"))
                                     .size(LabelSize::Small)
                                     .color(Color::Muted),
                             )
@@ -4533,8 +4559,11 @@ impl ThreadView {
         const EDIT_NOT_READY_TOOLTIP_LABEL: &str = "Wait until file edits are complete.";
 
         let focus_handle = self.focus_handle(cx);
+        let research_paths=changed_buffers.iter().filter_map(|(buffer,_)|buffer.read(cx).file().map(|file|file.full_path(cx).display().to_string())).collect::<Vec<_>>();
+        let research_label=crate::eido_verification::edit_requirements_display(self.thread.read(cx),&research_paths, cx);
 
         h_flex()
+            .child(Label::new(research_label).size(LabelSize::XSmall).color(Color::Muted))
             .p_1()
             .justify_between()
             .flex_wrap()
@@ -4578,7 +4607,7 @@ impl ThreadView {
                             };
 
                             this.child(
-                                Label::new("Edits")
+                                Label::new(eido_i18n::tr(cx, "review.edits"))
                                     .size(LabelSize::Small)
                                     .color(Color::Muted),
                             )
@@ -4638,7 +4667,7 @@ impl ThreadView {
                     )
                     .child(Divider::vertical().color(DividerColor::Border))
                     .child(
-                        Button::new("reject-all-changes", "Reject All")
+                        Button::new("reject-all-changes", eido_i18n::tr(cx, "review.reject_all"))
                             .label_size(LabelSize::Small)
                             .disabled(pending_edits)
                             .when(pending_edits, |this| {
@@ -4653,7 +4682,7 @@ impl ThreadView {
                             })),
                     )
                     .child(
-                        Button::new("keep-all-changes", "Keep All")
+                        Button::new("keep-all-changes", eido_i18n::tr(cx, "review.keep_all"))
                             .label_size(LabelSize::Small)
                             .disabled(pending_edits)
                             .when(pending_edits, |this| {
@@ -4708,7 +4737,11 @@ impl ThreadView {
         let is_done = thread.read(cx).status() == ThreadStatus::Idle;
         let is_canceled_or_failed = self.is_subagent_canceled_or_failed(cx);
 
-        let max_content_width = AgentSettings::get_global(cx).max_content_width;
+        let max_content_width = if std::env::var_os("EIDO_ROOT").is_some() {
+            Some(self.eido_content_width(cx))
+        } else {
+            AgentSettings::get_global(cx).max_content_width
+        };
 
         Some(
             h_flex()
@@ -4754,7 +4787,7 @@ impl ThreadView {
                                         IconButton::new("stop_subagent", IconName::Stop)
                                             .icon_size(IconSize::Small)
                                             .icon_color(Color::Error)
-                                            .tooltip(Tooltip::text("Stop Subagent"))
+                                            .tooltip(Tooltip::text(eido_i18n::tr(cx, "task.stop_subagent")))
                                             .on_click(move |_, _, cx| {
                                                 thread.update(cx, |thread, cx| {
                                                     thread.cancel(cx).detach();
@@ -4765,7 +4798,7 @@ impl ThreadView {
                                 .child(
                                     IconButton::new("minimize_subagent", IconName::Dash)
                                         .icon_size(IconSize::Small)
-                                        .tooltip(Tooltip::text("Minimize Subagent"))
+                                        .tooltip(Tooltip::text(eido_i18n::tr(cx, "task.minimize_subagent")))
                                         .on_click(move |_, window, cx| {
                                             let _ = server_view.update(cx, |server_view, cx| {
                                                 server_view.navigate_to_thread(
@@ -4781,14 +4814,62 @@ impl ThreadView {
         )
     }
 
+    pub fn eido_content_width(&self, cx: &App) -> Pixels {
+        AgentSettings::get_global(cx).max_content_width.unwrap_or(px(780.))
+    }
+
+    /// Only a fresh, idle task can give its space to the global composer.
+    /// Notices, recovery, approvals and queued work must keep the thread visible.
+    pub fn eido_is_new_task(&self, cx: &App) -> bool {
+        let thread = self.thread.read(cx);
+        let reviews = thread.file_reviews().read(cx);
+        let has_request_elicitations = self.server_view.read_with(cx, |view, cx| {
+            view.request_elicitation_store().is_some_and(|store| !store.read(cx).elicitations().is_empty())
+        }).unwrap_or(false);
+        thread.entries().is_empty()
+            && self.list_state.item_count() == 0
+            && thread.status() == ThreadStatus::Idle
+            && !thread.is_cancelling()
+            && !thread.is_waiting_for_confirmation()
+            && !matches!(thread.eido_turn().status,
+                acp_thread::EidoTurnStatus::Failed | acp_thread::EidoTurnStatus::Interrupted)
+            && thread.plan().is_empty()
+            && thread.action_log().read(cx).changed_buffers(cx).next().is_none()
+            && self.message_queue.is_empty()
+            && !self.eido_restoring_queue
+            && !self.is_loading_contents
+            && !self.resumed_without_history
+            && self.thread_error.is_none()
+            && self.thread_retry_status.is_none()
+            && self.in_flight_prompt.is_none()
+            && self.eido_delivery_status.is_none()
+            && self.eido_recipient().is_none()
+            && thread.notices().is_empty()
+            && thread.review_copies().is_empty()
+            && reviews.records().is_empty()
+            && reviews.storage_error().is_none()
+            && thread.pending_review_count(cx) == 0
+            && self.skill_loading_issues.is_empty()
+            && !self.show_external_source_prompt_warning
+            && !self.show_codex_windows_warning
+            && self.new_server_version_available.is_none()
+            && self.eido_pi_ui.header.is_none()
+            && !has_request_elicitations
+    }
+
     pub fn render_message_editor(
         &mut self,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        self.eido_refresh_language(window, cx);
         if self.is_subagent() {
             return div().into_any_element();
         }
+
+        // The global composer also renders when the empty thread view is hidden.
+        // Keep the existing local command availability attached to this editor.
+        self.sync_local_commands(cx);
 
         let focus_handle = self.message_editor.focus_handle(cx);
         let editor_bg_color = cx.theme().colors().editor_background;
@@ -4800,7 +4881,11 @@ impl ThreadView {
             (IconName::Maximize, "Expand Message Editor")
         };
 
-        let max_content_width = AgentSettings::get_global(cx).max_content_width;
+        let max_content_width = if std::env::var_os("EIDO_ROOT").is_some() {
+            Some(self.eido_content_width(cx))
+        } else {
+            AgentSettings::get_global(cx).max_content_width
+        };
         let has_messages =
             self.list_state.item_count() > 0 || std::env::var_os("EIDO_ROOT").is_some();
         let fills_container = !has_messages || editor_expanded;
@@ -4817,7 +4902,7 @@ impl ThreadView {
         }, |_, _, _, _| {}).absolute().size_full().top_0().left_0();
 
         h_flex()
-            .py_2()
+            .py_3()
             .bg(editor_bg_color)
             .justify_center()
             .on_action(cx.listener(Self::handle_message_editor_move_up))
@@ -4838,11 +4923,11 @@ impl ThreadView {
                     .when(max_content_width.is_none(), |this| this.w_full())
                     .min_w_0()
                     .when(fills_container, |this| this.h_full())
-                    .px_2()
+                    .px_3()
                     .flex_shrink_1()
                     .flex_grow_0()
                     .justify_between()
-                    .gap_2()
+                    .gap_3()
                     .relative()
                     .child(measure)
                     .when(self.eido_pi_ui.widgets.values().any(|widget| widget.placement == "aboveEditor"), |this| this.child(self.eido_pi_ui.widgets("aboveEditor", cx)))
@@ -4856,7 +4941,7 @@ impl ThreadView {
                             .pr_2p5()
                             .when(
                                 std::env::var_os("EIDO_ROOT").is_some() && !editor_expanded,
-                                |this| this.min_h(px(72.)).flex_none(),
+                                |this| this.min_h(px(88.)).flex_none(),
                             )
                             .child(self.message_editor.clone())
                             .when(has_messages, |this| {
@@ -4900,26 +4985,22 @@ impl ThreadView {
                             .w_full()
                             .min_w_0()
                             .flex_none()
-                            .flex_wrap()
-                            .justify_between()
+                            .items_end()
+                            .gap_2()
                             .child(
                                 h_flex()
-                                    .min_w_0()
-                                    .flex_wrap()
-                                    .gap_0p5()
-                                    .child(self.render_add_context_button(cx))
-                                    .child(self.render_follow_toggle(cx))
-                                    .children(self.render_fast_mode_control(cx))
-                                    .children(self.render_thinking_control(cx)),
-                            )
-                            .child(
-                                h_flex()
+                                    .flex_1()
                                     .min_w_0()
                                     .flex_wrap()
                                     .gap_1()
-                                    .children(self.render_token_usage(cx))
-                                    .when(std::env::var_os("EIDO_ROOT").is_some(), |this| {
-                                        this.child(crate::eido_access::render(window, cx))
+                                    .child(self.render_add_context_button(cx))
+                                    .when(self.agent_id.as_ref() == "eido-pi", |this| {
+                                        this.child(Button::new("composer-sources", eido_i18n::tr(cx, "composer.sources"))
+                                            .label_size(LabelSize::Small)
+                                            .tooltip(Tooltip::text(eido_i18n::tr(cx, "composer.sources_tip")))
+                                            .on_click(cx.listener(|this, _, window, cx| {
+                                                crate::eido_research::open(this.thread.clone(), this.message_editor.clone(), &this.workspace, None, window, cx)
+                                            })))
                                     })
                                     .children(self.profile_selector.clone())
                                     .map(|this| match self.config_options_view.clone() {
@@ -4928,6 +5009,31 @@ impl ThreadView {
                                             .children(self.mode_selector.clone())
                                             .children(self.model_selector.clone()),
                                     })
+                                    .when(std::env::var_os("EIDO_ROOT").is_some(), |this| {
+                                        this.child(crate::eido_access::render(window, cx))
+                                    })
+                                    .child(self.render_follow_toggle(cx))
+                                    .children(self.render_fast_mode_control(cx))
+                                    .children(self.render_thinking_control(cx))
+                                    .children(self.render_token_usage(cx)),
+                            )
+                            .child(
+                                h_flex()
+                                    .flex_none()
+                                    .gap_1()
+                                    .when(
+                                        self.thread.read(cx).status() != ThreadStatus::Idle
+                                            && !self.message_editor.read(cx).is_empty(cx)
+                                            && !self.is_loading_contents,
+                                        |this| this.child(
+                                            Button::new("stop-while-drafting", eido_i18n::tr(cx, "composer.stop"))
+                                                .label_size(LabelSize::Small)
+                                                .start_icon(Icon::new(IconName::Stop).size(IconSize::Small).color(Color::Error))
+                                                .style(ButtonStyle::Tinted(TintColor::Error))
+                                                .tooltip(Tooltip::text(eido_i18n::tr(cx, "composer.stop_draft_tip")))
+                                                .on_click(cx.listener(|this, _, _, cx| this.cancel_generation(cx))),
+                                        ),
+                                    )
                                     .child(self.render_send_button(cx)),
                             ),
                     ),
@@ -4945,7 +5051,7 @@ impl ThreadView {
     ) -> impl IntoElement {
         let focus_handle = self.message_editor.focus_handle(cx);
 
-        Button::new(("steer", index), "Steer")
+        Button::new(("steer", index), eido_i18n::tr(cx, "composer.steer"))
             .label_size(LabelSize::Small)
             .toggle_state(steer_on)
             .selected_style(ButtonStyle::Tinted(TintColor::Accent))
@@ -4957,10 +5063,9 @@ impl ThreadView {
             })
             .tooltip(move |_window, cx| {
                 Tooltip::with_meta(
-                    "Steer",
+                    eido_i18n::tr(cx, "composer.steer"),
                     None,
-                    "Interrupt the agent at its next step to send this message. \
-                     When off, queued messages wait for the agent to finish.",
+                    eido_i18n::tr(cx, "composer.steer_tip"),
                     cx,
                 )
             })
@@ -4986,20 +5091,20 @@ impl ThreadView {
             .max_h_40()
             .overflow_y_scroll()
             .when(self.message_queue.is_paused(), |view| view.child(
-                h_flex().px_2().py_1().child(Label::new("Queue paused").size(LabelSize::Small).color(Color::Muted))
+                h_flex().px_2().py_1().child(Label::new(eido_i18n::tr(cx, "composer.queue_paused")).size(LabelSize::Small).color(Color::Muted))
             ))
             .children(self.message_queue.iter().enumerate().map(|(index, entry)| {
                 let entry_id = entry.id;
                 let editor = &entry.editor;
                 let is_next = index == 0;
                 let (icon_color, tooltip_text) = if entry.boundary {
-                    (Color::Muted, "Waiting for pi to consume this message at its next step")
+                    (Color::Muted, eido_i18n::tr(cx, "composer.waiting_boundary"))
                 } else if entry.needs_review {
-                    (Color::Warning, "Delivery interrupted. Review agent history before resending.")
+                    (Color::Warning, eido_i18n::tr(cx, "composer.delivery_interrupted"))
                 } else if is_next {
-                    (Color::Accent, "Next in Queue")
+                    (Color::Accent, eido_i18n::tr(cx, "composer.queue_next"))
                 } else {
-                    (Color::Muted, "In Queue")
+                    (Color::Muted, eido_i18n::tr(cx, "composer.in_queue"))
                 };
 
                 let editor_focused = editor.focus_handle(cx).is_focused(_window);
@@ -5034,12 +5139,12 @@ impl ThreadView {
                             .child(IconButton::new(("queue_move_up", index), IconName::ArrowUp)
                                 .icon_size(IconSize::Small)
                                 .disabled(!self.message_queue.can_move(entry_id, -1))
-                                .tooltip(Tooltip::text("Move Message Up"))
+                                .tooltip(Tooltip::text(eido_i18n::tr(cx, "composer.move_up")))
                                 .on_click(cx.listener(move |this, _, _, cx| this.move_queue_entry(entry_id, -1, cx))))
                             .child(IconButton::new(("queue_move_down", index), IconName::ArrowDown)
                                 .icon_size(IconSize::Small)
                                 .disabled(!self.message_queue.can_move(entry_id, 1))
-                                .tooltip(Tooltip::text("Move Message Down"))
+                                .tooltip(Tooltip::text(eido_i18n::tr(cx, "composer.move_down")))
                                 .on_click(cx.listener(move |this, _, _, cx| this.move_queue_entry(entry_id, 1, cx))))
                     )
                     .child(if editor_focused {
@@ -5052,9 +5157,9 @@ impl ThreadView {
                                     .icon_size(IconSize::Small)
                                     .tooltip(|_window, cx| {
                                         Tooltip::with_meta(
-                                            "Edit Queued Message",
+                                            eido_i18n::tr(cx, "composer.edit_queued"),
                                             None,
-                                            "Type anything to edit",
+                                            eido_i18n::tr(cx, "composer.type_to_edit"),
                                             cx,
                                         )
                                     })
@@ -5070,7 +5175,7 @@ impl ThreadView {
                                 ))
                             })
                             .child(
-                                Button::new(("send_now_focused", index), "Send Now")
+                                Button::new(("send_now_focused", index), eido_i18n::tr(cx, "composer.send_now"))
                                     .label_size(LabelSize::Small)
                                     .disabled(entry.boundary)
                                     .style(ButtonStyle::Outlined)
@@ -5100,13 +5205,13 @@ impl ThreadView {
                                         move |_window, cx| {
                                             if is_next {
                                                 Tooltip::for_action_in(
-                                                    "Remove Message from Queue",
+                                                    eido_i18n::tr(cx, "composer.remove_queued"),
                                                     &RemoveFirstQueuedMessage,
                                                     &focus_handle,
                                                     cx,
                                                 )
                                             } else {
-                                                Tooltip::simple("Remove Message from Queue", cx)
+                                                Tooltip::simple(eido_i18n::tr(cx, "composer.remove_queued"), cx)
                                             }
                                         }
                                     })
@@ -5123,13 +5228,13 @@ impl ThreadView {
                                         move |_window, cx| {
                                             if is_next {
                                                 Tooltip::for_action_in(
-                                                    "Edit",
+                                                    eido_i18n::tr(cx, "composer.edit"),
                                                     &EditFirstQueuedMessage,
                                                     &focus_handle,
                                                     cx,
                                                 )
                                             } else {
-                                                Tooltip::simple("Edit", cx)
+                                                Tooltip::simple(eido_i18n::tr(cx, "composer.edit"), cx)
                                             }
                                         }
                                     })
@@ -5145,7 +5250,7 @@ impl ThreadView {
                                 ))
                             })
                             .child(
-                                Button::new(("send_now", index), if entry.boundary { "Sending next…" } else if entry.needs_review { "Review" } else { "Send Now" })
+                                Button::new(("send_now", index), if entry.boundary { eido_i18n::tr(cx, "composer.sending_next") } else if entry.needs_review { eido_i18n::tr(cx, "composer.review_queue") } else { eido_i18n::tr(cx, "composer.send_now") })
                                     .label_size(LabelSize::Small)
                                     .disabled(entry.boundary)
                                     .when(is_next, |this| this.style(ButtonStyle::Outlined))
@@ -5775,7 +5880,7 @@ impl ThreadView {
                     h_flex()
                         .gap_2()
                         .justify_between()
-                        .child(Label::new("Change Thinking Effort"))
+                        .child(Label::new(eido_i18n::tr(cx, "composer.thinking_effort")))
                         .child(KeyBinding::for_action_in(
                             &ToggleThinkingEffortMenu,
                             &focus_handle,
@@ -5791,7 +5896,7 @@ impl ThreadView {
                             .justify_between()
                             .border_t_1()
                             .border_color(cx.theme().colors().border_variant)
-                            .child(Label::new("Cycle Thinking Effort"))
+                            .child(Label::new(eido_i18n::tr(cx, "composer.cycle_effort")))
                             .child(KeyBinding::for_action_in(
                                 &CycleThinkingEffort,
                                 &focus_handle,
@@ -5911,7 +6016,7 @@ impl ThreadView {
             div()
                 .id("loading-message-content")
                 .px_1()
-                .tooltip(Tooltip::text("Loading Added Context…"))
+                .tooltip(Tooltip::text(eido_i18n::tr(cx, "composer.loading_context")))
                 .child(loading_contents_spinner(IconSize::default()))
                 .into_any_element()
         } else if is_generating && is_editor_empty {
@@ -5919,7 +6024,7 @@ impl ThreadView {
                 .icon_color(Color::Error)
                 .style(ButtonStyle::Tinted(TintColor::Error))
                 .tooltip(move |_window, cx| {
-                    Tooltip::for_action("Stop Generation", &editor::actions::Cancel, cx)
+                    Tooltip::for_action(eido_i18n::tr(cx, "composer.stop_generation"), &editor::actions::Cancel, cx)
                 })
                 .on_click(cx.listener(|this, _event, _, cx| this.cancel_generation(cx)))
                 .into_any_element()
@@ -5940,7 +6045,7 @@ impl ThreadView {
                 })
                 .tooltip(move |_window, cx| {
                     if is_editor_empty && !is_generating {
-                        Tooltip::for_action("Type to Send", &Chat, cx)
+                        Tooltip::for_action(eido_i18n::tr(cx, "composer.send_type"), &Chat, cx)
                     } else if is_generating {
                         let focus_handle = focus_handle.clone();
 
@@ -5951,7 +6056,7 @@ impl ThreadView {
                                     h_flex()
                                         .gap_2()
                                         .justify_between()
-                                        .child(Label::new("Queue and Send"))
+                                        .child(Label::new(eido_i18n::tr(cx, "composer.queue_send")))
                                         .child(KeyBinding::for_action_in(&Chat, &focus_handle, cx)),
                                 )
                                 .child(
@@ -5961,7 +6066,7 @@ impl ThreadView {
                                         .justify_between()
                                         .border_t_1()
                                         .border_color(cx.theme().colors().border_variant)
-                                        .child(Label::new("Send Immediately"))
+                                        .child(Label::new(eido_i18n::tr(cx, "composer.send_immediately")))
                                         .child(KeyBinding::for_action_in(
                                             &SendImmediately,
                                             &focus_handle,
@@ -5971,7 +6076,7 @@ impl ThreadView {
                                 .into_any_element()
                         })(_window, cx)
                     } else {
-                        Tooltip::for_action("Send Message", &Chat, cx)
+                        Tooltip::for_action(eido_i18n::tr(cx, "composer.send"), &Chat, cx)
                     }
                 })
                 .on_click(cx.listener(|this, _, window, cx| {
@@ -5992,8 +6097,7 @@ impl ThreadView {
                     .icon_color(Color::Muted),
                 {
                     move |_window, cx| {
-                        Tooltip::for_action_in(
-                            "Add Context",
+                        Tooltip::for_action_in(eido_i18n::tr(cx, "composer.add_context"),
                             &OpenAddContextMenu,
                             &focus_handle,
                             cx,
@@ -6021,6 +6125,8 @@ impl ThreadView {
     ) -> Entity<ContextMenu> {
         let message_editor = self.message_editor.clone();
         let workspace = self.workspace.clone();
+        let research_thread = self.thread.clone();
+        let is_eido = self.agent_id.as_ref() == "eido-pi";
         let session_capabilities = self.session_capabilities.read();
         let supports_images = session_capabilities.supports_images();
         let supports_embedded_context = session_capabilities.supports_embedded_context();
@@ -6047,10 +6153,27 @@ impl ThreadView {
 
         let has_selection = has_editor_selection || has_terminal_selection;
 
-        ContextMenu::build(window, cx, move |menu, _window, _cx| {
+        ContextMenu::build(window, cx, move |menu, _window, cx| {
             menu.key_context("AddContextMenu")
+                .when(is_eido, |menu| {
+                    menu.item(ContextMenuEntry::new(eido_i18n::tr(cx, "composer.add_document"))
+                        .icon(IconName::File)
+                        .handler({
+                            let editor = message_editor.clone();
+                            move |window, cx| editor.update(cx, |editor, cx| editor.add_documents_from_picker(window, cx))
+                        }))
+                        .item(ContextMenuEntry::new(eido_i18n::tr(cx, "composer.sources_requirements"))
+                            .icon(IconName::File)
+                            .handler({
+                                let editor = message_editor.clone();
+                                let thread = research_thread.clone();
+                                let workspace = workspace.clone();
+                                move |window, cx| crate::eido_research::open(thread.clone(), editor.clone(), &workspace, None, window, cx)
+                            }))
+                        .separator()
+                })
                 .item(
-                    ContextMenuEntry::new("Files & Directories")
+                    ContextMenuEntry::new(eido_i18n::tr(cx, "composer.files"))
                         .icon(IconName::File)
                         .icon_color(Color::Muted)
                         .icon_size(IconSize::XSmall)
@@ -6065,7 +6188,7 @@ impl ThreadView {
                         }),
                 )
                 .item(
-                    ContextMenuEntry::new("Symbols")
+                    ContextMenuEntry::new(eido_i18n::tr(cx, "composer.symbols"))
                         .icon(IconName::Code)
                         .icon_color(Color::Muted)
                         .icon_size(IconSize::XSmall)
@@ -6080,7 +6203,7 @@ impl ThreadView {
                         }),
                 )
                 .item(
-                    ContextMenuEntry::new("Threads")
+                    ContextMenuEntry::new(eido_i18n::tr(cx, "composer.tasks"))
                         .icon(IconName::Thread)
                         .icon_color(Color::Muted)
                         .icon_size(IconSize::XSmall)
@@ -6095,7 +6218,7 @@ impl ThreadView {
                         }),
                 )
                 .when(!available_skills.is_empty(), |this| {
-                    this.submenu_with_colored_icon("Skills", IconName::Sparkle, Color::Muted, {
+                    this.submenu_with_colored_icon(eido_i18n::tr(cx, "composer.skills"), IconName::Sparkle, Color::Muted, {
                         let message_editor = message_editor.clone();
                         let available_skills = available_skills.clone();
                         move |mut menu, _window, _cx| {
@@ -6108,7 +6231,7 @@ impl ThreadView {
                     })
                 })
                 .item(
-                    ContextMenuEntry::new("Image")
+                    ContextMenuEntry::new(eido_i18n::tr(cx, "composer.image"))
                         .icon(IconName::Image)
                         .icon_color(Color::Muted)
                         .icon_size(IconSize::XSmall)
@@ -6124,7 +6247,7 @@ impl ThreadView {
                         }),
                 )
                 .item(
-                    ContextMenuEntry::new("Selection")
+                    ContextMenuEntry::new(eido_i18n::tr(cx, "composer.selection"))
                         .icon(IconName::CursorIBeam)
                         .icon_color(Color::Muted)
                         .icon_size(IconSize::XSmall)
@@ -6139,7 +6262,7 @@ impl ThreadView {
                         }),
                 )
                 .item(
-                    ContextMenuEntry::new("Branch Diff")
+                    ContextMenuEntry::new(eido_i18n::tr(cx, "composer.branch_diff"))
                         .icon(IconName::GitBranch)
                         .icon_color(Color::Muted)
                         .icon_size(IconSize::XSmall)
@@ -6252,7 +6375,7 @@ impl Render for TokenUsageTooltip {
             container
                 .min_w_40()
                 .child(
-                    Label::new("Context")
+                    Label::new(eido_i18n::tr(cx, "composer.context"))
                         .color(Color::Muted)
                         .size(LabelSize::Small),
                 )
@@ -6274,7 +6397,7 @@ impl Render for TokenUsageTooltip {
                             .child(
                                 h_flex()
                                     .gap_0p5()
-                                    .child(Label::new("Input:").color(Color::Muted).mr_0p5())
+                                    .child(Label::new(eido_i18n::tr(cx, "composer.input")).color(Color::Muted).mr_0p5())
                                     .child(Label::new(input_tokens))
                                     .child(Label::new("/").color(separator_color))
                                     .child(Label::new(input_max).color(Color::Muted)),
@@ -6282,7 +6405,7 @@ impl Render for TokenUsageTooltip {
                             .child(
                                 h_flex()
                                     .gap_0p5()
-                                    .child(Label::new("Output:").color(Color::Muted).mr_0p5())
+                                    .child(Label::new(eido_i18n::tr(cx, "composer.output")).color(Color::Muted).mr_0p5())
                                     .child(Label::new(output_tokens))
                                     .child(Label::new("/").color(separator_color))
                                     .child(Label::new(output_max).color(Color::Muted)),
@@ -6298,7 +6421,7 @@ impl Render for TokenUsageTooltip {
                             .border_t_1()
                             .border_color(cx.theme().colors().border_variant)
                             .child(
-                                Label::new("Cost")
+                                Label::new(eido_i18n::tr(cx, "composer.cost"))
                                     .color(Color::Muted)
                                     .size(LabelSize::Small),
                             )
@@ -6317,7 +6440,7 @@ impl Render for TokenUsageTooltip {
                                 .border_t_1()
                                 .border_color(cx.theme().colors().border_variant)
                                 .child(
-                                    Label::new("Rules")
+                                    Label::new(eido_i18n::tr(cx, "composer.rules"))
                                         .color(Color::Muted)
                                         .size(LabelSize::Small),
                                 )
@@ -6591,7 +6714,11 @@ fn sandbox_network_rows(network: &SandboxNetPolicy) -> Vec<SandboxRow> {
 
 impl ThreadView {
     fn render_entries(&mut self, cx: &mut Context<Self>) -> List {
-        let max_content_width = AgentSettings::get_global(cx).max_content_width;
+        let max_content_width = if std::env::var_os("EIDO_ROOT").is_some() {
+            Some(self.eido_content_width(cx))
+        } else {
+            AgentSettings::get_global(cx).max_content_width
+        };
         let centered_container = move |content: AnyElement| {
             h_flex().w_full().justify_center().child(
                 div()
@@ -6734,11 +6861,11 @@ impl ThreadView {
                                 .gap_2()
                                 .child(Divider::horizontal())
                                 .child(
-                                    Button::new("restore-checkpoint", "Restore Checkpoint")
+                                    Button::new("restore-checkpoint", eido_i18n::tr(cx, "review.restore"))
                                         .start_icon(Icon::new(IconName::Undo).size(IconSize::XSmall).color(Color::Muted))
                                         .label_size(LabelSize::XSmall)
                                         .color(Color::Muted)
-                                        .tooltip(Tooltip::text("Restores all files in the project to the content they had at this point in the conversation."))
+                                        .tooltip(Tooltip::text(eido_i18n::tr(cx, "review.restore_tip")))
                                         .on_click(cx.listener(move |this, _, _window, cx| {
                                             this.restore_checkpoint(&client_id, cx);
                                         }))
@@ -6815,7 +6942,7 @@ impl ThreadView {
                                                 if is_loading_contents {
                                                     div()
                                                         .id("loading-edited-message-content")
-                                                        .tooltip(Tooltip::text("Loading Added Context…"))
+                                                        .tooltip(Tooltip::text(eido_i18n::tr(cx, "composer.loading_context")))
                                                         .child(loading_contents_spinner(IconSize::XSmall))
                                                         .into_any_element()
                                                 } else {
@@ -6869,14 +6996,14 @@ impl ThreadView {
                     )
                     .child(h_flex().justify_end().gap_1()
                         .child(IconButton::new(("copy-question", entry_ix), IconName::Copy)
-                            .icon_size(IconSize::Small).tooltip(Tooltip::text("Copy question"))
+                            .icon_size(IconSize::Small).tooltip(Tooltip::text(eido_i18n::tr(cx, "composer.copy_question")))
                             .on_click({ let text = message.content.to_markdown(cx); move |_, _, cx| {
                                 cx.stop_propagation();
                                 cx.write_to_clipboard(ClipboardItem::new_string(text.clone()));
                             }}))
                         .when(is_editable, |row| row
                             .child(IconButton::new(("edit-question", entry_ix), IconName::Pencil)
-                                .icon_size(IconSize::Small).tooltip(Tooltip::text("Edit question"))
+                                .icon_size(IconSize::Small).tooltip(Tooltip::text(eido_i18n::tr(cx, "composer.edit_question")))
                                 .disabled(self.is_loading_contents)
                                 .on_click(cx.listener({ let editor = editor.clone(); move |this, _, window, cx| {
                                     cx.stop_propagation();
@@ -6885,7 +7012,7 @@ impl ThreadView {
                                     cx.notify();
                                 }})))
                             .child(IconButton::new(("resend-question", entry_ix), IconName::RotateCw)
-                                .icon_size(IconSize::Small).tooltip(Tooltip::text("Send question again"))
+                                .icon_size(IconSize::Small).tooltip(Tooltip::text(eido_i18n::tr(cx, "composer.resend_question")))
                                 .disabled(self.is_loading_contents)
                                 .on_click(cx.listener({ let editor = editor.clone(); move |this, _, window, cx| {
                                     cx.stop_propagation();
@@ -7068,13 +7195,13 @@ impl ThreadView {
                                         .size(IconSize::Small),
                                 )
                                 .child(
-                                    Label::new("Subagent Output")
+                                    Label::new(eido_i18n::tr(cx, "task.subagent_output"))
                                         .size(LabelSize::Custom(self.tool_name_font_size()))
                                         .color(Color::Muted),
                                 ),
                         )
                         .child(Divider::horizontal())
-                        .tooltip(Tooltip::text("Everything below this line was sent as output from this subagent to the main agent.")),
+                        .tooltip(Tooltip::text(eido_i18n::tr(cx, "task.subagent_output_tip"))),
                 )
                 .child(primary)
                 .into_any_element()
@@ -7379,7 +7506,7 @@ impl ThreadView {
             IconButton::new(("copy_agent_response", entry_ix), IconName::Copy)
                 .icon_size(IconSize::Small)
                 .icon_color(Color::Muted)
-                .tooltip(Tooltip::text("Copy This Agent Response"))
+                .tooltip(Tooltip::text(eido_i18n::tr(cx, "composer.copy_response")))
                 .on_click(cx.listener(move |this, _, _, cx| {
                     let entries = this.thread.read(cx).entries();
                     if let Some(text) = Self::get_agent_message_content(entries, response_index, cx)
@@ -7395,7 +7522,7 @@ impl ThreadView {
         )
         .icon_size(IconSize::Small)
         .icon_color(Color::Muted)
-        .tooltip(Tooltip::text("Scroll to User Message"))
+        .tooltip(Tooltip::text(eido_i18n::tr(cx, "composer.scroll_user")))
         .on_click(cx.listener(move |this, _, _, cx| {
             this.scroll_to_user_message_index(user_message_index, cx);
         }));
@@ -7404,7 +7531,7 @@ impl ThreadView {
             IconButton::new(("scroll_to_top", entry_ix), IconName::ArrowUp)
                 .icon_size(IconSize::Small)
                 .icon_color(Color::Muted)
-                .tooltip(Tooltip::text("Scroll to Top"))
+                .tooltip(Tooltip::text(eido_i18n::tr(cx, "composer.scroll_top")))
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.scroll_to_top(cx);
                 }))
@@ -7909,7 +8036,7 @@ impl ThreadView {
         if self.thread.read(cx).is_cancelling() {
             return h_flex().py_2().px(rems_from_px(22_f32)).gap_2()
                 .child(GeneratingSpinnerElement::new(SpinnerVariant::Dots))
-                .child(Label::new("Stopping · waiting for the current operation").size(LabelSize::Small).color(Color::Muted))
+                .child(Label::new(eido_i18n::tr(cx, "task.stopping")).size(LabelSize::Small).color(Color::Muted))
                 .into_any_element();
         }
         if !confirmation && !self.eido_pi_ui.working_visible { return div().into_any_element(); }
@@ -7958,7 +8085,7 @@ impl ThreadView {
                     )
                     .child(
                         div().min_w(rems(8.)).child(
-                            LoadingLabel::new("Awaiting Confirmation")
+                            LoadingLabel::new(eido_i18n::tr(cx, "task.awaiting_confirmation"))
                                 .size(LabelSize::Small)
                                 .color(Color::Muted),
                         ),
@@ -8130,7 +8257,7 @@ impl ThreadView {
                                 div()
                                     .text_size(self.tool_name_font_size())
                                     .text_color(cx.theme().colors().text_muted)
-                                    .child(self.eido_pi_ui.hidden_thinking_label.clone().unwrap_or_else(|| "Thinking".into())),
+                                    .child(self.eido_pi_ui.hidden_thinking_label.clone().unwrap_or_else(|| eido_i18n::tr(cx, "composer.thinking").to_string())),
                             ),
                     )
                     .child(
@@ -8222,7 +8349,7 @@ impl ThreadView {
                         .and_then(|markdown| markdown.context_menu_selected_markdown().cloned());
 
                     let copy_this_agent_response =
-                        ContextMenuEntry::new("Copy This Agent Response").handler({
+                        ContextMenuEntry::new(eido_i18n::tr(cx, "composer.copy_response")).handler({
                             let entity = entity.clone();
                             move |_, cx| {
                                 entity.update(cx, |this, cx| {
@@ -8246,7 +8373,7 @@ impl ThreadView {
                             }
                         })
                     } else {
-                        ContextMenuEntry::new("Scroll to Top").handler({
+                        ContextMenuEntry::new(eido_i18n::tr(cx, "composer.scroll_top")).handler({
                             let entity = entity.clone();
                             move |_, cx| {
                                 entity.update(cx, |this, cx| {
@@ -8425,7 +8552,7 @@ impl ThreadView {
         let run_command_label = if is_preview {
             Some(
                 h_flex().h_6().child(
-                    Label::new("Run Command")
+                    Label::new(eido_i18n::tr(cx, "task.run_command"))
                         .buffer_font(cx)
                         .size(LabelSize::XSmall)
                         .color(Color::Muted),
@@ -9004,16 +9131,32 @@ impl ThreadView {
                 | ToolCallStatus::Failed
                 | ToolCallStatus::Canceled => v_flex()
                     .when(should_show_raw_input, |this| {
+                        let expanded = !is_eido || self.expanded_tool_call_raw_inputs.contains(&tool_call.id);
                         this.mt_1p5().w_full().child(
                             v_flex()
                                 .ml(rems(0.4))
                                 .px_3p5()
                                 .pb_1()
                                 .gap_1()
-                                .border_l_1()
-                                .border_color(self.tool_card_border_color(cx))
-                                .child(input_output_header("Raw Input:".into()))
-                                .children(tool_call.raw_input_markdown.clone().map(|input| {
+                                .when(!is_eido, |this| this.border_l_1().border_color(self.tool_card_border_color(cx)))
+                                .when(is_eido, |this| this.child(
+                                    Button::new(("tool-parameters", entry_ix), eido_i18n::tr(cx, "task.parameters"))
+                                        .label_size(LabelSize::Small)
+                                        .start_icon(Icon::new(if expanded { IconName::ChevronDown } else { IconName::ChevronRight }).size(IconSize::Small))
+                                        .on_click(cx.listener({
+                                            let id = tool_call.id.clone();
+                                            move |this, _, window, cx| {
+                                                if !this.expanded_tool_call_raw_inputs.remove(&id) {
+                                                    this.expanded_tool_call_raw_inputs.insert(id.clone());
+                                                }
+                                                this.list_state.remeasure_items(entry_ix..entry_ix + 1);
+                                                this.refresh_thread_search(window, cx);
+                                                cx.notify();
+                                            }
+                                        })),
+                                ))
+                                .when(!is_eido, |this| this.child(input_output_header("Raw Input:".into())))
+                                .when(expanded, |this| this.children(tool_call.raw_input_markdown.clone().map(|input| {
                                     div().id(("tool-call-raw-input-markdown", entry_ix)).child(
                                         self.render_markdown(
                                             input,
@@ -9021,8 +9164,8 @@ impl ThreadView {
                                             cx,
                                         ),
                                     )
-                                }))
-                                .child(input_output_header("Output:".into())),
+                                })))
+                                .when(!is_eido, |this| this.child(input_output_header("Output:".into()))),
                         )
                     })
                     .children(
@@ -9167,7 +9310,7 @@ impl ThreadView {
                                     .when(is_eido && has_location, |row| row.child(
                                         IconButton::new(("open-tool-file", entry_ix), IconName::File)
                                             .icon_size(IconSize::Small)
-                                            .tooltip(Tooltip::text("Open File"))
+                                            .tooltip(Tooltip::text(eido_i18n::tr(cx, "review.open_file")))
                                             .on_click(cx.listener(move |this, _, window, cx| {
                                                 cx.stop_propagation();
                                                 this.open_tool_call_location(entry_ix, 0, window, cx);
@@ -9226,8 +9369,7 @@ impl ThreadView {
                                                         this.child(
                                                             div()
                                                                 .id(entry_ix)
-                                                                .tooltip(Tooltip::text(
-                                                                    "Interrupted Edit",
+                                                                .tooltip(Tooltip::text(eido_i18n::tr(cx, "review.interrupted_edit"),
                                                                 ))
                                                                 .child(
                                                                     Icon::new(IconName::XCircle)
@@ -9300,7 +9442,7 @@ impl ThreadView {
                                     })
                                     .when(tool_call_output_focus && !is_eido, |this| {
                                         this.child(
-                                            Button::new("open-file-button", "Open File")
+                                            Button::new("open-file-button", eido_i18n::tr(cx, "review.open_file"))
                                                 .style(ButtonStyle::Outlined)
                                                 .label_size(LabelSize::Small)
                                                 .key_binding(
@@ -9476,7 +9618,7 @@ impl ThreadView {
                             h_flex()
                                 .gap_1()
                                 .child(
-                                    Label::new("Network access")
+                                    Label::new(eido_i18n::tr(cx, "approval.network"))
                                         .size(LabelSize::Small)
                                         .color(Color::Muted),
                                 )
@@ -9574,7 +9716,7 @@ impl ThreadView {
                             h_flex()
                                 .gap_1()
                                 .child(
-                                    Label::new("Write Access")
+                                    Label::new(eido_i18n::tr(cx, "approval.write"))
                                         .size(LabelSize::Small)
                                         .color(Color::Muted),
                                 )
@@ -9632,7 +9774,7 @@ impl ThreadView {
                 .py_1()
                 .gap_0p5()
                 .child(
-                    Label::new("Reason")
+                    Label::new(eido_i18n::tr(cx, "approval.reason"))
                         .size(LabelSize::XSmall)
                         .color(Color::Muted),
                 )
@@ -10122,13 +10264,13 @@ impl ThreadView {
 
         let dropdown_label: SharedString =
             if matches!(selection, Some(PermissionSelection::SelectedPatterns(_))) {
-                "Always for selected commands".into()
+                eido_i18n::tr(cx, "approval.always_selected")
             } else {
                 choices
                     .get(selected_index)
                     .or(choices.last())
-                    .map(|choice| choice.label())
-                    .unwrap_or_else(|| "Only this time".into())
+                    .map(|choice| crate::eido_research::state_label(&choice.label(), cx))
+                    .unwrap_or_else(|| eido_i18n::tr(cx, "approval.only_once"))
             };
 
         let dropdown = if let Some((pattern_list, tool_name)) = patterns {
@@ -10165,7 +10307,7 @@ impl ThreadView {
                 h_flex()
                     .gap_0p5()
                     .child(
-                        Button::new(("allow-btn", entry_ix), "Allow")
+                        Button::new(("allow-btn", entry_ix), eido_i18n::tr(cx, "approval.allow"))
                             .disabled(allow_disabled)
                             .start_icon(
                                 Icon::new(IconName::Check)
@@ -10198,7 +10340,7 @@ impl ThreadView {
                             })),
                     )
                     .child(
-                        Button::new(("deny-btn", entry_ix), "Deny")
+                        Button::new(("deny-btn", entry_ix), eido_i18n::tr(cx, "approval.deny"))
                             .start_icon(
                                 Icon::new(IconName::Close)
                                     .size(IconSize::XSmall)
@@ -10244,7 +10386,7 @@ impl ThreadView {
         let menu_options: Vec<(usize, SharedString)> = choices
             .iter()
             .enumerate()
-            .map(|(i, choice)| (i, choice.label()))
+            .map(|(i, choice)| (i, crate::eido_research::state_label(&choice.label(), cx)))
             .collect();
 
         let permission_dropdown_handle = self.permission_dropdown_handle.clone();
@@ -10319,7 +10461,7 @@ impl ThreadView {
         let menu_options: Vec<(usize, SharedString)> = choices
             .iter()
             .enumerate()
-            .map(|(i, choice)| (i, choice.label()))
+            .map(|(i, choice)| (i, crate::eido_research::state_label(&choice.label(), cx)))
             .collect();
 
         let pattern_options: Vec<(usize, SharedString)> = patterns
@@ -10464,12 +10606,12 @@ impl ThreadView {
                             .as_ref()
                             .is_some_and(|s| s.has_any_checked_patterns());
                         let dropdown_handle = dropdown_handle.clone();
-                        menu = menu.custom_row(move |_window, _cx| {
+                        menu = menu.custom_row(move |_window, cx| {
                             div()
                                 .py_1()
                                 .w_full()
                                 .child(
-                                    Button::new("apply-patterns", "Apply")
+                                    Button::new("apply-patterns", eido_i18n::tr(cx, "approval.apply"))
                                         .full_width()
                                         .style(ButtonStyle::Outlined)
                                         .label_size(LabelSize::Small)
@@ -10798,7 +10940,7 @@ impl ThreadView {
                         ),
                     )
                     .when(!is_eido, |label| label
-                        .tooltip(Tooltip::text("Go to File"))
+                        .tooltip(Tooltip::text(eido_i18n::tr(cx, "review.go_file")))
                         .on_click(cx.listener(move |this, _, window, cx| {
                             this.open_tool_call_location(entry_ix, 0, window, cx);
                         })))
@@ -11079,8 +11221,10 @@ impl ThreadView {
                     })
                     .on_click(cx.listener({
                         let workspace = self.workspace.clone();
-                        move |_, _, window, cx: &mut Context<Self>| {
-                            open_link(uri.clone(), &workspace, window, cx);
+                        move |this, _, window, cx: &mut Context<Self>| {
+                            if uri.starts_with("eido-source:") {
+                                if let Some(target)=crate::eido_research::reference(&uri) {crate::eido_research::open(this.thread.clone(),this.message_editor.clone(),&workspace,Some(target),window,cx);}
+                            } else {open_link(uri.clone(), &workspace, window, cx);}
                         }
                     })),
             )
@@ -11228,7 +11372,7 @@ impl ThreadView {
             .when_some(location, |this, _loc| {
                 this.child(
                     h_flex().w_full().justify_end().child(
-                        Button::new(("go-to-file", entry_ix), "Go to File")
+                        Button::new(("go-to-file", entry_ix), eido_i18n::tr(cx, "review.go_file"))
                             .label_size(LabelSize::Small)
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 this.open_tool_call_location(entry_ix, 0, window, cx);
@@ -11381,7 +11525,7 @@ impl ThreadView {
                             cx.theme().colors().icon_disabled.opacity(0.5),
                         )),
                 )
-                .tooltip(Tooltip::text("Subagent Cancelled"))
+                .tooltip(Tooltip::text(eido_i18n::tr(cx, "task.subagent_cancelled")))
                 .into_any_element()
         } else if is_failed {
             div()
@@ -11391,7 +11535,7 @@ impl ThreadView {
                         .size(IconSize::Small)
                         .color(Color::Error),
                 )
-                .tooltip(Tooltip::text("Subagent Failed"))
+                .tooltip(Tooltip::text(eido_i18n::tr(cx, "task.subagent_failed")))
                 .into_any_element()
         } else {
             Icon::new(IconName::Check)
@@ -11547,7 +11691,7 @@ impl ThreadView {
                             IconButton::new(format!("stop-subagent-{}", entry_ix), IconName::Stop)
                                 .icon_size(IconSize::Small)
                                 .icon_color(Color::Error)
-                                .tooltip(Tooltip::text("Stop Subagent"))
+                                .tooltip(Tooltip::text(eido_i18n::tr(cx, "task.stop_subagent")))
                                 .when_some(
                                     thread_view
                                         .as_ref()
@@ -11591,7 +11735,7 @@ impl ThreadView {
                             .color(Color::Muted)
                             .size(IconSize::Small),
                     )
-                    .tooltip(Tooltip::text("Make Subagent Full Screen"))
+                    .tooltip(Tooltip::text(eido_i18n::tr(cx, "task.subagent_fullscreen")))
                     .on_click(cx.listener(move |this, _event, window, cx| {
                         telemetry::event!("Subagent Maximized");
                         this.server_view
@@ -12047,7 +12191,7 @@ impl ThreadView {
     }
 
     fn open_llm_providers_settings_button(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        Button::new("configure-llm-provider", "Configure Provider")
+        Button::new("configure-llm-provider", eido_i18n::tr(cx, "task.configure_provider"))
             .label_size(LabelSize::Small)
             .style(ButtonStyle::Filled)
             .on_click(cx.listener(|this, _, window, cx| {
@@ -12063,7 +12207,7 @@ impl ThreadView {
     }
 
     fn open_model_selector_button(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        Button::new("open-model-selector", "Select Model")
+        Button::new("open-model-selector", eido_i18n::tr(cx, "task.select_model"))
             .label_size(LabelSize::Small)
             .style(ButtonStyle::Filled)
             .key_binding(KeyBinding::for_action(&ToggleModelSelector, cx))
@@ -12092,7 +12236,7 @@ impl ThreadView {
     }
 
     fn retry_button(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        Button::new("retry", "Retry")
+        Button::new("retry", eido_i18n::tr(cx, "task.retry"))
             .label_size(LabelSize::Small)
             .style(ButtonStyle::Filled)
             .on_click(cx.listener(|this, _, _, cx| {
@@ -12101,7 +12245,7 @@ impl ThreadView {
     }
 
     fn new_thread_button(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        Button::new("new_thread", "New Thread")
+        Button::new("new_thread", eido_i18n::tr(cx, "task.new"))
             .label_size(LabelSize::Small)
             .style(ButtonStyle::Filled)
             .on_click(cx.listener(|this, _, window, cx| {
@@ -12123,7 +12267,7 @@ impl ThreadView {
     }
 
     fn authenticate_button(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        Button::new("authenticate", "Authenticate")
+        Button::new("authenticate", eido_i18n::tr(cx, "task.authenticate"))
             .label_size(LabelSize::Small)
             .style(ButtonStyle::Filled)
             .on_click(cx.listener({
@@ -12135,6 +12279,7 @@ impl ThreadView {
                         this.message_editor.update(cx, |editor, cx| {
                             editor.set_message(message, window, cx);
                         });
+                        this.in_flight_documents.clear();
                     }
                     let connection = this.thread.read(cx).connection().clone();
                     window.defer(cx, |window, cx| {
@@ -12200,7 +12345,7 @@ impl ThreadView {
                         this.child(
                             IconButton::new("retry", IconName::RotateCw)
                                 .icon_size(IconSize::Small)
-                                .tooltip(Tooltip::text("Retry Generation"))
+                                .tooltip(Tooltip::text(eido_i18n::tr(cx, "task.retry_generation")))
                                 .on_click(cx.listener(|this, _, _window, cx| {
                                     this.retry_generation(cx);
                                 })),
@@ -12218,6 +12363,7 @@ impl ThreadView {
         cx: &App,
     ) -> MarkdownElement {
         let list_state = self.list_state.clone();
+        let research_thread=self.thread.clone();let research_composer=self.message_editor.clone();let research_workspace=self.workspace.clone();
         render_agent_markdown(
             markdown,
             style,
@@ -12225,6 +12371,11 @@ impl ThreadView {
             &self.code_span_resolver,
             cx,
         )
+        .on_url_click(move |url, window, cx| {
+            if url.starts_with("eido-source:") {
+                if let Some(target)=crate::eido_research::reference(&url) {crate::eido_research::open(research_thread.clone(),research_composer.clone(),&research_workspace,Some(target),window,cx);}
+            } else {open_link(url,&research_workspace,window,cx);}
+        })
         // Zooming a diagram grows/shrinks its block; pause tail-following so the
         // viewport stays put instead of snapping back to the bottom. The list
         // resumes following on its own once the content returns to the bottom.
@@ -12242,7 +12393,7 @@ impl ThreadView {
     fn dismiss_error_button(&self, cx: &mut Context<Self>) -> impl IntoElement {
         IconButton::new("dismiss", IconName::Close)
             .icon_size(IconSize::Small)
-            .tooltip(Tooltip::text("Dismiss"))
+            .tooltip(Tooltip::text(eido_i18n::tr(cx, "review.dismiss")))
             .on_click(cx.listener({
                 move |this, _, _, cx| {
                     this.clear_thread_error(cx);
@@ -12286,7 +12437,7 @@ impl ThreadView {
                 IconButton::new("dismiss", IconName::Close)
                     .icon_size(IconSize::Small)
                     .icon_color(Color::Muted)
-                    .tooltip(Tooltip::text("Dismiss Warning"))
+                    .tooltip(Tooltip::text(eido_i18n::tr(cx, "task.dismiss_warning")))
                     .on_click(cx.listener({
                         move |this, _, _, cx| {
                             this.show_codex_windows_warning = false;
@@ -12296,28 +12447,37 @@ impl ThreadView {
             )
     }
 
-    fn render_eido_task_state(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+    fn render_eido_task_state(&self, window: &Window, cx: &mut Context<Self>) -> Option<AnyElement> {
         if self.agent_id.as_ref() != "eido-pi" { return None; }
         let thread = self.thread.read(cx);
         let status = thread.eido_turn().status;
         let count = thread.pending_review_count(cx);
-        let label = if thread.is_cancelling() { "Stopping · waiting for the current operation" }
-            else if thread.is_waiting_for_confirmation() { "Waiting for input" }
-            else if thread.status() == ThreadStatus::Generating { "Running" }
-            else { status.label() };
-        let mut row = h_flex().gap_2().px_4().py_1().flex_wrap()
-            .child(Label::new(label).size(LabelSize::Small).color(match status {
-                acp_thread::EidoTurnStatus::Failed => Color::Error,
-                acp_thread::EidoTurnStatus::Interrupted => Color::Warning,
-                _ => Color::Muted,
-            }));
+        let cancelling = thread.is_cancelling();
+        let waiting = thread.is_waiting_for_confirmation() || self.has_pending_request_elicitation(cx);
+        let generating = thread.status() == ThreadStatus::Generating;
+        let label = if cancelling { Some(("Stopping · waiting for the current operation", Color::Muted)) }
+            else if waiting { Some(("Waiting for input", Color::Muted)) }
+            else if generating { Some(("Running", Color::Muted)) }
+            else { match status {
+                acp_thread::EidoTurnStatus::Idle | acp_thread::EidoTurnStatus::Completed => None,
+                acp_thread::EidoTurnStatus::Failed => Some((status.label(), Color::Error)),
+                acp_thread::EidoTurnStatus::Interrupted => Some((status.label(), Color::Warning)),
+                _ => Some((status.label(), Color::Muted)),
+            }};
+        if label.is_none() && count == 0 { return None; }
+        let mut row = h_flex().w_full().max_w(self.eido_content_width(cx)).mx_auto()
+            .gap_2().px_3().py_1().flex_wrap();
+        if let Some((label, color)) = label {
+            row = row.child(Label::new(crate::eido_research::state_label(label, cx)).size(LabelSize::Small).color(color));
+        }
         if count > 0 {
-            row = row.child(Label::new(format!("Awaiting review · {count} {}", if count == 1 {"file"} else {"files"})).size(LabelSize::Small).color(Color::Warning));
+            row = row.child(Label::new(eido_i18n::tr_args(cx, "review.awaiting_count", &[("count", count.to_string())])).size(LabelSize::Small).color(Color::Warning));
         }
-        if status == acp_thread::EidoTurnStatus::Interrupted {
-            row = row.child(Label::new("Check history and changes before sending again.").size(LabelSize::Small).color(Color::Muted));
+        if status == acp_thread::EidoTurnStatus::Interrupted && !cancelling && !waiting && !generating {
+            row = row.child(Label::new(eido_i18n::tr(cx, "task.history_before_retry")).size(LabelSize::Small).color(Color::Muted));
         }
-        Some(row.into_any_element())
+        let compact = window.viewport_size().width < px(1000.);
+        Some(div().w_full().flex_none().px(if compact { px(16.) } else { px(24.) }).child(row).into_any_element())
     }
 
     fn render_verification(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
@@ -12329,7 +12489,7 @@ impl ThreadView {
         if rows.is_empty() { return None; }
         let total = rows.len();
         let mut content = v_flex().gap_1().px_4().py_2().border_t_1().border_color(cx.theme().colors().border_variant)
-            .child(h_flex().gap_2().child(Button::new("verification-toggle", format!("Verification · {total} {}", if total == 1 {"run"} else {"runs"}))
+            .child(h_flex().gap_2().child(Button::new("verification-toggle", eido_i18n::tr_args(cx, "review.run_count", &[("count", total.to_string())]))
                 .label_size(LabelSize::Small).start_icon(Icon::new(if self.eido_verification.expanded {IconName::ChevronDown} else {IconName::ChevronRight}))
                 .on_click(cx.listener(|this, _, _, cx| {this.eido_verification.expanded = !this.eido_verification.expanded; cx.notify();}))));
         let mut results = v_flex().id("verification-results").max_h(px(220.)).overflow_y_scroll().gap_1();
@@ -12338,9 +12498,10 @@ impl ThreadView {
             let session_id = row.session_id; let tool_id = row.tool_call_id;
             results = results.child(v_flex().gap_0p5()
                 .child(h_flex().gap_2().flex_wrap()
-                    .child(Label::new(row.status).size(LabelSize::Small))
-                    .child(Label::new(current).size(LabelSize::Small).color(if current == "Inputs changed" {Color::Warning} else {Color::Muted}))
-                    .child(Button::new(("verification-output", index), "View Result").label_size(LabelSize::Small)
+                    .child(Label::new(row.evidence.requirement_display(current, cx)).size(LabelSize::Small))
+                    .child(Label::new(row.evidence.outcome_display(&row.status, cx)).size(LabelSize::Small))
+                    .child(Label::new(crate::eido_research::state_label(current, cx)).size(LabelSize::Small).color(if current == "Inputs changed" {Color::Warning} else {Color::Muted}))
+                    .child(Button::new(("verification-output", index), eido_i18n::tr(cx, "review.view_result")).label_size(LabelSize::Small)
                         .on_click(cx.listener(move |this, _, window, cx| {
                             if this.thread.read(cx).session_id() == &session_id {
                                 this.eido_reveal_verification(&tool_id, cx);
@@ -12357,7 +12518,7 @@ impl ThreadView {
         }
         content = content.child(results);
         if self.eido_verification.expanded {
-            content = content.child(Label::new("Results cover captured inputs only. Checks and browser observations do not establish full acceptance. Re-run verification after edits; preview status rechecks available inputs.").size(LabelSize::XSmall).color(Color::Muted));
+            content = content.child(Label::new(eido_i18n::tr(cx, "review.results_scope")).size(LabelSize::XSmall).color(Color::Muted));
         }
         Some(content.into_any_element())
     }
@@ -12375,11 +12536,11 @@ impl ThreadView {
         let reviews = journal.read(cx);
         if reviews.records().is_empty() && reviews.storage_error().is_none() {return None;}
         let mut content = v_flex().id("file-operation-reviews").px_4().py_2().gap_1().max_h(px(210.)).overflow_y_scroll()
-            .child(h_flex().gap_2().child(Label::new("File Operations").size(LabelSize::Small))
-                .child(Button::new("accept-all-file-operations", "Accept All").label_size(LabelSize::Small)
+            .child(h_flex().gap_2().child(Label::new(eido_i18n::tr_args(cx, "review.operation_count", &[("count", reviews.records().len().to_string())])).size(LabelSize::Small))
+                .child(Button::new("accept-all-file-operations", eido_i18n::tr(cx, "review.accept_all")).label_size(LabelSize::Small)
                     .disabled(reviews.busy() || !reviews.records().iter().any(|r| r.decision == acp_thread::FileReviewDecision::Pending))
                     .on_click(cx.listener(|this, _, _, cx| this.decide_pending_file_operations("accept", cx))))
-                .child(Button::new("reject-all-file-operations", "Reject All").label_size(LabelSize::Small)
+                .child(Button::new("reject-all-file-operations", eido_i18n::tr(cx, "review.reject_all")).label_size(LabelSize::Small)
                     .disabled(reviews.busy() || !reviews.records().iter().any(|r| r.decision == acp_thread::FileReviewDecision::Pending))
                     .on_click(cx.listener(|this, _, _, cx| this.decide_pending_file_operations("reject", cx)))));
         if let Some(error) = reviews.storage_error() {content = content.child(Label::new(error.to_owned()).size(LabelSize::Small).color(Color::Error));}
@@ -12387,8 +12548,8 @@ impl ThreadView {
             let id = record.id.clone();
             let copy = record.clone();
             let mut row = h_flex().gap_2().flex_wrap()
-                .child(Label::new(format!("{} · {}", record.label(), record.proposal.path.file_name().unwrap_or_default().to_string_lossy())).size(LabelSize::Small))
-                .child(Button::new(SharedString::from(format!("file-operation-copy-{id}")), "Review").label_size(LabelSize::Small)
+                .child(Label::new(format!("{} · {}", crate::eido_research::state_label(record.label(), cx), record.proposal.path.file_name().unwrap_or_default().to_string_lossy())).size(LabelSize::Small))
+                .child(Button::new(SharedString::from(format!("file-operation-copy-{id}")), eido_i18n::tr(cx, "review.review")).label_size(LabelSize::Small)
                     .on_click(cx.listener(move |this, _, window, cx| {
                         if let Some(workspace) = this.workspace.upgrade() {
                             open_markdown_in_workspace("File Operation Review".into(), copy.markdown(), workspace, window, cx).detach_and_log_err(cx);
@@ -12403,7 +12564,7 @@ impl ThreadView {
             };
             for (action, label) in actions {
                 let action = *action; let id = id.clone(); let journal = journal.clone();
-                row = row.child(Button::new(SharedString::from(format!("file-operation-{action}-{id}")), *label).label_size(LabelSize::Small).disabled(reviews.busy())
+                row = row.child(Button::new(SharedString::from(format!("file-operation-{action}-{id}")), crate::eido_research::state_label(label, cx)).label_size(LabelSize::Small).disabled(reviews.busy())
                     .on_click(cx.listener(move |_this, _, _, cx| {
                         let task = journal.update(cx, |reviews, cx| reviews.decide(id.clone(), action, cx));
                         cx.spawn(async move |this, cx| {
@@ -12433,22 +12594,22 @@ impl ThreadView {
             let saved = file.clone();
             content = content.child(h_flex().gap_2()
                 .child(Icon::new(IconName::Warning).size(IconSize::Small).color(Color::Warning))
-                .child(Label::new(format!("Review recovery: {}", file.path.file_name().unwrap_or_default().to_string_lossy())).size(LabelSize::Small))
-                .child(Button::new(("open-review-copy", index), "Open Saved Copy").label_size(LabelSize::Small)
+                .child(Label::new(eido_i18n::tr_args(cx, "review.recovery", &[("name", file.path.file_name().unwrap_or_default().to_string_lossy().to_string())])).size(LabelSize::Small))
+                .child(Button::new(("open-review-copy", index), eido_i18n::tr(cx, "review.saved_copy")).label_size(LabelSize::Small)
                     .on_click(cx.listener(move |this, _, window, cx| {
                         if let Some(workspace) = this.workspace.upgrade() {
                             open_markdown_in_workspace("Saved Review".into(), crate::eido_review_store::copy_markdown(&saved), workspace, window, cx).detach_and_log_err(cx);
                         }
                     })))
-                .child(Button::new(("keep-current-review", index), "Keep Current").label_size(LabelSize::Small)
-                    .tooltip(Tooltip::text("Keep the current file and archive this saved review copy"))
+                .child(Button::new(("keep-current-review", index), eido_i18n::tr(cx, "review.keep_current")).label_size(LabelSize::Small)
+                    .tooltip(Tooltip::text(eido_i18n::tr(cx, "review.keep_current_tip")))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.thread.update(cx, |thread, cx| thread.keep_current_review(&path, cx));
                         cx.notify();
                     }))));
         }
         if archived > 0 {
-            content = content.child(Button::new("archived-review-copies", format!("Saved Review Copies ({archived})"))
+            content = content.child(Button::new("archived-review-copies", eido_i18n::tr_args(cx, "review.saved_copies", &[("count", archived.to_string())]))
                 .label_size(LabelSize::Small)
                 .on_click(cx.listener(|this, _, window, cx| {
                     if let Some(workspace) = this.workspace.upgrade() {
@@ -12551,7 +12712,7 @@ impl ThreadView {
                     .dismiss_action(
                         IconButton::new(("dismiss-skill-issue", index), IconName::Close)
                             .icon_size(IconSize::Small)
-                            .tooltip(Tooltip::text("Dismiss"))
+                            .tooltip(Tooltip::text(eido_i18n::tr(cx, "review.dismiss")))
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.skill_loading_issues.retain(|issue| *issue != target);
                                 this.dismissed_skill_loading_issues.insert(target.clone());
@@ -12651,7 +12812,7 @@ impl ThreadView {
             callout.dismiss_action(
                 IconButton::new("dismiss-skill-description-warnings", IconName::Close)
                     .icon_size(IconSize::Small)
-                    .tooltip(Tooltip::text("Dismiss"))
+                    .tooltip(Tooltip::text(eido_i18n::tr(cx, "review.dismiss")))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.skill_loading_issues
                             .retain(|issue| !targets.contains(issue));
@@ -12674,7 +12835,7 @@ impl ThreadView {
             .dismiss_action(
                 IconButton::new("dismiss-external-source-prompt-warning", IconName::Close)
                     .icon_size(IconSize::Small)
-                    .tooltip(Tooltip::text("Dismiss Warning"))
+                    .tooltip(Tooltip::text(eido_i18n::tr(cx, "task.dismiss_warning")))
                     .on_click(cx.listener({
                         move |this, _, _, cx| {
                             this.show_external_source_prompt_warning = false;
@@ -12729,7 +12890,7 @@ impl ThreadView {
                 .dismiss_action(
                     IconButton::new("dismiss-multi-root-callout", IconName::Close)
                         .icon_size(IconSize::Small)
-                        .tooltip(Tooltip::text("Dismiss"))
+                        .tooltip(Tooltip::text(eido_i18n::tr(cx, "review.dismiss")))
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.multi_root_callout_dismissed = true;
                             cx.notify();
@@ -12828,7 +12989,7 @@ impl ThreadView {
                 .description(description)
                 .actions_slot(
                     h_flex().gap_0p5().child(
-                        Button::new("start-new-thread", "Start New Thread")
+                        Button::new("start-new-thread", eido_i18n::tr(cx, "task.start_new"))
                             .label_size(LabelSize::Small)
                             .on_click(cx.listener(|this, _, window, cx| {
                                 let session_id = this.thread.read(cx).session_id().clone();
@@ -12902,7 +13063,7 @@ impl ThreadView {
                         )
                     })
                     .child(
-                        Button::new("accept-data-retention", "Accept")
+                        Button::new("accept-data-retention", eido_i18n::tr(cx, "review.accept"))
                             .label_size(LabelSize::Small)
                             .style(ButtonStyle::Tinted(TintColor::Warning))
                             .on_click(cx.listener(|this, _, _, cx| {
@@ -13088,11 +13249,7 @@ impl ThreadView {
 
 impl Render for ThreadView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // Keep the message editor's local slash commands in sync with the
-        // current availability of feedback/sharing, which can change between
-        // renders (settings, connection state, feature flags).
-        self.sync_local_commands(cx);
-
+        self.eido_refresh_language(window, cx);
         let has_messages = self.list_state.item_count() > 0;
         let list_state = self.list_state.clone();
 
@@ -13106,31 +13263,6 @@ impl Render for ThreadView {
                         .size_full()
                         .child(self.render_entries(cx))
                         .vertical_scrollbar_for(&list_state, window, cx)
-                        .into_any()
-                } else if std::env::var_os("EIDO_ROOT").is_some() {
-                    this.flex_1()
-                        .min_h_0()
-                        .justify_center()
-                        .px_6()
-                        .gap_3()
-                        .child(
-                            Icon::new(IconName::Thread)
-                                .size(IconSize::Medium)
-                                .color(Color::Muted),
-                        )
-                        .child(Label::new("Start with your code").size(LabelSize::Large))
-                        .child(
-                            Label::new(
-                                "Describe your goal, or add a code selection to the conversation.",
-                            )
-                            .size(LabelSize::Small)
-                            .color(Color::Muted),
-                        )
-                        .child(
-                            Label::new("⌘⇧J Focus Composer · ⌘↵ Send")
-                                .size(LabelSize::XSmall)
-                                .color(Color::Muted),
-                        )
                         .into_any()
                 } else {
                     this.into_any()
@@ -13452,7 +13584,6 @@ impl Render for ThreadView {
             .child(conversation)
             .children(self.render_multi_root_callout(cx))
             .children(self.render_activity_bar(window, cx))
-            .when_some(self.render_eido_task_state(cx), |this, state| this.child(state))
             .when_some(self.render_verification(cx), |this, evidence| this.child(evidence))
             .when_some(self.render_file_operations(cx), |this, review| this.child(review))
             .when_some(self.render_review_recovery(cx), |this, recovery| this.child(recovery))
@@ -13477,6 +13608,7 @@ impl Render for ThreadView {
             )
             .children(self.render_token_limit_callout(cx))
             .children(self.render_request_elicitations(cx))
+            .when_some(self.render_eido_task_state(window, cx), |this, state| this.child(state))
             .when(std::env::var_os("EIDO_ROOT").is_none(), |this| {
                 this.child(self.render_message_editor(window, cx))
             })
@@ -13543,10 +13675,13 @@ pub(crate) fn open_link(
             }
             _ => mention,
         };
+        if let MentionUri::Document{id,..}=&mention {crate::eido_document::open_preview(id.clone(),&workspace.downgrade(),window,cx);return;}
         workspace.update(cx, |workspace, cx| match mention {
             MentionUri::File { abs_path } => {
                 open_abs_path_at_point(workspace, abs_path, None, window, cx);
             }
+            MentionUri::Requirement { .. } => {}
+            MentionUri::Document { .. } => {}
             MentionUri::PastedImage { .. } => {}
             MentionUri::Directory { abs_path } => {
                 let project = workspace.project();

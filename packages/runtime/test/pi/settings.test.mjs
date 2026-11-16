@@ -5,6 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createPiSettings, checkPiUpdate, bundledVersion } from "../../src/pi/settings.mjs";
 import {computerSettings, computerMcp} from '../../src/computer.mjs';
+import {resolveResearchAuth} from '../../src/research/config.mjs';
+import {ModelRuntime} from '../../../acp/node_modules/@earendil-works/pi-coding-agent/dist/index.js';
 
 async function fixture(t) {
   const root = await mkdtemp(join(tmpdir(), "eido-pi-settings-"));
@@ -18,6 +20,53 @@ async function fixture(t) {
   await put(target, "settings.json", {defaultProvider:"eido-fixture",defaultModel:"test-model",defaultThinkingLevel:"off",customSetting:{retain:true}});
   return {target,source,put,get,config,bridge:createPiSettings(target,source)};
 }
+
+test('Research settings preserve the conversation model, credentials and unrelated fields with CAS', async t => {
+  const f = await fixture(t);
+  await f.put(f.target, 'auth.json', {'eido-fixture':{type:'api_key',key:'fixture-main'}});
+  const initial = await f.bridge.status();
+  assert.equal(initial.research.status, 'Disabled');
+  const result = await f.bridge.execute({operation:'research', expectedRevision:0,
+    changes:{enabled:true,baseUrl:'https://api.deepseek.com/v1/'},key:'fixture-research'});
+  assert.equal(result.research.status, 'Configured · Not checked');
+  assert.equal(result.research.baseUrl, 'https://api.deepseek.com/v1');
+  assert.equal(result.defaultModel, 'test-model');
+  assert.equal(result.defaultProvider, 'eido-fixture');
+  assert.equal(JSON.stringify(result).includes('fixture-research'),false);
+  await assert.rejects(f.bridge.execute({operation:'research', expectedRevision:0, changes:{enabled:false},key:'must-not-write'}),/changed/);
+  assert.equal((await f.get(f.target,'auth.json')).deepseek.key,'fixture-research');
+  const keep = await f.bridge.execute({operation:'research',expectedRevision:1,changes:{limits:{attempts24h:20}},key:''});
+  assert.equal(keep.research.limits.attempts24h,20);
+  assert.equal((await f.get(f.target,'auth.json'))['eido-fixture'].key,'fixture-main');
+  assert.equal((await f.get(f.target,'settings.json')).customSetting.retain,true);
+  for (const changes of [{baseUrl:'http://example.org/v1'}, {baseUrl:'https://user:pass@example.org/v1'},
+    {baseUrl:'https://example.org/v1?secret=x'}, {limits:{attempts24h:0}},{limits:{attemptsPerTurn:Infinity}}]) {
+    await assert.rejects(f.bridge.execute({operation:'research',expectedRevision:2,changes}));
+  }
+  const cleared = await f.bridge.execute({operation:'research',expectedRevision:2,changes:{},removeKey:true});
+  assert.equal(cleared.research.status,'Not configured');
+  assert.equal((await f.get(f.target,'auth.json')).deepseek,undefined);
+});
+
+test('Research uses only the public ModelRuntime authentication result', async () => {
+  const signal = new AbortController().signal;
+  assert.equal(await resolveResearchAuth({getAuth:async (provider, options) => {
+    assert.equal(provider,'deepseek'); assert.equal(options.signal,signal); return {auth:{apiKey:'resolved-by-pi'}};
+  }},signal),'resolved-by-pi');
+  await assert.rejects(resolveResearchAuth({getAuth:async()=>undefined}),/did not provide/);
+  await assert.rejects(resolveResearchAuth({getAuth:async()=>{throw new Error('private credential');}}),/could not be resolved/);
+});
+test('Research credentials resolve environment references through bundled pi and settle its writes', async t => {
+  const f=await fixture(t);
+  const variable='EIDO_RESEARCH_AUTH_TEST'; const previous=process.env[variable];
+  process.env[variable]='local-test-key';
+  t.after(()=>{if(previous===undefined)delete process.env[variable];else process.env[variable]=previous;});
+  await f.bridge.execute({operation:'research',expectedRevision:0,changes:{enabled:true},key:'$'+variable});
+  const runtime=await ModelRuntime.create({authPath:join(f.target,'auth.json'),modelsPath:join(f.target,'models.json'),allowModelNetwork:false});
+  try { assert.equal(await resolveResearchAuth(runtime),'local-test-key'); }
+  finally { await runtime.settleCredentialWrites(); }
+  assert.equal((await f.get(f.target,'auth.json')).deepseek.key,'$'+variable);
+});
 
 test('Computer Use uses one global executable, reports absence and rejects stale settings', async t => {
   const f = await fixture(t);
@@ -318,4 +367,15 @@ test('browser execution and text model settings are global, isolated and keep ke
   await f.bridge.execute({operation:'browser-text',removeKey:true});
   assert.equal((await f.get(f.target,'auth.json'))['eido-fixture'].key,'main-secret');
   assert.equal((await f.bridge.status()).browserText.source,'pi');
+});
+
+test('Research save and status are local; explicit connection check uses one budgeted public search',async t=>{
+  const {createServer}=await import('node:http');let requests=0;
+  const server=createServer(async(req,res)=>{const chunks=[];for await(const part of req)chunks.push(part);requests++;assert.deepEqual(JSON.parse(Buffer.concat(chunks)),{query:'DeepSeek API documentation',count:1,need_content:false});res.end('{"results":[]}');});
+  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));t.after(()=>{server.closeAllConnections();server.close();});
+  const f=await fixture(t);
+  await f.bridge.execute({operation:'research',expectedRevision:0,changes:{enabled:true,baseUrl:`http://127.0.0.1:${server.address().port}/v1`},key:'settings-fixture-key'});
+  await f.bridge.status();assert.equal(requests,0);
+  const checked=await f.bridge.execute({operation:'research-test'});assert.equal(requests,1);assert.equal(checked.research.status,'Connected');assert.equal(checked.research.capabilities.search.status,'Connected');assert.equal(checked.research.capabilities.ocr,undefined);assert.equal(checked.defaultModel,'test-model');
+  const {ResearchUsage}=await import('../../src/research/usage.mjs');assert.equal((await new ResearchUsage(f.target).summary()).global.attempts,1);
 });

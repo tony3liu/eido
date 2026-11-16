@@ -33,6 +33,7 @@ const NO_RECONNECT = {
     maxRetries: 0,
 };
 const NEVER_ABORTED = new AbortController().signal;
+const EIDO_BUILTIN_CLIENT = Symbol('eido.builtin.mcp.client');
 export class McpTimeoutError extends Error {
     constructor() {
         super("MCP operation timed out");
@@ -877,6 +878,14 @@ function syntheticTool(policy, alias, description, parameters, execute) {
     return { ...policy, name: alias, label: alias, description, parameters, execute };
 }
 export async function bridgeMcpServers(servers, openSignal, deps, binding) {
+    // Session-bound in-process clients use this same ownership, schema, alias,
+    // permission, progress and disposal path. They are never fake stdio/HTTP servers.
+    const builtins = binding && deps.builtinMcpClients ? await deps.builtinMcpClients(binding) : [];
+    if (!Array.isArray(builtins) || builtins.length > 8 || builtins.some(client => !/^[a-zA-Z0-9_-]{1,64}$/.test(client.name) || typeof client.connect !== 'function'))
+        throw new Error('Invalid built-in MCP client registration.');
+    servers = [...servers, ...builtins.map(client => ({name:client.name,
+        [EIDO_BUILTIN_CLIENT]:client,
+        [Symbol.for('eido.pi.mcp.options')]:{origin:'builtin',timeoutMs:client.timeoutMs ?? deps.mcpTimeoutMs}}))];
     const seenNames = new Set();
     for (const server of servers) {
         if (seenNames.has(server.name))
@@ -1075,7 +1084,7 @@ export async function bridgeMcpServers(servers, openSignal, deps, binding) {
                     const progressValue = value;
                     const text = `[mcp:${state.token}] ${String(progressValue.progress)}${progressValue.total === undefined ? "" : `/${String(progressValue.total)}`}${progressValue.message === undefined ? "" : ` ${String(progressValue.message)}`}`;
                     onUpdate?.({ content: [{ type: "text", text }], details: value });
-                }), signal, binding?.sessionSignal, state.peerDead ? undefined : state.handle.getPeerSignal?.(), state.timeoutMs, deps.sleep);
+                }, {toolCallId}), signal, binding?.sessionSignal, state.peerDead ? undefined : state.handle.getPeerSignal?.(), state.timeoutMs, deps.sleep);
                 const validate = state.validators.get(alias);
                 if (validate && !result.isError) {
                     if (result.structuredContent === undefined || !validate(result.structuredContent).valid)
@@ -1285,7 +1294,9 @@ export async function bridgeMcpServers(servers, openSignal, deps, binding) {
             let state;
             try {
                 const serverBinding = binding ? { ...binding, serverToken: token } : undefined;
-                const connecting = deps.connectMcpClient(server, openSignal, serverBinding);
+                const connecting = server[EIDO_BUILTIN_CLIENT]
+                    ? server[EIDO_BUILTIN_CLIENT].connect(serverBinding, openSignal)
+                    : deps.connectMcpClient(server, openSignal, serverBinding);
                 connecting.then(() => undefined, () => undefined);
                 try {
                     handle = await settleMcpOperation(() => connecting, openSignal, binding?.sessionSignal, undefined, timeoutMs, deps.sleep);
@@ -1473,7 +1484,7 @@ export async function bridgeMcpServers(servers, openSignal, deps, binding) {
     try {await connectServers(servers, openSignal);}
     catch (error) {await statusSink?.close(); throw error;}
 // Eido MCP registry v1
-    const fixedNames = new Set(servers.filter(server => !server[Symbol.for("eido.pi.mcp.options")]).map(server => server.name));
+    const fixedNames = new Set(servers.filter(server => server[EIDO_BUILTIN_CLIENT] || !server[Symbol.for("eido.pi.mcp.options")]).map(server => server.name));
     const fingerprint = server => {
         const options = server[Symbol.for("eido.pi.mcp.options")];
         return JSON.stringify([server, options?.config, options?.autoEnableCodemode, options?.cwd, options?.unresolved, options?.origin, options?.extensionPath]);

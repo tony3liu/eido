@@ -1593,6 +1593,7 @@ pub struct Workspace {
     eido_terminal_open: bool,
     eido_terminal_expanded: bool,
     eido_reply_visible: bool,
+    eido_composer_centered: bool,
     eido_navigation_width: Pixels,
     eido_workbench_width: Pixels,
     eido_terminal_height: Pixels,
@@ -2112,10 +2113,11 @@ impl Workspace {
             eido_navigation: None,
             eido_terminal: None,
             eido_toolbar: None,
-            eido_layout: EidoLayout::Split,
+            eido_layout: EidoLayout::Workbench,
             eido_terminal_open: false,
             eido_terminal_expanded: false,
             eido_reply_visible: false,
+            eido_composer_centered: false,
             eido_navigation_width: px(230.),
             eido_workbench_width: px(590.),
             eido_terminal_height: px(240.),
@@ -8962,6 +8964,7 @@ impl Workspace {
                             .is_some_and(|terminal| terminal.entity_id() == panel.panel_id())
                     }));
         let composer = self.eido_composer.clone();
+        let composer_centered = self.eido_composer_centered(cx);
         let reply_open = !workbench_visible && self.eido_reply_visible;
         let terminal_height = self
             .eido_terminal_height
@@ -8991,14 +8994,16 @@ impl Workspace {
                     .flex_1()
                     .min_h_0()
                     .overflow_hidden()
-                    .child(
-                        div()
-                            .w(self.eido_navigation_width)
-                            .h_full()
-                            .flex_none()
-                            .children(self.eido_navigation.clone()),
-                    )
-                    .child(self.eido_divider(0, cx))
+                    .when(editor_visible, |this| {
+                        this.child(
+                            div()
+                                .w(self.eido_navigation_width)
+                                .h_full()
+                                .flex_none()
+                                .children(self.eido_navigation.clone()),
+                        )
+                        .child(self.eido_divider(0, cx))
+                    })
                     .child(
                         h_flex()
                             .h_full()
@@ -9017,13 +9022,15 @@ impl Workspace {
                                             this.w(workbench_width).flex_none()
                                         })
                                         .when(!editor_visible, |this| this.flex_1())
-                                        .child(
-                                            div()
-                                                .flex_1()
-                                                .min_h_0()
-                                                .overflow_hidden()
-                                                .children(self.eido_workbench.clone()),
-                                        )
+                                        .when(!composer_centered, |this| {
+                                            this.child(
+                                                div()
+                                                    .flex_1()
+                                                    .min_h_0()
+                                                    .overflow_hidden()
+                                                    .children(self.eido_workbench.clone()),
+                                            )
+                                        })
                                         .when(
                                             self.eido_layout == EidoLayout::Workbench
                                                 && terminal_open,
@@ -9202,6 +9209,19 @@ impl Workspace {
     }
     pub fn eido_terminal_expanded(&self) -> bool {
         self.eido_terminal_expanded
+    }
+    /// Presentation only: the same global composer remains attached in every layout.
+    pub fn eido_composer_centered(&self, cx: &App) -> bool {
+        self.eido_composer_centered
+            && self.eido_layout == EidoLayout::Workbench
+            && !self.eido_terminal_expanded
+            && !self.eido_terminal_open(cx)
+    }
+    pub fn set_eido_composer_centered(&mut self, centered: bool, cx: &mut Context<Self>) {
+        if self.eido_composer_centered != centered {
+            self.eido_composer_centered = centered;
+            cx.notify();
+        }
     }
     pub fn eido_reply_visible(&self) -> bool {
         self.eido_reply_visible

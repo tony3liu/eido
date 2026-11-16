@@ -515,9 +515,9 @@ struct SidebarContents {
 enum EntryShape {
     ProjectHeader {
         key: ProjectGroupKey,
-        // Toggles the "No threads yet" empty-state row when not collapsed.
+        // Toggles the empty-state row when not collapsed.
         has_threads: bool,
-        // Determines whether the "No threads yet" row is rendered (only shown when
+        // Determines whether the empty-state row is rendered (only shown when
         // `!is_collapsed && !has_threads`).
         is_collapsed: bool,
     },
@@ -854,10 +854,16 @@ impl Sidebar {
 
         let filter_editor = cx.new(|cx| {
             let mut editor = Editor::single_line(window, cx);
-            editor.set_placeholder_text("Search threads…", window, cx);
+            editor.set_placeholder_text(&eido_i18n::tr(cx, "sidebar.search"), window, cx);
             editor
         });
         let rename_editor = cx.new(|cx| Editor::single_line(window, cx));
+        cx.observe_global_in::<eido_i18n::LocaleState>(window, |this, window, cx| {
+            let placeholder = eido_i18n::tr(cx, "sidebar.search");
+            this.filter_editor.update(cx, |editor, cx| editor.set_placeholder_text(&placeholder, window, cx));
+            cx.notify();
+        }).detach();
+
 
         cx.subscribe_in(
             &multi_workspace,
@@ -2296,6 +2302,7 @@ impl Sidebar {
         &self,
         ix: usize,
         host: Option<&RemoteConnectionOptions>,
+        cx: &App,
     ) -> Option<AnyElement> {
         let remote_icon_per_type = match host? {
             RemoteConnectionOptions::Wsl(_) => IconName::Linux,
@@ -2311,7 +2318,7 @@ impl Sidebar {
                         .size(IconSize::XSmall)
                         .color(Color::Muted),
                 )
-                .tooltip(Tooltip::text("Remote Project"))
+                .tooltip(Tooltip::text(eido_i18n::tr(cx, "sidebar.remote_project")))
                 .into_any_element(),
         )
     }
@@ -2416,7 +2423,7 @@ impl Sidebar {
                     .gap_1()
                     .child(label)
                     .when_some(
-                        self.render_remote_project_icon(ix, host.as_ref()),
+                        self.render_remote_project_icon(ix, host.as_ref(), cx),
                         |this, icon| this.child(icon),
                     )
                     .when(is_collapsed, |this| {
@@ -2526,7 +2533,7 @@ impl Sidebar {
                             Color::Custom(cx.theme().colors().icon_placeholder.opacity(0.1)),
                         ))
                         .child(
-                            Label::new("No threads yet")
+                            Label::new(eido_i18n::tr(cx, "sidebar.empty"))
                                 .size(LabelSize::Small)
                                 .color(Color::Placeholder),
                         ),
@@ -2572,7 +2579,7 @@ impl Sidebar {
             let key = key.clone();
             return button
                 .tooltip(move |_, cx| {
-                    Tooltip::for_action_in("Start New Agent Thread", &NewThread, &focus_handle, cx)
+                    Tooltip::for_action_in(eido_i18n::tr(cx, "sidebar.new_task"), &NewThread, &focus_handle, cx)
                 })
                 .on_click(cx.listener(move |this, _, window, cx| {
                     this.set_group_expanded(&key, true, cx);
@@ -2599,7 +2606,7 @@ impl Sidebar {
         )))
         .with_handle(menu_handle)
         .trigger_with_tooltip(button, move |_, cx| {
-            Tooltip::for_action_in("Start New Agent Thread", &NewThread, &focus_handle, cx)
+            Tooltip::for_action_in(eido_i18n::tr(cx, "sidebar.new_task"), &NewThread, &focus_handle, cx)
         })
         .anchor(gpui::Anchor::TopLeft)
         .on_open(Rc::new({
@@ -2630,7 +2637,7 @@ impl Sidebar {
                 window,
                 cx,
                 move |mut menu, _window, cx| {
-                    menu = menu.header("New Thread In…");
+                    menu = menu.header(eido_i18n::tr(cx, "sidebar.new_task_in"));
 
                     for (workspace, labels) in open_workspaces
                         .iter()
@@ -5360,9 +5367,12 @@ impl Sidebar {
         };
         let Some(workspace) = workspace else { return; };
         let Some(panel) = workspace.read(cx).panel::<AgentPanel>(cx) else { return; };
-        let prompt = window.prompt(gpui::PromptLevel::Warning, "Delete this thread?",
-            Some("Its conversation history will be permanently deleted. Project files are kept."),
-            &["Delete", "Cancel"], cx);
+        let title = eido_i18n::tr(cx, "sidebar.delete_question");
+        let detail = eido_i18n::tr(cx, "sidebar.delete_detail");
+        let delete = eido_i18n::tr(cx, "sidebar.confirm_delete");
+        let cancel = eido_i18n::tr(cx, "sidebar.cancel");
+        let prompt = window.prompt(gpui::PromptLevel::Warning, &title,
+            Some(&detail), &[delete.as_ref(), cancel.as_ref()], cx);
         cx.spawn_in(window, async move |this, cx| {
             if prompt.await != Ok(0) { return; }
             let result: anyhow::Result<()> = async {
@@ -5393,7 +5403,7 @@ impl Sidebar {
             }.await;
             if let Err(error) = result {
                 workspace.update(cx, |workspace, cx| {
-                    let toast = StatusToast::new(format!("Thread could not be deleted: {error}"), cx, |this, _| this);
+                    let toast = StatusToast::new(eido_i18n::tr_args(cx, "sidebar.delete_error", &[("error", error.to_string())]), cx, |this, _| this);
                     workspace.toggle_status_toast(toast, cx);
                 });
             }
@@ -6321,7 +6331,19 @@ impl Sidebar {
         } else {
             let time = format_history_entry_timestamp(Self::thread_display_time(&thread.metadata));
             if thread.metadata.agent_id.as_ref() == "eido-pi" && !is_draft {
-                format!("{}{} · {}", if has_notification { "Unread · " } else { "" }, thread.status.label(), time).into()
+                {
+                    let status_key = match thread.status {
+                        AgentThreadStatus::Completed => "sidebar.completed",
+                        AgentThreadStatus::Running => "sidebar.running",
+                        AgentThreadStatus::WaitingForConfirmation => "sidebar.waiting_input",
+                        AgentThreadStatus::Error => "sidebar.error",
+                        AgentThreadStatus::Ready => "sidebar.ready",
+                        AgentThreadStatus::Cancelled => "sidebar.cancelled",
+                        AgentThreadStatus::Interrupted => "sidebar.unknown",
+                        AgentThreadStatus::WaitingForReview => "sidebar.review",
+                    };
+                    eido_i18n::tr_args(cx, if has_notification { "sidebar.unread" } else { "sidebar.status_time" }, &[("status", eido_i18n::tr(cx, status_key).to_string()), ("time", time)])
+                }
             } else { time.into() }
         };
 
@@ -6386,7 +6408,7 @@ impl Sidebar {
                         let focus_handle = focus_handle.clone();
                         move |_window, cx| {
                             Tooltip::for_action_in(
-                                "Rename Thread",
+                                eido_i18n::tr(cx, "sidebar.rename"),
                                 &RenameSelectedThread,
                                 &focus_handle,
                                 cx,
@@ -6412,7 +6434,7 @@ impl Sidebar {
                             .icon_size(IconSize::Small)
                             .icon_color(Color::Error)
                             .style(ButtonStyle::Tinted(TintColor::Error))
-                            .tooltip(Tooltip::text("Stop Generation"))
+                            .tooltip(Tooltip::text(eido_i18n::tr(cx, "sidebar.stop")))
                             .on_click(cx.listener(move |this, _, _window, cx| {
                                 this.stop_thread(&thread_id_for_actions, cx);
                             }))
@@ -6424,7 +6446,7 @@ impl Sidebar {
                         Some(DraftKind::WithContent) => Some(
                             IconButton::new("discard_thread", IconName::Close)
                                 .icon_size(IconSize::Small)
-                                .tooltip(Tooltip::text("Discard Draft"))
+                                .tooltip(Tooltip::text(eido_i18n::tr(cx, "sidebar.discard_draft")))
                                 .on_click({
                                     let thread_workspace = thread_workspace.clone();
                                     cx.listener(move |this, _, window, cx| {
@@ -6441,7 +6463,7 @@ impl Sidebar {
                         None => Some(
                             IconButton::new("delete-thread", IconName::Trash)
                                 .icon_size(IconSize::Small)
-                                .tooltip(Tooltip::text("Delete thread"))
+                                .tooltip(Tooltip::text(eido_i18n::tr(cx, "sidebar.delete")))
                                 .on_click(cx.listener(move |this, _, window, cx| {
                                     cx.stop_propagation();
                                     this.delete_thread(thread_id_for_actions, window, cx);
@@ -6517,8 +6539,8 @@ impl Sidebar {
                     let markdown_title = markdown_title.clone();
                     let rename_title = rename_title.clone();
                     let folder_paths = folder_paths.clone();
-                    ContextMenu::build(_window, cx, move |mut menu, _window, _cx| {
-                        menu = menu.entry("Rename Title", None, {
+                    ContextMenu::build(_window, cx, move |mut menu, _window, cx| {
+                        menu = menu.entry(eido_i18n::tr(cx, "sidebar.rename_title"), None, {
                             let sidebar = sidebar.clone();
                             let rename_title = rename_title.clone();
                             move |window, cx| {
@@ -6537,7 +6559,7 @@ impl Sidebar {
                         });
 
                         if is_zed_thread {
-                            menu = menu.entry("Regenerate Thread Title", None, {
+                            menu = menu.entry(eido_i18n::tr(cx, "sidebar.regenerate_title"), None, {
                                 let session_id = session_id.clone();
                                 let sidebar = sidebar.clone();
                                 let thread_workspace = thread_workspace.clone();
@@ -6559,7 +6581,7 @@ impl Sidebar {
                         }
 
                         if can_open_as_markdown {
-                            menu = menu.entry("Open Thread as Markdown", None, {
+                            menu = menu.entry(eido_i18n::tr(cx, "sidebar.markdown"), None, {
                                 let session_id = session_id.clone();
                                 let markdown_title = markdown_title.clone();
                                 let thread_workspace = thread_workspace.clone();
@@ -6597,14 +6619,14 @@ impl Sidebar {
                         }
 
                         if !is_running {
-                            menu = menu.separator().entry("Delete Thread", None, {
+                            menu = menu.separator().entry(eido_i18n::tr(cx, "sidebar.delete"), None, {
                                 let sidebar = sidebar.clone();
                                 move |window, cx| { sidebar.update(cx, |sidebar, cx| {
                                     sidebar.delete_thread(thread_id, window, cx);
                                 }).ok(); }
                             });
                         }
-                        menu.separator().entry("Archive Thread", None, {
+                        menu.separator().entry(eido_i18n::tr(cx, "sidebar.archive"), None, {
                             let session_id = session_id.clone();
                             move |window, cx| {
                                 sidebar
@@ -6723,8 +6745,8 @@ impl Sidebar {
             .menu(move |window, cx| {
                 let sidebar = sidebar.clone();
                 let rename_title = rename_title.clone();
-                ContextMenu::build(window, cx, move |menu, _window, _cx| {
-                    menu.entry("Rename Title", None, move |window, cx| {
+                ContextMenu::build(window, cx, move |menu, _window, cx| {
+                    menu.entry(eido_i18n::tr(cx, "sidebar.rename_title"), None, move |window, cx| {
                         sidebar
                             .update(cx, |sidebar, cx| {
                                 sidebar.start_renaming_entry(
@@ -7343,9 +7365,9 @@ impl Sidebar {
     fn render_no_results(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let has_query = self.has_filter_query(cx);
         let message = if has_query {
-            "No threads match your search."
+            eido_i18n::tr(cx, "sidebar.no_match")
         } else {
-            "No threads yet"
+            eido_i18n::tr(cx, "sidebar.empty")
         };
 
         v_flex()
@@ -7448,7 +7470,7 @@ impl Sidebar {
                                 this.child(
                                     IconButton::new("clear_filter", IconName::Close)
                                         .icon_size(IconSize::Small)
-                                        .tooltip(Tooltip::text("Clear Search"))
+                                        .tooltip(Tooltip::text(eido_i18n::tr(cx, "sidebar.clear_search")))
                                         .on_click(cx.listener(|this, _, window, cx| {
                                             this.reset_filter_editor_text(window, cx);
                                             this.update_entries(cx);
@@ -7507,7 +7529,7 @@ impl Sidebar {
                                 h_flex()
                                     .gap_2()
                                     .justify_between()
-                                    .child(Label::new("Toggle Sidebar"))
+                                    .child(Label::new(eido_i18n::tr(cx, "sidebar.toggle")))
                                     .child(KeyBinding::for_action(&ToggleWorkspaceSidebar, cx)),
                             )
                             .child(
@@ -7517,7 +7539,7 @@ impl Sidebar {
                                     .border_t_1()
                                     .border_color(cx.theme().colors().border_variant)
                                     .justify_between()
-                                    .child(Label::new("Focus Sidebar"))
+                                    .child(Label::new(eido_i18n::tr(cx, "sidebar.focus")))
                                     .child(KeyBinding::for_action(&FocusWorkspaceSidebar, cx)),
                             )
                             .into_any_element()
@@ -7549,9 +7571,9 @@ impl Sidebar {
                     .toggle_state(is_archive)
                     .tooltip(move |_, cx| {
                         let label = if is_archive {
-                            "Hide Thread History"
+                            eido_i18n::tr(cx, "sidebar.hide_history")
                         } else {
-                            "Show Thread History"
+                            eido_i18n::tr(cx, "sidebar.show_history")
                         };
                         Tooltip::for_action(label, &ToggleThreadHistory, cx)
                     })
@@ -7617,6 +7639,7 @@ impl Sidebar {
     }
 
     fn should_render_acp_import_onboarding(&self, cx: &App) -> bool {
+        if std::env::var_os("EIDO_ROOT").is_some() { return false; }
         let has_external_agents = self
             .active_workspace(cx)
             .map(|ws| {
@@ -7657,6 +7680,7 @@ impl Sidebar {
     }
 
     fn should_render_cross_channel_import_onboarding(&self, cx: &App) -> bool {
+        if std::env::var_os("EIDO_ROOT").is_some() { return false; }
         !CrossChannelImportOnboarding::dismissed(cx)
             && !self.cross_channel_import_channels.is_empty()
     }

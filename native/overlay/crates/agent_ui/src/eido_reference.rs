@@ -32,6 +32,11 @@ impl CaptureMetadata {
     }
 }
 
+pub(crate) fn snapshot_editor(content: &str, window: &mut Window, cx: &mut App) -> Entity<Editor> {
+    let buffer = cx.new(|cx| Buffer::local(content.to_string(), cx));
+    cx.new(|cx| { let mut editor = Editor::for_buffer(buffer, None, window, cx); editor.set_read_only(true); editor })
+}
+
 /// The text comes from the original mention payload, including restored drafts
 /// and historical messages. Opening a reference must never reread its snapshot.
 pub(crate) fn open_snapshot(
@@ -191,12 +196,7 @@ impl ReferenceSnapshot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let buffer = cx.new(|cx| Buffer::local(content.to_string(), cx));
-        let editor = cx.new(|cx| {
-            let mut editor = Editor::for_buffer(buffer, None, window, cx);
-            editor.set_read_only(true);
-            editor
-        });
+        let editor = snapshot_editor(&content, window, cx);
         let path = source(&uri).map(|(path, _)| path);
         let status = if path.is_some() {
             ReferenceStatus::Loading
@@ -305,7 +305,7 @@ impl Render for ReferenceSnapshot {
                     .child(
                         h_flex()
                             .justify_between()
-                            .child(Label::new("Reference Snapshot"))
+                            .child(Label::new(eido_i18n::tr(cx, "research.reference_snapshot")))
                             .child(
                                 IconButton::new("close-reference", IconName::Close)
                                     .on_click(cx.listener(|_, _, _, cx| cx.emit(DismissEvent))),
@@ -334,16 +334,16 @@ impl Render for ReferenceSnapshot {
                     .when_some(self.capture.as_ref(), |this, capture| {
                         this.child(
                             Label::new(if capture.unsaved {
-                                "Captured from unsaved editor content"
+                                eido_i18n::tr(cx, "research.captured_unsaved")
                             } else {
-                                "Captured from saved editor content"
+                                eido_i18n::tr(cx, "research.captured_saved")
                             })
                             .size(LabelSize::Small)
                             .color(Color::Muted),
                         )
                     })
                     .child(
-                        Label::new(self.status.label())
+                        Label::new(crate::eido_research::state_label(self.status.label(), cx))
                             .size(LabelSize::Small)
                             .color(status_color),
                     ),
@@ -363,9 +363,9 @@ impl Render for ReferenceSnapshot {
                             Button::new(
                                 "open-reference-source",
                                 if self.status.point().is_some() {
-                                    "Go to Current Content"
+                                    eido_i18n::tr(cx, "research.go_current")
                                 } else {
-                                    "Open Current File"
+                                    eido_i18n::tr(cx, "research.open_current")
                                 },
                             )
                             .on_click(
@@ -374,7 +374,7 @@ impl Render for ReferenceSnapshot {
                         )
                     })
                     .child(
-                        Button::new("return-reference", "Back to Conversation")
+                        Button::new("return-reference", eido_i18n::tr(cx, "research.back_conversation"))
                             .on_click(cx.listener(|_, _, _, cx| cx.emit(DismissEvent))),
                     ),
             )

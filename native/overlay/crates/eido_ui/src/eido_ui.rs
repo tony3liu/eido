@@ -8,7 +8,7 @@ use terminal_view::terminal_panel::TerminalPanel;
 use ui::{
     Button, ButtonStyle, Color, IconButton, Label, LabelSize, TintColor, Tooltip, prelude::*,
 };
-use workspace::{EidoLayout, Workspace, dock::Panel};
+use workspace::{EidoLayout, MultiWorkspace, ToggleWorkspaceSidebar, Workspace, dock::Panel};
 
 actions!(
     eido,
@@ -54,8 +54,8 @@ pub fn attach(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<W
     let embedded_panels = vec![panel.entity_id(), project.entity_id(), terminal.entity_id()];
     let weak = workspace.weak_handle();
     let navigation = cx.new(|_| Navigation { project });
-    let composer = cx.new(|cx| Composer::new(panel.clone(), cx));
-    let toolbar = cx.new(|cx| Toolbar::new(weak, cx));
+    let composer = cx.new(|cx| Composer::new(panel.clone(), weak.clone(), window, cx));
+    let toolbar = cx.new(|cx| Toolbar::new(weak, window, cx));
     workspace.set_eido_views(
         embedded_panels,
         navigation.into(),
@@ -141,7 +141,7 @@ impl Render for Navigation {
                             .color(Color::Muted),
                     )
                     .child(
-                        Label::new("Project Files")
+                        Label::new(eido_i18n::tr(cx, "workbench.project_files"))
                             .size(LabelSize::Small)
                             .color(Color::Muted),
                     ),
@@ -159,20 +159,74 @@ impl Render for Navigation {
 struct Composer {
     panel: Entity<AgentPanel>,
     active: Option<(EntityId, Vec<Subscription>)>,
+    workspace: WeakEntity<Workspace>,
+    new_task: bool,
     _subscriptions: Vec<Subscription>,
 }
 impl Composer {
-    fn new(panel: Entity<AgentPanel>, cx: &mut Context<Self>) -> Self {
+    fn new(
+        panel: Entity<AgentPanel>,
+        workspace: WeakEntity<Workspace>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let subscriptions = vec![
-            cx.observe(&panel, |_, _, cx| cx.notify()),
+            cx.observe_in(&panel, window, |this, _, window, cx| {
+                this.sync_active_thread(window, cx);
+                cx.notify();
+            }),
+            cx.observe(&workspace.upgrade().expect("workspace exists"), |_, _, cx| cx.notify()),
         ];
-        Self {
+        let mut this = Self {
             panel,
             active: None,
+            workspace,
+            new_task: false,
             _subscriptions: subscriptions,
+        };
+        this.sync_active_thread(window, cx);
+        this
+    }
+
+    fn sync_active_thread(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let thread = self.panel.read(cx).active_thread_view(cx);
+        if self.active.as_ref().map(|(id, _)| *id) != thread.as_ref().map(|thread| thread.entity_id()) {
+            self.active = thread.as_ref().map(|thread| {
+                let focus = thread.read(cx).message_editor.focus_handle(cx);
+                (thread.entity_id(), vec![
+                    cx.observe(thread, |this, _, cx| {
+                        this.sync_layout(cx);
+                        cx.notify();
+                    }),
+                    cx.on_focus_in(&focus, window, |_, _, cx| cx.notify()),
+                    cx.on_focus_out(&focus, window, |_, _, _, cx| cx.notify()),
+                ])
+            });
+        }
+        self.sync_layout(cx);
+    }
+
+    fn sync_layout(&mut self, cx: &mut Context<Self>) {
+        let panel = self.panel.read(cx);
+        let thread = panel.active_thread_view(cx);
+        let displayed_thread = panel.active_conversation_view().and_then(|view| {
+            view.read(cx).as_connected().and_then(|connected| connected.active_view()).cloned()
+        });
+        let new_task = thread.as_ref().is_some_and(|thread| {
+            displayed_thread.as_ref() == Some(thread) && thread.read(cx).eido_is_new_task(cx)
+        });
+        if new_task != self.new_task {
+            self.new_task = new_task;
+            let workspace = self.workspace.clone();
+            // Panel notifications can arrive during a workspace update.
+            // Defer only the presentation flag, never the editor or its draft.
+            cx.defer(move |cx| {
+                let _ = workspace.update(cx, |workspace, cx| workspace.set_eido_composer_centered(new_task, cx));
+            });
         }
     }
 }
+
 impl Render for Composer {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let panel = self.panel.read(cx);
@@ -192,32 +246,42 @@ impl Render for Composer {
                 .focus_handle(cx)
                 .contains_focused(window, cx)
         });
-        if let Some(thread) = &thread {
-            if self.active.as_ref().map(|(id, _)| *id) != Some(thread.entity_id()) {
-                let focus = thread.read(cx).message_editor.focus_handle(cx);
-                self.active = Some((
-                    thread.entity_id(),
-                    vec![
-                        cx.observe(thread, |_, _, cx| cx.notify()),
-                        cx.on_focus_in(&focus, window, |_, _, cx| cx.notify()),
-                        cx.on_focus_out(&focus, window, |_, _, _, cx| cx.notify()),
-                    ],
-                ));
-            }
-        } else {
-            self.active = None;
-        }
+        let centered = self.workspace.read_with(cx, |workspace, cx| workspace.eido_composer_centered(cx)).unwrap_or(false);
+        let content_width = thread.as_ref().map(|thread| thread.read(cx).eido_content_width(cx)).unwrap_or(px(780.));
+        let compact = window.viewport_size().width < px(1000.);
         v_flex()
             .key_context("AgentPanel")
+            .id("eido-composer-surface")
             .w_full()
-            .flex_none()
+            .min_w_0()
+            .when(centered, |this| this.flex_1().min_h_0().overflow_y_scroll())
+            .when(!centered, |this| this.flex_none())
             .bg(cx.theme().colors().editor_background)
-            .p_3()
-            .gap_2()
+            .px(if compact { px(16.) } else { px(24.) })
+            .py_4()
+            .child(
+                v_flex()
+                    .w_full()
+                    .max_w(content_width)
+                    .mx_auto()
+                    .flex_none()
+                    .when(centered, |this| this.my_auto().py_6())
+                    .gap_3()
+                    .when(centered, |this| this.child(
+                        v_flex()
+                            .items_center()
+                            .text_center()
+                            .gap_3()
+                            .pb_5()
+                            .child(div().text_size(px(29.)).font_weight(gpui::FontWeight::MEDIUM)
+                                .child(eido_i18n::tr(cx, "workbench.welcome")))
+                            .child(Label::new(eido_i18n::tr(cx, "workbench.welcome_hint"))
+                                .color(Color::Muted)),
+                    ))
             .when(viewing_child.is_some() || recipient.is_some() || recipient_running, |this| this.child(
                 h_flex()
                     .w_full()
-                    .max_w(px(780.))
+                    .max_w(content_width)
                     .mx_auto()
                     .min_w_0()
                     .gap_2()
@@ -230,17 +294,17 @@ impl Render for Composer {
                     )
                     .child(
                         div().flex_1().min_w_0().child(
-                            Label::new(recipient_title.as_ref().map(|recipient| format!("To {recipient}")).unwrap_or_else(|| "To Main agent".into()))
+                            Label::new(recipient_title.as_ref().map(|recipient| eido_i18n::tr_args(cx, "workbench.to_agent", &[("name", recipient.to_string())])).unwrap_or_else(|| eido_i18n::tr(cx, "workbench.to_main")))
                                 .truncate()
-                                .size(LabelSize::XSmall)
+                                .size(LabelSize::Small)
                                 .color(Color::Muted),
                         ),
                     )
                     .when_some(viewing_child, |this, child| {
                         let root = thread.clone();
-                        this.child(Button::new("eido-message-agent", "Message agent")
-                            .label_size(LabelSize::XSmall)
-                            .tooltip(Tooltip::text("Send the global draft to this agent. Reading a child never changes the recipient automatically."))
+                        this.child(Button::new("eido-message-agent", eido_i18n::tr(cx, "workbench.message_agent"))
+                            .label_size(LabelSize::Small)
+                            .tooltip(Tooltip::text(eido_i18n::tr(cx, "workbench.message_agent_help")))
                             .on_click(move |_, window, cx| {
                                 if let Some(root) = &root {
                                     root.update(cx, |root, cx| {
@@ -252,34 +316,34 @@ impl Render for Composer {
                     })
                     .when(recipient.is_some(), |this| {
                         let root = thread.clone();
-                        this.child(Button::new("eido-message-main", "Main agent")
-                            .label_size(LabelSize::XSmall)
+                        this.child(Button::new("eido-message-main", eido_i18n::tr(cx, "workbench.main_agent"))
+                            .label_size(LabelSize::Small)
                             .on_click(move |_, _, cx| {
                                 if let Some(root) = &root { root.update(cx, |root, cx| root.eido_set_recipient(None, cx)); }
                             }))
                     })
                     .when(recipient_running, |this| {
                         let root = thread.clone();
-                        this.child(Button::new("eido-send-next", "Send next")
-                            .label_size(LabelSize::XSmall)
-                            .tooltip(Tooltip::text("Insert the global draft at the agent's next safe boundary"))
+                        this.child(Button::new("eido-send-next", eido_i18n::tr(cx, "workbench.send_next"))
+                            .label_size(LabelSize::Small)
+                            .tooltip(Tooltip::text(eido_i18n::tr(cx, "workbench.send_next_help")))
                             .on_click(move |_, window, cx| {
                                 if let Some(root) = &root { root.update(cx, |root, cx| root.eido_send_next(window, cx)); }
                             }))
                     })
             ))
             .when_some(delivery_status, |this, status| this.child(
-                div().w_full().max_w(px(780.)).mx_auto().px_1()
-                    .child(Label::new(status).size(LabelSize::XSmall).color(Color::Muted))))
+                div().w_full().max_w(content_width).mx_auto().px_1()
+                    .child(Label::new(status.render(cx)).size(LabelSize::Small).color(Color::Muted))))
             .child(
                 div()
                     .key_context("AcpThread")
                     .id("eido-global-composer")
                     .w_full()
-                    .max_w(px(780.))
+                    .max_w(content_width)
                     .mx_auto()
                     .max_h(ui::vh(0.5, window))
-                    .rounded(px(10.))
+                    .rounded(px(12.))
                     .border_1()
                     .border_color(cx.theme().colors().border)
                     .when(focused, |this| {
@@ -296,13 +360,14 @@ impl Render for Composer {
                         } else {
                             this.child(
                                 div().h(px(112.)).p_3().child(
-                                    Label::new("You can continue typing when the session is restored.")
+                                    Label::new(eido_i18n::tr(cx, "workbench.restoring_hint"))
                                         .size(LabelSize::Small)
                                         .color(Color::Muted),
                                 ),
                             )
                         }
                     }),
+            ),
             )
     }
 }
@@ -310,18 +375,22 @@ impl Render for Composer {
 struct Toolbar {
     workspace: WeakEntity<Workspace>,
     focus_handle: FocusHandle,
-    _subscription: Subscription,
+    _subscriptions: Vec<Subscription>,
 }
 impl Toolbar {
-    fn new(workspace: WeakEntity<Workspace>, cx: &mut Context<Self>) -> Self {
+    fn new(workspace: WeakEntity<Workspace>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let subscription = cx.observe(
             &workspace.upgrade().expect("workspace exists"),
             |_, _, cx| cx.notify(),
         );
+        let mut subscriptions = vec![subscription];
+        if let Some(multi_workspace) = window.root::<MultiWorkspace>().flatten() {
+            subscriptions.push(cx.observe(&multi_workspace, |_, _, cx| cx.notify()));
+        }
         Self {
             workspace,
             focus_handle: cx.focus_handle(),
-            _subscription: subscription,
+            _subscriptions: subscriptions,
         }
     }
 
@@ -333,7 +402,7 @@ impl Toolbar {
     }
 }
 impl Render for Toolbar {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let (layout, terminal_open, expanded, reply_open) = self
             .workspace
             .read_with(cx, |workspace, cx| {
@@ -344,7 +413,8 @@ impl Render for Toolbar {
                     workspace.eido_reply_visible(),
                 )
             })
-            .unwrap_or((EidoLayout::Split, false, false, false));
+            .unwrap_or((EidoLayout::Workbench, false, false, false));
+        let tasks_open = window.root::<MultiWorkspace>().flatten().is_some_and(|workspace| workspace.read(cx).sidebar_open());
         h_flex()
             .track_focus(&self.focus_handle)
             .w_full()
@@ -352,15 +422,46 @@ impl Render for Toolbar {
             .px_3()
             .gap_2()
             .child(
-                Button::new("eido-new-conversation", "New Conversation")
+                Button::new("eido-tasks", eido_i18n::tr(cx, "workbench.tasks"))
+                    .label_size(LabelSize::Small)
+                    .start_icon(Icon::new(IconName::Thread).size(IconSize::Small))
+                    .toggle_state(tasks_open)
+                    .tooltip(Tooltip::text(eido_i18n::tr(cx, "workbench.tasks_help")))
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.dispatch(&ToggleWorkspaceSidebar, window, cx)
+                    })),
+            )
+            .child(
+                Button::new("eido-new-conversation", eido_i18n::tr(cx, "workbench.new_task"))
                     .label_size(LabelSize::Small)
                     .start_icon(Icon::new(IconName::Plus).size(IconSize::Small))
-                    .tooltip(Tooltip::text("Start a new conversation and keep the current task"))
+                    .tooltip(Tooltip::text(eido_i18n::tr(cx, "workbench.new_task_help")))
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.dispatch(&NewConversation, window, cx)
                     })),
             )
-            .child(div().flex_1())
+            .child(
+                div()
+                    .id("eido-titlebar-drag-region")
+                    .flex_1()
+                    .h_full()
+                    .window_control_area(gpui::WindowControlArea::Drag)
+                    .when(cfg!(target_os = "macos"), |this| {
+                        this.on_mouse_down(gpui::MouseButton::Left, |event, window, cx| {
+                            // The toolbar owns focus, so start the native drag from
+                            // its empty region while AppKit still has mouse-down.
+                            cx.stop_propagation();
+                            if window.is_fullscreen() || window.is_simple_fullscreen() {
+                                return;
+                            }
+                            if event.click_count == 2 {
+                                window.titlebar_double_click();
+                            } else {
+                                window.start_window_move();
+                            }
+                        })
+                    }),
+            )
             .child(
                 h_flex()
                     .gap_0p5()
@@ -368,12 +469,23 @@ impl Render for Toolbar {
                     .rounded_md()
                     .bg(cx.theme().colors().element_background)
                     .child(
-                        Button::new("eido-split", "Split")
+                        Button::new("eido-workbench", eido_i18n::tr(cx, "workbench.task"))
+                            .label_size(LabelSize::Small)
+                            .start_icon(Icon::new(IconName::Chat).size(IconSize::Small))
+                            .toggle_state(layout == EidoLayout::Workbench)
+                            .selected_style(ButtonStyle::Tinted(TintColor::Accent))
+                            .tooltip(Tooltip::text(eido_i18n::tr(cx, "workbench.task_help")))
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.dispatch(&Workbench, window, cx)
+                            })),
+                    )
+                    .child(
+                        Button::new("eido-split", eido_i18n::tr(cx, "workbench.split"))
                             .label_size(LabelSize::Small)
                             .start_icon(Icon::new(IconName::Split).size(IconSize::Small))
                             .toggle_state(layout == EidoLayout::Split)
                             .selected_style(ButtonStyle::Tinted(TintColor::Accent))
-                            .tooltip(Tooltip::text("Show workbench and code side by side · ⌘⌥J"))
+                            .tooltip(Tooltip::text(eido_i18n::tr(cx, "workbench.split_help")))
                             .on_click(
                                 cx.listener(|this, _, window, cx| {
                                     this.dispatch(&Split, window, cx)
@@ -381,23 +493,12 @@ impl Render for Toolbar {
                             ),
                     )
                     .child(
-                        Button::new("eido-workbench", "Workbench")
-                            .label_size(LabelSize::Small)
-                            .start_icon(Icon::new(IconName::Chat).size(IconSize::Small))
-                            .toggle_state(layout == EidoLayout::Workbench)
-                            .selected_style(ButtonStyle::Tinted(TintColor::Accent))
-                            .tooltip(Tooltip::text("Focus on the current task"))
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.dispatch(&Workbench, window, cx)
-                            })),
-                    )
-                    .child(
-                        Button::new("eido-files", "Code")
+                        Button::new("eido-files", eido_i18n::tr(cx, "workbench.files"))
                             .label_size(LabelSize::Small)
                             .start_icon(Icon::new(IconName::Code).size(IconSize::Small))
                             .toggle_state(layout == EidoLayout::Files)
                             .selected_style(ButtonStyle::Tinted(TintColor::Accent))
-                            .tooltip(Tooltip::text("Focus on code with the global composer available"))
+                            .tooltip(Tooltip::text(eido_i18n::tr(cx, "workbench.files_help")))
                             .on_click(
                                 cx.listener(|this, _, window, cx| {
                                     this.dispatch(&Files, window, cx)
@@ -412,9 +513,9 @@ impl Render for Toolbar {
                     .toggle_state(terminal_open)
                     .selected_style(ButtonStyle::Tinted(TintColor::Accent))
                     .tooltip(Tooltip::text(if terminal_open {
-                        "Hide Terminal"
+                        eido_i18n::tr(cx, "workbench.hide_terminal")
                     } else {
-                        "Show Terminal"
+                        eido_i18n::tr(cx, "workbench.show_terminal")
                     }))
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.dispatch(&ToggleTerminal, window, cx)
@@ -432,9 +533,9 @@ impl Render for Toolbar {
                     )
                     .icon_size(IconSize::Small)
                     .tooltip(Tooltip::text(if expanded {
-                        "Restore Terminal Size"
+                        eido_i18n::tr(cx, "workbench.restore_terminal")
                     } else {
-                        "Expand Terminal"
+                        eido_i18n::tr(cx, "workbench.expand_terminal")
                     }))
                     .on_click(
                         cx.listener(|this, _, window, cx| {
@@ -450,9 +551,9 @@ impl Render for Toolbar {
                         .toggle_state(reply_open)
                         .selected_style(ButtonStyle::Tinted(TintColor::Accent))
                         .tooltip(Tooltip::text(if reply_open {
-                            "Hide Task Response"
+                            eido_i18n::tr(cx, "workbench.hide_response")
                         } else {
-                            "Show Task Response"
+                            eido_i18n::tr(cx, "workbench.show_response")
                         }))
                         .on_click(cx.listener(|this, _, window, cx| {
                             this.dispatch(&ToggleReply, window, cx)

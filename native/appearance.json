@@ -5,17 +5,17 @@
     "dark": "Eido Dark"
   },
   "ui_font_family": ".ZedSans",
-  "ui_font_size": 14,
+  "ui_font_size": 16,
   "agent_ui_font_family": ".ZedSans",
-  "agent_ui_font_size": 14,
-  "agent_buffer_font_size": 12,
-  "buffer_font_size": 14,
+  "agent_ui_font_size": 16,
+  "agent_buffer_font_size": 14,
+  "buffer_font_size": 15,
   "agent": {
     "max_content_width": 760,
     "message_editor_min_lines": 3
   },
   "terminal": {
-    "font_size": 13
+    "font_size": 14
   },
   "title_bar": {
     "show_sign_in": false,

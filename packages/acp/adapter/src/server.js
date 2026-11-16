@@ -21,6 +21,15 @@ export async function runAcp(options = {}) {
         .onRequest(methods.agent.session.setConfigOption, (context) => impl.setConfigOption(context))
         .onRequest(methods.agent.session.prompt, (context) => impl.prompt(context))
         .onRequest(SESSION_STEERING_METHOD, steeringRequestParser, (context) => impl.steer(context))
+        .onRequest('_eido/research', {parse(value) {
+            if (!value || value.version !== 1 || typeof value.sessionId !== 'string' || typeof value.action !== 'string' || JSON.stringify(value).length > 65536)
+                throw new Error('Invalid Research request.');
+            return value;
+        }}, ({params}) => {
+            const research = impl.live.get(params.sessionId)?.pi[Symbol.for('eido.pi.research')];
+            if (!research) throw new Error('Load this task before opening its Research records.');
+            return research.local(params);
+        })
         .onRequest("_eido/ui/state", {parse(value) { if (!value || typeof value.sessionId !== "string" || typeof value.instance !== "string" || !Number.isSafeInteger(value.revision) || typeof value.text !== "string") throw new Error("Invalid native editor state"); return value; }}, ({params}) => { const ui = impl.live.get(params.sessionId)?.pi[Symbol.for("eido.pi.ui.state")]; if (!ui) return {handled: false}; ui.receive(params); return {handled: true}; })
         .onRequest("_eido/delivery/status", {parse(value) { if (!value || typeof value.sessionId !== "string" || !Array.isArray(value.ids) || value.ids.length > 256 || value.ids.some(id => typeof id !== "string")) throw new Error("Invalid delivery query"); return value; }}, ({params}) => { const ledger = impl.live.get(params.sessionId)?.pi[Symbol.for("eido.pi.delivery")]; if (!ledger) throw new Error("Load this session before reconciling deliveries"); return ledger.status(params.ids); })
         .onRequest("_eido/ui/complete", {parse(value) { if (!value || typeof value.sessionId !== "string" || typeof value.text !== "string" || !Number.isSafeInteger(value.cursor)) throw new Error("Invalid completion input"); return value; }}, ({params, signal}) => impl.live.get(params.sessionId)?.pi[Symbol.for("eido.pi.autocomplete")]?.complete(params, signal) ?? {handled: false, items: []})

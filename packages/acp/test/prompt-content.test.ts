@@ -98,3 +98,10 @@ test('ACP embeds editor context and passes images through templates, skills, rel
     assert.equal(checked, 3);
   } finally {await server.agent.dispose(); connection.close(); server.connection.close(); await rm(cwd, {recursive: true, force: true});}
 });
+
+test('document descriptors reach the model as metadata without raw PDF bytes',()=>{
+  const descriptor={version:1,attachmentId:'selected',originalName:'spec.pdf',mimeType:'application/pdf',size:100,expectedHash:'a'.repeat(64),selectionIdentity:'local-choice'};
+  const result=preparePromptContent([{type:'resource',resource:{uri:'eido-document://selected',mimeType:'application/vnd.eido.document+json',text:JSON.stringify(descriptor)}}]);
+  assert.equal(result[0]?.type,'text');assert.match((result[0] as {text:string}).text,/document_extract/);assert.doesNotMatch(JSON.stringify(result),/JVBER/);
+  assert.throws(()=>preparePromptContent([{type:'resource',resource:{uri:'eido-document://other',mimeType:'application/vnd.eido.document+json',text:JSON.stringify(descriptor)}}]),/identity/);
+});

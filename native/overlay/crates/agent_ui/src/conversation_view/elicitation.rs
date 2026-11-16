@@ -1853,7 +1853,7 @@ impl<'a> ElicitationCard<'a> {
                 body.child(self.render_form(mode, cx))
             }
             acp::ElicitationMode::Url(mode) if is_pending || is_accepted_url => {
-                body.child(self.render_url_elicitation(mode))
+                body.child(self.render_url_elicitation(mode, cx))
             }
             _ => body,
         };
@@ -2269,7 +2269,7 @@ impl<'a> ElicitationCard<'a> {
             })
     }
 
-    fn render_url_elicitation(&self, mode: &acp::ElicitationUrlMode) -> AnyElement {
+    fn render_url_elicitation(&self, mode: &acp::ElicitationUrlMode, cx: &App) -> AnyElement {
         v_flex()
             .gap_2()
             .when_some(url_host_presentation(&mode.url), |this, presentation| {
@@ -2280,7 +2280,7 @@ impl<'a> ElicitationCard<'a> {
                             h_flex()
                                 .gap_1()
                                 .child(
-                                    Label::new("Destination")
+                                    Label::new(eido_i18n::tr(cx, "approval.destination"))
                                         .size(LabelSize::Small)
                                         .color(Color::Muted),
                                 )
@@ -2371,7 +2371,7 @@ impl<'a> ElicitationCard<'a> {
             .border_t_1()
             .border_color(border_color)
             .child(
-                Button::new(("elicitation-accept", self.entry_ix), accept_label)
+                Button::new(("elicitation-accept", self.entry_ix), crate::eido_research::state_label(accept_label, cx))
                     .tab_index(0_isize)
                     .start_icon(
                         Icon::new(accept_icon)
@@ -2393,7 +2393,7 @@ impl<'a> ElicitationCard<'a> {
             )
             .when(!is_accepted_url, |this| {
                 this.child(
-                    Button::new(("elicitation-decline", self.entry_ix), "Decline")
+                    Button::new(("elicitation-decline", self.entry_ix), eido_i18n::tr(cx, "approval.decline"))
                         .tab_index(0_isize)
                         .start_icon(
                             Icon::new(IconName::Close)
@@ -2406,7 +2406,7 @@ impl<'a> ElicitationCard<'a> {
                         }),
                 )
                 .child(
-                    Button::new(("elicitation-cancel", self.entry_ix), "Cancel")
+                    Button::new(("elicitation-cancel", self.entry_ix), eido_i18n::tr(cx, "approval.cancel"))
                         .tab_index(0_isize)
                         .label_size(LabelSize::Small)
                         .on_click(move |_, window, cx| {
@@ -2416,7 +2416,7 @@ impl<'a> ElicitationCard<'a> {
             })
             .when(is_accepted_url, |this| {
                 this.child(
-                    Button::new(("elicitation-dismiss-url", self.entry_ix), "Cancel")
+                    Button::new(("elicitation-dismiss-url", self.entry_ix), eido_i18n::tr(cx, "approval.cancel"))
                         .tab_index(0_isize)
                         .label_size(LabelSize::Small)
                         .on_click(move |_, window, cx| {

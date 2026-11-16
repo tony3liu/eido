@@ -1,3 +1,5 @@
+import {createHash} from 'node:crypto';
+import type {ResearchHooks,ResearchProvenance} from './research-requirements.ts';
 import { AsyncLocalStorage } from "node:async_hooks";
 import { stat } from "node:fs/promises";
 import { workspacePath } from "./workspace-path.ts";
@@ -11,8 +13,10 @@ import {
 } from "@earendil-works/pi-coding-agent";
 
 export function editorTools(cwd: string, sessionId: string, client: Pick<AgentContext, "request">,
-  outputImage: (path:string)=>{data:string;mimeType:string}|undefined = ()=>undefined) {
+  outputImage: (path:string)=>{data:string;mimeType:string}|undefined = ()=>undefined, research?:ResearchHooks) {
   const readPaths = new Set<string>();
+  const edits=new AsyncLocalStorage<{path:string;contentHash:string}[]>();
+  const provenance = new AsyncLocalStorage<ResearchProvenance | undefined>();
   const signals = new AsyncLocalStorage<AbortSignal | undefined>();
   const checkPath = (path: string) => workspacePath(cwd, path, true);
   const imagePaths = new Set<string>();
@@ -49,8 +53,10 @@ export function editorTools(cwd: string, sessionId: string, client: Pick<AgentCo
     });
     if (exists && !readPaths.has(canonical)) throw new Error("Read the file in this session before replacing its contents.");
     await client.request(methods.client.fs.writeTextFile, { sessionId, path: canonical, content,
-      ...(!exists ? {_meta: {"eido.dev/createFile": true}} : {}),
+      _meta: {...(!exists ? {"eido.dev/createFile": true} : {}), ...(provenance.getStore()?{"eido.dev/research":provenance.getStore()}: {})},
     }, { cancellationSignal: signals.getStore() });
+    const contentHash=createHash("sha256").update(content).digest("hex");edits.getStore()?.push({path:canonical,contentHash});
+    await research?.edit(provenance.getStore(),canonical,contentHash);
     readPaths.add(canonical);
   };
   const access = async (path: string) => { if (!outputImage(path)) await checkPath(path); };
@@ -58,5 +64,5 @@ export function editorTools(cwd: string, sessionId: string, client: Pick<AgentCo
     defineTool(createReadToolDefinition(cwd, { operations: { readFile, access, detectImageMimeType } })),
     defineTool(createEditToolDefinition(cwd, { operations: { readFile, writeFile, access } })),
     defineTool(createWriteToolDefinition(cwd, { operations: { writeFile, mkdir: async () => {} } })),
-  ].map(tool => ({ ...tool, execute: (...args: Parameters<typeof tool.execute>) => signals.run(args[2], () => tool.execute(...args)) }));
+  ].map(tool => ({ ...tool, execute: async (...args: Parameters<typeof tool.execute>) => {const scope=tool.name==='read'?undefined:await research?.capture(args[0]);return edits.run([],()=>provenance.run(scope,()=>signals.run(args[2], async () => {const result=await tool.execute(...args);return {...result,details:{...result.details as Record<string,unknown>,eidoResearchEdit:{...(scope??{version:1,requirements:[],status:'Unlinked'}),files:edits.getStore()}}};})));} }));
 }

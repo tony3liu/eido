@@ -17,6 +17,7 @@ default = []
 test-support = []
 
 [dependencies]
+eido_i18n.workspace = true
 anyhow.workspace = true
 audio.workspace = true
 client.workspace = true

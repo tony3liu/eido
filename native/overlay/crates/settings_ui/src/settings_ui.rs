@@ -6,6 +6,7 @@ mod pi_settings;
 use anyhow::{Context as _, Result};
 use cloud_api_types::OrganizationConfiguration;
 use editor::{Editor, EditorEvent};
+use eido_i18n::{tr, tr_args, LocaleState};
 use futures::{StreamExt, channel::mpsc};
 use fuzzy::StringMatchCandidate;
 use gpui::{
@@ -515,7 +516,7 @@ fn init_renderers(cx: &mut App) {
                     settings_window,
                     item,
                     settings_file,
-                    Button::new("open-in-settings-file", "Edit in settings.json")
+                    Button::new("open-in-settings-file", tr(cx, "settings.edit_json"))
                         .style(ButtonStyle::Outlined)
                         .size(ButtonSize::Medium)
                         .tab_index(0_isize)
@@ -932,6 +933,9 @@ fn active_language_mut() -> Option<std::sync::RwLockWriteGuard<'static, Option<S
 
 pub struct SettingsWindow {
     pub(crate) pi_settings: Option<Entity<pi_settings::PiSettingsView>>,
+    language_saving: bool,
+    language_error: Option<String>,
+    locale_revision: u64,
     title_bar: Option<Entity<PlatformTitleBar>>,
     original_window: Option<WindowHandle<MultiWorkspace>>,
     files: Vec<(SettingsUiFile, FocusHandle)>,
@@ -1178,7 +1182,7 @@ impl SettingsPageItem {
                                 .relative()
                                 .w_full()
                                 .max_w_1_2()
-                                .child(Label::new(sub_page_link.title.clone()))
+                                .child(Label::new(page_data::display_title(&sub_page_link.title, cx)))
                                 .when_some(
                                     sub_page_link.description.as_ref(),
                                     |this, description| {
@@ -1386,7 +1390,7 @@ fn render_settings_item_layout(
                     h_flex()
                         .w_full()
                         .gap_1()
-                        .child(Label::new(SharedString::new_static(title)))
+                        .child(Label::new(page_data::display_title(title, cx)))
                         .when_some(reset_fn, |this, reset_to_default| {
                             this.child(
                                 IconButton::new("reset-to-default-btn", IconName::Undo)
@@ -1747,7 +1751,7 @@ impl SettingsWindow {
         let current_file = SettingsUiFile::User;
         let search_bar = cx.new(|cx| {
             let mut editor = Editor::single_line(window, cx);
-            editor.set_placeholder_text("Search settings…", window, cx);
+            editor.set_placeholder_text(&tr(cx, "settings.search.placeholder"), window, cx);
             editor
         });
         cx.subscribe(&search_bar, |this, _, event: &EditorEvent, cx| {
@@ -1762,6 +1766,11 @@ impl SettingsWindow {
             this.update_matches(cx);
         })
         .detach();
+
+        cx.observe_global_in::<LocaleState>(window, |this, window, cx| {
+            this.refresh_language(window, cx);
+            cx.notify();
+        }).detach();
 
         let mut ui_font_size = ThemeSettings::get_global(cx).ui_font_size(cx);
         cx.observe_global_in::<SettingsStore>(window, move |this, window, cx| {
@@ -1946,6 +1955,9 @@ impl SettingsWindow {
             last_copied_link_path: None,
 
             pi_settings: None,
+            language_saving: false,
+            language_error: None,
+            locale_revision: 0,
         };
 
         this.pi_settings = std::env::var_os("EIDO_ROOT")
@@ -2752,6 +2764,69 @@ impl SettingsWindow {
         }
     }
 
+    fn refresh_language(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let revision = cx.try_global::<LocaleState>().map_or(0, |state| state.revision);
+        if self.locale_revision == revision { return; }
+        self.locale_revision = revision;
+        let placeholder = tr(cx, "settings.search.placeholder");
+        self.search_bar.update(cx, |editor, cx| editor.set_placeholder_text(&placeholder, window, cx));
+        self.list_state.remeasure();
+    }
+
+    fn save_language(&mut self, choice: &'static str, window: &mut Window, cx: &mut Context<Self>) {
+        if self.language_saving { return; }
+        self.language_saving = true;
+        self.language_error = None;
+        let completion = SettingsStore::global(cx).update_settings_file_with_completion(
+            <dyn fs::Fs>::global(cx),
+            move |settings, _| settings.eido_ui_language = Some(choice.into()),
+        );
+        cx.spawn_in(window, async move |this, cx| {
+            let result = completion.await;
+            let _ = this.update_in(cx, |this, _, cx| {
+                this.language_saving = false;
+                match result {
+                    Ok(Ok(())) => {
+                        // The SettingsStore observer applies the persisted choice. Reselecting
+                        // system also re-detects the system locale without rebuilding form state.
+                        if choice == "system" { eido_i18n::refresh_system_locale(cx); }
+                    }
+                    Ok(Err(error)) => this.language_error = Some(error.to_string()),
+                    Err(error) => this.language_error = Some(error.to_string()),
+                }
+                cx.notify();
+            });
+        }).detach();
+        cx.notify();
+    }
+
+    fn render_language_selector(&self, window: &mut Window, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let weak = cx.entity().downgrade();
+        let menu = ContextMenu::build(window, cx, move |mut menu, _, cx| {
+            for (choice, label) in std::iter::once(("system", tr(cx, "settings.language.system")))
+                .chain(eido_i18n::LANGUAGE_REGISTRY.iter().map(|language| (language.id, SharedString::from(language.name)))) {
+                let weak = weak.clone();
+                menu = menu.entry(label, None, move |window, cx| {
+                    let _ = weak.update(cx, |this, cx| this.save_language(choice, window, cx));
+                });
+            }
+            menu
+        });
+        let choice = eido_i18n::locale_choice(cx);
+        let label = if choice == "system" { tr(cx, "settings.language.system") } else {
+            eido_i18n::LANGUAGE_REGISTRY.iter().find(|language| language.id == choice)
+                .map(|language| SharedString::from(language.name)).unwrap_or_else(|| "English".into())
+        };
+        v_flex().gap_1()
+            .child(h_flex().gap_2().items_center()
+                .child(Label::new(tr(cx, "settings.language.label")).size(LabelSize::Small))
+                .child(DropdownMenu::new("eido-ui-language", label, menu).style(DropdownStyle::Outlined))
+                .when(self.language_saving, |this| this.child(Label::new(tr(cx, "settings.language.saving")).size(LabelSize::Small).color(Color::Muted))))
+            .when_some(self.language_error.as_ref(), |this, error| this.child(
+                Label::new(tr_args(cx, "settings.language.save_error", &[("error", error.clone())])).size(LabelSize::Small).color(Color::Error)))
+            .into_any_element()
+    }
+
     fn render_files_header(
         &self,
         window: &mut Window,
@@ -2762,10 +2837,10 @@ impl SettingsWindow {
                 .id("settings-ui-files-header")
                 .w_full()
                 .justify_between()
-                .child(Label::new("Settings").color(Color::Muted))
+                .child(Label::new(tr(cx, "settings.title")).color(Color::Muted))
                 .when(self.current_page().title != "AI", |this| {
                     this.child(
-                        Button::new("eido-edit-settings-json", "Edit in settings.json")
+                        Button::new("eido-edit-settings-json", tr(cx, "settings.edit_json"))
                             .style(ButtonStyle::OutlinedGhost)
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.open_current_settings_file(window, cx);
@@ -3172,7 +3247,7 @@ impl SettingsWindow {
                                     .map(|(entry_index, entry)| {
                                         TreeViewItem::new(
                                             ("settings-ui-navbar-entry", entry_index),
-                                            entry.title,
+                                            page_data::display_title(entry.title, cx),
                                         )
                                         .track_focus(&entry.focus_handle)
                                         .root_item(entry.is_root)
@@ -3505,7 +3580,7 @@ impl SettingsWindow {
                     ),
                     "/".into(),
                 )
-                .map(|item| Label::new(item).color(Color::Muted)),
+                .map(|item: SharedString| Label::new(page_data::display_title(&item, cx)).color(Color::Muted)),
             )
     }
 
@@ -3517,9 +3592,9 @@ impl SettingsWindow {
             .items_center()
             .justify_center()
             .gap_1()
-            .child(Label::new("No Results"))
+            .child(Label::new(tr(cx, "settings.search.no_results")))
             .child(
-                Label::new(format!("No settings match \"{}\"", search_query))
+                Label::new(tr_args(cx, "settings.search.no_match", &[("query", search_query)]))
                     .size(LabelSize::Small)
                     .color(Color::Muted),
             )
@@ -3565,7 +3640,7 @@ impl SettingsWindow {
                             .when(this.sub_page_stack.is_empty(), |this| {
                                 this.when_some(root_nav_label, |this, title| {
                                     this.child(
-                                        Label::new(title).size(LabelSize::Large).mt_2().mb_3(),
+                                        Label::new(page_data::display_title(title, cx)).size(LabelSize::Large).mt_2().mb_3(),
                                     )
                                 })
                             })
@@ -3668,7 +3743,7 @@ impl SettingsWindow {
             page_content
                 .when(self.sub_page_stack.is_empty(), |this| {
                     this.when_some(root_nav_label, |this, title| {
-                        this.child(Label::new(title).size(LabelSize::Large).mt_2().mb_3())
+                        this.child(Label::new(page_data::display_title(title, cx)).size(LabelSize::Large).mt_2().mb_3())
                     })
                 })
                 .children(items.clone().into_iter().enumerate().map(
@@ -3732,7 +3807,7 @@ impl SettingsWindow {
                         .flex_shrink_0()
                         .when(current_sub_page.link.in_json, |this| {
                             this.child(
-                                Button::new("open-in-settings-file", "Edit in settings.json")
+                                Button::new("open-in-settings-file", tr(cx, "settings.edit_json"))
                                     .tab_index(0_isize)
                                     .style(ButtonStyle::OutlinedGhost)
                                     .tooltip(Tooltip::for_action_title_in(
@@ -3987,6 +4062,7 @@ impl SettingsWindow {
                 v_flex()
                     .px_8()
                     .gap_2()
+                    .when(self.pi_settings.is_some(), |this| this.child(self.render_language_selector(window, cx)))
                     .child(page_header)
                     .child(warning_banner)
                     .child(restricted_banner),
@@ -4325,6 +4401,7 @@ impl SettingsWindow {
 
 impl Render for SettingsWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.refresh_language(window, cx);
         let ui_font = theme_settings::setup_ui_font(window, cx);
 
         client_side_decorations(
@@ -5173,6 +5250,9 @@ pub mod test {
                 last_copied_link_path: None,
 
                 pi_settings: None,
+            language_saving: false,
+            language_error: None,
+            locale_revision: 0,
             }
         }
     }
@@ -5301,6 +5381,9 @@ pub mod test {
             last_copied_link_path: None,
 
             pi_settings: None,
+            language_saving: false,
+            language_error: None,
+            locale_revision: 0,
         };
 
         settings_window.build_filter_table();

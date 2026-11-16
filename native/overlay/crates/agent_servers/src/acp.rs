@@ -607,6 +607,14 @@ fn client_builder(
             on_request!(handle_eido_file_snapshot),
             agent_client_protocol::on_receive_request!(),
         )
+        .on_receive_request(
+            on_request!(handle_eido_document_snapshot),
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            on_request!(handle_eido_document_render),
+            agent_client_protocol::on_receive_request!(),
+        )
         // --- Notification handlers (agent→client) ---
         .on_receive_notification(
             on_notification!(handle_session_notification),
@@ -626,6 +634,8 @@ fn client_capabilities_for_agent(
         ("terminal_output".into(), true.into()),
         ("eidoSubagents".into(), 1.into()),
         ("eidoNativeUi".into(), 1.into()),
+        ("eidoDocuments".into(), 1.into()),
+        ("eidoResearch".into(), 1.into()),
         ("terminal-auth".into(), true.into()),
     ]);
 
@@ -1804,6 +1814,16 @@ impl AgentConnection for AcpConnection {
         cx.foreground_executor().spawn(async move {
             let response = conn.send_request(EidoDeliveryStatus {session_id, ids}).block_task().await?;
             Ok(serde_json::to_value(response)?)
+        })
+    }
+
+    fn eido_research(&self, session_id: acp::SessionId, request: serde_json::Value, cx: &mut App) -> Task<Result<serde_json::Value>> {
+        let conn=self.connection.clone();
+        cx.foreground_executor().spawn(async move {
+            let mut request=request.as_object().context("Invalid Research request.")?.clone();
+            request.insert("version".into(),1.into());
+            let response=conn.send_request(EidoResearchRequest{session_id,request}).block_task().await?;
+            Ok(serde_json::Value::Object(response.result))
         })
     }
 
@@ -5008,6 +5028,70 @@ fn handle_complete_elicitation(
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, agent_client_protocol::JsonRpcRequest)]
+#[request(method = "_eido/research", response = EidoResearchResponse)]
+#[serde(rename_all = "camelCase")]
+struct EidoResearchRequest {
+    session_id: acp::SessionId,
+    #[serde(flatten)]
+    request: serde_json::Map<String,serde_json::Value>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, agent_client_protocol::JsonRpcResponse)]
+struct EidoResearchResponse {
+    #[serde(flatten)]
+    result: serde_json::Map<String,serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, agent_client_protocol::JsonRpcRequest)]
+#[request(method = "_eido/documents/snapshot", response = EidoDocumentResponse)]
+#[serde(rename_all = "camelCase")]
+struct EidoDocumentSnapshotRequest {
+    session_id: acp::SessionId,
+    #[serde(flatten)]
+    request: serde_json::Map<String, serde_json::Value>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, agent_client_protocol::JsonRpcRequest)]
+#[request(method = "_eido/documents/render", response = EidoDocumentResponse)]
+#[serde(rename_all = "camelCase")]
+struct EidoDocumentRenderRequest {
+    session_id: acp::SessionId,
+    #[serde(flatten)]
+    request: serde_json::Map<String, serde_json::Value>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, agent_client_protocol::JsonRpcResponse)]
+struct EidoDocumentResponse {
+    #[serde(flatten)]
+    result: serde_json::Map<String, serde_json::Value>,
+}
+fn handle_eido_document_snapshot(args:EidoDocumentSnapshotRequest, responder:Responder<EidoDocumentResponse>, cx:&mut AsyncApp, ctx:&ClientContext) {
+    if !matches!(args.request.get("action").and_then(serde_json::Value::as_str), Some("open"|"chunk"|"release")) {
+        return respond_err(responder, acp::Error::invalid_params().data("Unsupported document snapshot action."));
+    }
+    run_eido_document(args.session_id,args.request,responder,cx,ctx);
+}
+fn handle_eido_document_render(mut args:EidoDocumentRenderRequest, responder:Responder<EidoDocumentResponse>, cx:&mut AsyncApp, ctx:&ClientContext) {
+    args.request.insert("action".into(), "render".into());
+    run_eido_document(args.session_id,args.request,responder,cx,ctx);
+}
+fn run_eido_document(session_id:acp::SessionId, mut request:serde_json::Map<String,serde_json::Value>, responder:Responder<EidoDocumentResponse>, cx:&mut AsyncApp, ctx:&ClientContext) {
+    let thread=match session_thread(ctx,&session_id){Ok(thread)=>thread,Err(error)=>return respond_err(responder,error)};
+    let valid=cx.update(|cx|thread.upgrade().is_some_and(|thread|thread.read(cx).eido_turn().id.as_deref()==request.get("turnId").and_then(serde_json::Value::as_str)));
+    if !valid{return respond_err(responder,acp::Error::invalid_params().data("Document turn is no longer current."));}
+    request.insert("sessionId".into(),session_id.to_string().into());
+    let host=match cx.update(|cx|cx.try_global::<acp_thread::EidoDocumentHost>().cloned()) {
+        Some(host)=>host,
+        _=>return respond_err(responder,acp::Error::internal_error().data("Native document support is unavailable.")),
+    };
+    let task=cx.background_spawn(async move {
+        let value=(host.0)(serde_json::Value::Object(request))?;
+        Ok::<_,anyhow::Error>(EidoDocumentResponse{result:value.as_object().context("Invalid document response.")?.clone()})
+    });
+    cx.spawn(async move |_cx| {
+        let result=responder.cancellation().run_until_cancelled(async {task.await.map_err(acp::Error::from)}).await;
+        respond_result(responder,result);
+    }).detach();
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, agent_client_protocol::JsonRpcRequest)]
 #[request(method = "_eido/fs/snapshot", response = EidoFileSnapshotResponse)]
 #[serde(rename_all = "camelCase")]
 struct EidoFileSnapshotRequest { session_id: acp::SessionId, path: PathBuf }
@@ -5097,6 +5181,7 @@ fn handle_write_text_file(
     cx: &mut AsyncApp,
     ctx: &ClientContext,
 ) {
+    let research=args.meta.as_ref().and_then(|meta|meta.get("eido.dev/research")).cloned();
     let create = args.meta.as_ref().and_then(|meta| meta.get("eido.dev/createFile")).and_then(|value| value.as_bool()) == Some(true);
     let expected = args.meta.as_ref().and_then(|meta| meta.get("eido.dev/expectedBuffer")).and_then(|value| value.as_str()).map(str::to_owned);
     let thread = match session_thread(ctx, &args.session_id) {
@@ -5108,6 +5193,7 @@ fn handle_write_text_file(
         let result: Result<_, acp::Error> = async {
             thread
                 .update(cx, |thread, cx| {
+                    if let Some(ref provenance)=research {if provenance["version"]!=1 || provenance["ownerSession"].as_str()!=Some(thread.session_id().to_string().as_str()) || provenance["turnId"].as_str()!=thread.eido_turn().id.as_deref(){return Task::ready(Err(anyhow::anyhow!("Research edit belongs to an inactive task turn")));}}
                     if let Some(expected) = expected {thread.write_text_file_if_unchanged(args.path, args.content, expected, cx)}
                     else if create {thread.create_text_file(args.path, args.content, cx)}
                     else {thread.write_text_file(args.path, args.content, cx)}

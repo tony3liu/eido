@@ -6,7 +6,7 @@ import { mkdir, mkdtemp, readFile, realpath, rm, writeFile, readdir, symlink, cp
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { client, methods, type CreateTerminalRequest } from "@agentclientprotocol/sdk";
+import { client, methods, type CreateTerminalRequest, type ContentBlock } from "@agentclientprotocol/sdk";
 import { startEidoAgent } from "../src/server.ts";
 import { call, fixtureModel, lastToolText, type FixtureStep } from "./fixture-model.ts";
 import {EDITOR_QUERY} from '../src/editor-query.ts';
@@ -42,13 +42,14 @@ test("new unsaved files can be captured and verified in a browser without saving
 
 async function harness(steps: FixtureStep[], options: {
   browser?: boolean;
+  research?: boolean;
   beforeRead?: (observation: boolean) => Promise<void>;
   create?: (params: CreateTerminalRequest, launch: () => Promise<{terminalId: string}>) => Promise<{terminalId: string}>;
 } = {}) {
   const cwd = await realpath(await mkdtemp(join(tmpdir(), "eido-preview-")));
   const buffers = new Map([[join(cwd, "index.html"), source(2)]]);
   await writeFile(join(cwd, "index.html"), source(7));
-  await writeFile(join(cwd, "settings.json"), JSON.stringify({ defaultProvider: "eido-fixture", defaultModel: "scripted", defaultThinkingLevel: "off" }));
+  await writeFile(join(cwd, "settings.json"), JSON.stringify({ defaultProvider: "eido-fixture", defaultModel: "scripted", defaultThinkingLevel: "off",...(options.research?{eido:{research:{schemaVersion:1,enabled:true,revision:1}}}:{}) }));
   const fixture = await fixtureModel(cwd, steps);
   const terminals = new Map<string, { child: ChildProcess; output: string; exited: boolean; released: boolean }>();
   const release = async (id: string) => {
@@ -113,8 +114,8 @@ async function harness(steps: FixtureStep[], options: {
   const newTask = () => connection.agent.request(methods.agent.session.new, { cwd, mcpServers: options.browser ? [{ name: "eido_browser", command: process.execPath,
     args: [fileURLToPath(new URL("../../runtime/bin/browser-server.mjs", import.meta.url))], env: [{ name: "JEV_BROWSER_HEADED", value: "0" }],
   }] : [] });
-  return { cwd, buffers, terminals, updates, proposals, newTask, requests: fixture.requests,
-    prompt: (sessionId: string) => connection.agent.request(methods.agent.session.prompt, { sessionId, prompt: [{ type: "text", text: "Run the preview verification fixture." }] }),
+  return { cwd, buffers, terminals, updates, proposals, newTask, request:connection.agent.request.bind(connection.agent), requests: fixture.requests,
+    prompt: (sessionId: string,extra:ContentBlock[] = []) => connection.agent.request(methods.agent.session.prompt, { sessionId, prompt: [{ type: "text", text: "Run the preview verification fixture." },...extra] }),
     cancel: (sessionId: string) => connection.agent.notify(methods.agent.session.cancel, { sessionId }),
     close: (sessionId: string) => connection.agent.request(methods.agent.session.close, { sessionId }),
     dispose: async () => {
@@ -547,4 +548,31 @@ test('shell cancellation releases its terminal and preserves unmerged output', {
     assert.equal(h.buffers.get(join(h.cwd,'result.txt')),undefined);
     await assert.rejects(stat(join(h.cwd,'result.txt')));
   } finally {await h.dispose();}
+});
+
+test('saved source requirement follows a native edit into real command and Chromium checks, then invalidates on buffer edits',{timeout:90000},async()=>{
+  const {ResearchStore}=await import('../../runtime/src/research/store.mjs');
+  let criterionId='',requirementId='',run:any;
+  const h=await harness([
+    ()=>call('write',{path:'result/index.html',content:source(1)}),
+    context=>{lastToolText(context,'write');return call('preview',{action:'start',files:['result/index.html','check.mjs'],commands:[{command:'node',args:['check.mjs']}],server:{command:'node',args:['-e',"require('node:http').createServer((q,s)=>s.end(require('node:fs').readFileSync('result/index.html'))).listen(process.env.PORT,process.env.HOST)"]},criterionIds:[criterionId]});},
+    context=>{run=JSON.parse(lastToolText(context,'preview'));assert.equal(run.requirementChecks[0].status,'Passed');assert.equal(run.research.requirements[0].requirementId,requirementId);assert.ok(run.research.turnId);return call(name('open'),{url:run.url});},
+    ()=>call(name('snapshot')),
+    context=>{const output=lastToolText(context,name('snapshot'));const element=output.match(/\[(\d+)\].*Increment/);assert.ok(element);return call(name('act'),{action:'click',element:Number(element[1])});},
+    ()=>call(name('snapshot')),
+    context=>{assert.match(lastToolText(context,name('snapshot')),/Count: 1/);h.buffers.set(join(h.cwd,'result/index.html'),source(3));return call('preview',{action:'status'});},
+    context=>{const stale=JSON.parse(lastToolText(context,'preview'));assert.equal(stale.freshness.state,'stale');assert.equal(stale.requirementChecks[0].status,'Needs recheck');return 'Checks require rerun after manual edits.';},
+  ],{browser:true,research:true});
+  try{
+    await writeFile(join(h.cwd,'check.mjs'),"import assert from 'node:assert/strict';import{readFileSync}from'node:fs';assert.match(readFileSync('result/index.html','utf8'),/Count: 1/);");
+    const task=await h.newTask();const store=new ResearchStore({directory:h.cwd,sessionId:task.sessionId});
+    const sourceRecord=await store.addSource({kind:'web'},{body:'Increment increases the count by one.'}),citation=await store.cite(sourceRecord.versionId,'increases the count by one');
+    const created:any=await h.request('_eido/research',{version:1,sessionId:task.sessionId,action:'requirements',operationId:'requirement',request:{action:'create',title:'Increment',text:'Implement increment',citationIds:[citation.citationId],criteria:[{text:'Command regression passes',checkType:'command',checkSpec:'node check.mjs',sourceCitationIds:[citation.citationId]}]}});
+    requirementId=created.requirement.requirementId;criterionId=created.requirement.criteria[0].criterionId;
+    await h.prompt(task.sessionId,[{type:'resource',resource:{uri:`eido-requirement://${requirementId}/1`,mimeType:'application/vnd.eido.requirement+json',text:JSON.stringify({version:1,requirementId,revision:1})}}]);
+    assert.equal(h.requests(),8);
+    const manifest=await store.manifest();assert.ok(manifest.links.some(l=>l.kind==='edit'&&l.requirementId===requirementId));assert.equal(manifest.links.find(l=>l.runId===run.runId)?.status,'Needs recheck');
+    assert.ok((h.updates as any[]).some(u=>u.rawOutput?.eidoResearchEdit?.requirements?.[0]?.requirementId===requirementId));
+    await assert.rejects(readFile(join(h.cwd,'result/index.html')));
+  }finally{await h.dispose();}
 });

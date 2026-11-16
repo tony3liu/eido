@@ -26,6 +26,7 @@ audio = ["dep:audio"]
 unit-eval = []
 
 [dependencies]
+eido_i18n.workspace = true
 acp_thread.workspace = true
 action_log.workspace = true
 agent-client-protocol.workspace = true
@@ -94,6 +95,7 @@ schemars.workspace = true
 search.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 serde_json_lenient.workspace = true
 settings.workspace = true
 streaming_diff.workspace = true
@@ -116,6 +118,10 @@ git_ui_core.workspace = true
 zed_actions.workspace = true
 image.workspace = true
 reqwest_client = { workspace = true, optional = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-core-foundation = { workspace = true, features = ["CFCGTypes"] }
+objc2-core-graphics = { workspace = true, features = ["CGPDFDocument", "CGPDFPage", "CGDataProvider", "CGContext", "CGBitmapContext", "CGColorSpace", "CGImage", "CGAffineTransform", "CGGeometry"] }
 
 [dev-dependencies]
 acp_thread = { workspace = true, features = ["test-support"] }

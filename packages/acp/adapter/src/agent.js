@@ -217,6 +217,7 @@ export class PiAcpAgent {
             sessionSignal: lifecycle.signal,
             getPi: () => state.pi,
             getTurnSignal: () => state.wrapper?.activeTurnSignal(),
+            getTurnId: () => state.wrapper?.turnState()?.id,
             isPublished: () => state.published,
             emitDiagnostic: (text) => {
                 if (state.wrapper)

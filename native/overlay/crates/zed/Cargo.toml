@@ -67,6 +67,7 @@ path = "src/visual_test_runner.rs"
 required-features = ["visual-tests"]
 
 [dependencies]
+eido_i18n.workspace = true
 eido_ui = { path = "../eido_ui" }
 acp_thread.workspace = true
 acp_tools.workspace = true

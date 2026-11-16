@@ -4801,6 +4801,56 @@ pub(crate) mod tests {
     }
 
     #[gpui::test]
+    async fn test_eido_documents_survive_windows_queue_cancel_and_release_removed_mentions(cx:&mut TestAppContext) {
+        init_test(cx);cx.update(crate::eido_document::init);
+        let directory=tempfile::tempdir().unwrap();let path=directory.path().join("fixture.pdf");std::fs::write(&path,b"%PDF-local ownership fixture").unwrap();
+        let registry=cx.update(|cx|cx.global::<crate::eido_document::NativeDocuments>().0.clone());
+        let block=|descriptor:&crate::eido_document::DocumentDescriptor|acp::ContentBlock::Resource(acp::EmbeddedResource::new(acp::EmbeddedResourceResource::TextResourceContents(acp::TextResourceContents::new(serde_json::to_string(descriptor).unwrap(),format!("eido-document://{}",descriptor.attachment_id)).mime_type("application/vnd.eido.document+json"))));
+        let first=registry.lock().unwrap().select(&path).unwrap();let first_id=first.attachment_id.clone();
+        let first_editor={
+            let (conversation,window)=setup_conversation_view(StubAgentServer::default_response(),cx).await;
+            add_to_workspace(conversation.clone(),window);
+            let editor=message_editor(&conversation,window);
+            editor.update_in(window,|editor,window,cx|editor.set_message(vec![block(&first)],window,cx));
+            editor
+        };drop(first);
+        let (conversation,cx)=setup_conversation_view(StubAgentServer::default_response(),cx).await;
+        add_to_workspace(conversation.clone(),cx);let view=active_thread(&conversation,cx);
+        let queued=registry.lock().unwrap().select(&path).unwrap();let queued_id=queued.attachment_id.clone();
+        view.update_in(cx,|view,window,cx|view.add_to_queue(vec![block(&queued)],vec![],window,cx));drop(queued);
+        let editor=message_editor(&conversation,cx);
+        for index in 0..260 {
+            let selected=registry.lock().unwrap().select(&path).unwrap_or_else(|error|panic!("selection {index}: {error}"));
+            let id=selected.attachment_id.clone();
+            editor.update_in(cx,|editor,window,cx|editor.set_message(vec![block(&selected)],window,cx));drop(selected);
+            editor.update_in(cx,|editor,window,cx|editor.clear(window,cx));
+            cx.run_until_parked();
+            // Every next selection reclaims the previous removed mention.
+            drop(registry.lock().unwrap().select(&path).unwrap());
+            assert!(registry.lock().unwrap().descriptor(&id).is_err());
+        }
+        assert!(registry.lock().unwrap().descriptor(&first_id).is_ok(),"another window's draft remains available");
+        assert!(registry.lock().unwrap().descriptor(&queued_id).is_ok(),"queued editor retains the selected file");
+        let delivery=view.update(cx,|view,_|{let id=view.message_queue.first_id().unwrap();let entry=view.message_queue.send_now(id,false).unwrap();let delivery=entry.delivery_id.clone();view.message_queue.begin_delivery(entry);delivery});
+        {let mut registry=registry.lock().unwrap();let descriptor=registry.descriptor(&queued_id).unwrap();registry.bind(&descriptor,"task","turn").unwrap();}
+        view.update(cx,|view,_|view.message_queue.finish_delivery(&delivery,false));
+        registry.lock().unwrap().release_turn("task","turn");
+        drop(registry.lock().unwrap().select(&path).unwrap());
+        assert!(registry.lock().unwrap().descriptor(&queued_id).is_ok(),"cancelled delivery can be explicitly sent again");
+        view.update(cx,|view,_|{let id=view.message_queue.first_id().unwrap();let entry=view.message_queue.remove(id).unwrap();view.message_queue.begin_delivery(entry);view.message_queue.finish_delivery(&delivery,true);});
+        cx.run_until_parked();drop(registry.lock().unwrap().select(&path).unwrap());
+        assert!(registry.lock().unwrap().descriptor(&queued_id).is_err(),"completed delivery releases its queued editor");
+        // Resolving a prompt retains the selected file across composer clearing and async send.
+        let sending=registry.lock().unwrap().select(&path).unwrap();let sending_id=sending.attachment_id.clone();
+        editor.update_in(cx,|editor,window,cx|editor.set_message(vec![block(&sending)],window,cx));drop(sending);
+        let (_blocks,_buffers,documents)=editor.update(cx,|editor,cx|editor.contents(false,cx)).await.unwrap();
+        editor.update_in(cx,|editor,window,cx|editor.clear(window,cx));
+        drop(registry.lock().unwrap().select(&path).unwrap());assert!(registry.lock().unwrap().descriptor(&sending_id).is_ok());
+        drop(documents);cx.run_until_parked();drop(registry.lock().unwrap().select(&path).unwrap());assert!(registry.lock().unwrap().descriptor(&sending_id).is_err());
+        first_editor.update_in(cx,|editor,window,cx|editor.clear(window,cx));cx.run_until_parked();drop(registry.lock().unwrap().select(&path).unwrap());assert!(registry.lock().unwrap().descriptor(&first_id).is_err());
+    }
+
+    #[gpui::test]
     async fn test_eido_queue_restores_payload_order_and_review_without_auto_sending(cx: &mut TestAppContext) {
         init_test(cx);
         let connection = StubAgentConnection::new();

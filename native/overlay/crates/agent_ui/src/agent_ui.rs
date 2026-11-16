@@ -7,6 +7,8 @@ pub(crate) mod conversation_view;
 mod diagnostics;
 mod eido_access;
 mod eido_reference;
+mod eido_document;
+mod eido_research;
 mod eido_pi_ui;
 mod eido_verification;
 mod eido_queue;
@@ -562,6 +564,7 @@ pub fn init(
     eido_session_store::init(cx);
     eido_access::init(cx);
     eido_review_store::init(cx);
+    eido_document::init(cx);
     agent::ThreadStore::init_global(cx);
     prompt_store::init(cx);
     agent_panel::init(cx);

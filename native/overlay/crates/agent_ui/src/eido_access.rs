@@ -55,30 +55,41 @@ pub(crate) fn render<T: 'static>(_window: &mut Window, cx: &mut Context<T>) -> i
     let state = cx.global::<EidoAccess>();
     let full_access = state.full_access;
     let busy = state.busy;
-    let tooltip = state.error.clone().unwrap_or_else(|| if full_access {
-        "Full Access · Global. pi runs enabled tools autonomously until the turn completes. Stop remains available."
+    let tooltip = if let Some(error) = state.error.as_deref() {
+        let key = match error {
+            "Eido runtime is unavailable." => Some("access.error_runtime"),
+            "Eido Node.js runtime is unavailable." => Some("access.error_node"),
+            "Unable to update Agent Access." => Some("access.error_update"),
+            "Unable to save Agent Access." => Some("access.error_save"),
+            "Agent Access was not saved." => Some("access.error_unsaved"),
+            "Invalid Agent Access response." => Some("access.error_response"),
+            "Agent Access was not saved. Check global pi settings and try again." => Some("access.error_settings"),
+            _ => None,
+        };
+        key.map(|key| eido_i18n::tr(cx, key)).unwrap_or_else(|| eido_i18n::tr_args(cx, "access.error_raw", &[("error", error.to_owned())]))
     } else {
-        "Ask Before Actions · Global. Review tool permissions before pi acts."
-    }.to_owned());
-    let label = if full_access { "Full Access" } else { "Ask Before Actions" };
+        eido_i18n::tr(cx, if full_access { "access.full_help" } else { "access.ask_help" })
+    };
+    let label = eido_i18n::tr(cx, if full_access { "access.full" } else { "access.ask" });
+    let aria_label = eido_i18n::tr_args(cx, "access.aria", &[("name", label.to_string())]);
     PopoverMenu::new("eido-agent-access")
         .trigger_with_tooltip(
             Button::new("eido-agent-access-trigger", label)
                 .label_size(LabelSize::Small)
                 .color(Color::Muted)
                 .end_icon(Icon::new(IconName::ChevronDown).size(IconSize::XSmall).color(Color::Muted))
-                .aria_label(format!("Agent Access: {label}. Global."))
+                .aria_label(aria_label)
                 .disabled(busy),
             Tooltip::text(tooltip),
         )
         .menu(move |window, cx| {
             Some(ContextMenu::build(window, cx, move |mut menu, window, cx| {
-                menu = menu.fixed_width(rems(11.5).into());
-                for (name, enabled) in [("Ask Before Actions", false), ("Full Access", true)] {
+                menu = menu.fixed_width(rems(13.).into());
+                for (name, enabled) in [("access.ask", false), ("access.full", true)] {
                     menu = menu.custom_entry(
-                        move |_, _| {
+                        move |_, cx| {
                             h_flex().w_full().h_6().gap_3().justify_between()
-                                .child(Label::new(name).size(LabelSize::Small))
+                                .child(Label::new(eido_i18n::tr(cx, name)).size(LabelSize::Small))
                                 .child(div().flex_none()
                                     .child(Icon::new(IconName::Check).size(IconSize::XSmall).color(Color::Muted))
                                     .when(full_access != enabled, |this| this.invisible()))

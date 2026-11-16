@@ -1,6 +1,6 @@
 import type { AgentSession, ToolInfo, ToolDefinition } from "@earendil-works/pi-coding-agent";
 
-export const agentToolCategories = ["read", "edit", "write", "bash", "preview", "browser", "subagent", "extensions", "mcp"];
+export const agentToolCategories = ["read", "edit", "write", "bash", "preview", "browser", "subagent", "extensions", "mcp", "research"];
 const mcpPath = "<inline:agentprism-pi-acp-mcp>";
 const discovery = new Map([['codemode', 'builtin:codemode'], ['tool_search', 'builtin:tool-search']]);
 
@@ -24,6 +24,7 @@ export function resolveAgentTools(selectors: string[] | undefined, tools: ToolIn
     const matches = available.filter(tool => {
       if (selector === "extensions") return !tool.sourceInfo.path.startsWith("<") && !tool.sourceInfo.path.startsWith('builtin:');
       if (selector === "mcp") return tool.sourceInfo.path === mcpPath;
+      if (selector === "research") return tool.sourceInfo.path === mcpPath && /^mcp__eido_research__(search|fetch|source|document_extract)$/.test(tool.name);
       if (selector === "browser") return tool.sourceInfo.path === mcpPath && tool.name.startsWith("mcp__eido_browser__");
       if (selector.startsWith("mcp:")) return tool.sourceInfo.path === mcpPath && tool.name.startsWith(`mcp__${selector.slice(4)}__`);
       if (selector === "read") return ["read", "find", "grep", "ls"].includes(tool.name) && tool.sourceInfo.source === "sdk";
@@ -70,7 +71,8 @@ export function installAgentToolPolicy(session: AgentSession, selectors: string[
         else exposures.set(tool,tool.exposure);
       }
       const tools=allTools();
-      allowed=new Set(resolveAgentTools(selectors,tools.filter(filter),reset));
+      const researchDisabled=new Set((session.settingsManager.getGlobalSettings().defaultTools??[]).filter(name=>name.startsWith('-mcp__eido_research__')).map(name=>name.slice(1)));
+      allowed=new Set(resolveAgentTools(selectors,tools.filter(tool=>filter(tool)&&!researchDisabled.has(tool.name)),reset));
       const automatic=new Set<string>();
       for(const tool of tools.filter(tool=>allowed.has(tool.name))) {
         const config=definition(tool.name);

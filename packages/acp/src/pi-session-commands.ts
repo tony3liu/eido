@@ -1,3 +1,5 @@
+import {RESEARCH,type ResearchSession} from './research.ts';
+import {ResearchStore} from '../../runtime/src/research/store.mjs';
 import {appendEidoEntry} from './session-persistence.ts';
 import {mkdir, mkdtemp, readFile, rm, stat, writeFile} from "node:fs/promises";
 import {join, resolve} from "node:path";
@@ -154,6 +156,13 @@ export async function sessionCommand(pi: AgentSession, client: AgentContext, ui:
     await detachHistoricalAgents(createdPath, name === 'import' ? resolve(cwd,requested) : manager.getSessionFile());
     const created = SessionManager.open(createdPath,directory);
     const id = created.getSessionId(), title = `${recovering ? 'Recovered' : name === 'import' ? 'Imported' : name === 'fork' ? 'Fork' : 'Clone'} · ${recoveredName || pi.sessionName || 'Task'}`;
+    const research=(pi as unknown as {[RESEARCH]?:ResearchSession})[RESEARCH];
+    if(research){
+      const sourceId=name==='import'?SessionManager.open(snapshot,directory).getSessionId():pi.sessionId;
+      const source=new ResearchStore({directory:research.directory,sessionId:sourceId});
+      const manifest=await source.manifest();
+      if(manifest.sources.length||manifest.requirements.length)await source.copyTo(new ResearchStore({directory:research.directory,sessionId:id,workspaceIdentity:cwd}));
+    }
     created.appendSessionInfo(title);
     // Once navigation is sent, a timeout cannot prove that the client did not load it.
     // Retain the journal so a cancelled/failed UI request remains recoverable.

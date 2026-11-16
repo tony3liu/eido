@@ -26,6 +26,8 @@ pub struct EidoFileProposal {
     pub expected_buffer: Option<String>,
     /// None proposes deletion; Some contains base64-encoded output bytes.
     pub output: Option<String>,
+    #[serde(default)]
+    pub research: Option<serde_json::Value>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -107,7 +109,7 @@ impl EidoFileReview {
             format!("{} bytes\n\n```text\n{preview}{}\n```", bytes.len(), if bytes.len() > 64 { " …" } else { "" })
         }
         format!("# {}\n\nPath: `{}`\n\nSource: {} · {}\n\nRun: `{}`\n\nDecision: {:?}\n\n## Original disk contents\n\n{}\n\n## Proposed result\n\n{}\n\n{}{}",
-            self.label(), self.proposal.path.display(), self.source_title, self.source_session, self.proposal.run_id,
+            self.label(), self.proposal.path.display(), format!("{}\n\nRequirements: {}",self.source_title,self.proposal.research.as_ref().map(|value| value["requirements"].to_string()).unwrap_or_else(||"Unlinked".into())), self.source_session, self.proposal.run_id,
             self.decision, describe(&before), describe(&after),
             self.proposal.expected_buffer.as_ref().map(|text| format!("## Captured editor contents\n\n```text\n{text}\n```\n\n")).unwrap_or_default(),
             format!("{}\n\nRecovery files: {}", self.error.as_deref().unwrap_or(""),
@@ -452,7 +454,7 @@ mod tests {
     }
 
     fn proposal(path: &str, before: Option<&[u8]>, after: Option<&[u8]>, buffer: Option<&str>) -> EidoFileProposal {
-        EidoFileProposal {path: path.into(), expected_disk: before.map(|bytes| STANDARD.encode(bytes)), output: after.map(|bytes| STANDARD.encode(bytes)),
+        EidoFileProposal {research:None,path: path.into(), expected_disk: before.map(|bytes| STANDARD.encode(bytes)), output: after.map(|bytes| STANDARD.encode(bytes)),
             expected_buffer: buffer.map(str::to_string), run_id: "run".into(), tool_call_id: "shell".into()}
     }
 

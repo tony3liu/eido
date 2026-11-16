@@ -17,7 +17,7 @@ export interface AgentRole {
 }
 const tools = agentToolCategories;
 const builtins: AgentRole[] = [
-  {name: "scout", description: "Inspect code and gather references", tools: ["read"], systemPrompt: "Inspect the assigned code. Return verified findings with file references. Do not modify files."},
+  {name: "scout", description: "Inspect code and gather references", tools: ["read", "research"], systemPrompt: "Inspect the assigned code. Return verified findings with file references. Do not modify files."},
   {name: "reviewer", description: "Review correctness and risks", tools: ["read"], systemPrompt: "Review the assigned changes. Prioritize actionable defects with file references. Separate verified defects from suggestions."},
   {name: "worker", description: "Implement changes in native editor buffers", tools, systemPrompt: "Complete the assigned implementation. Read before editing. Preserve user edits; if a write conflicts, re-read and reconcile. Verify changes with the available tools."},
   {name: "verifier", description: "Verify current buffers in a test browser", tools: ["read", "preview", "browser"], systemPrompt: "Verify the assigned behavior using current buffers and browser observations. Report criteria, actual observations and preview run ID. Stop test resources when finished. Do not claim unobserved success."},

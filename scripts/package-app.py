@@ -22,6 +22,9 @@ RUNTIME_FILES = (
     'packages/runtime/package.json',
     'packages/runtime/src/lifecycle.mjs', 'packages/runtime/src/paths.mjs',
     'packages/runtime/src/computer.mjs',
+    'packages/runtime/src/research/config.mjs', 'packages/runtime/src/research/store.mjs',
+    'packages/runtime/src/research/usage.mjs', 'packages/runtime/src/research/client.mjs',
+    'packages/runtime/src/research/ocr.mjs',
     'packages/runtime/src/browser/config.mjs', 'packages/runtime/src/browser/server.mjs',
     'packages/runtime/src/browser/text-model.mjs',
     'packages/runtime/src/browser/ultrafast/agent.js', 'packages/runtime/src/browser/ultrafast/browser.js', 'packages/runtime/src/browser/ultrafast/model.js', 'packages/runtime/src/browser/ultrafast/types.js', 'packages/runtime/src/browser/ultrafast/transport.js', 'packages/runtime/src/browser/ultrafast/questions.js', 'packages/runtime/src/browser/ultrafast/scripts.js', 'packages/runtime/src/browser/ultrafast/snapshot.js', 'packages/runtime/src/browser/ultrafast/LICENSE',
@@ -313,7 +316,7 @@ def build_payload(native, record, executable):
     with (contents / 'Info.plist').open('wb') as stream:
         plistlib.dump({'CFBundleExecutable': 'eido', 'CFBundleIdentifier': 'dev.eido.app',
             'CFBundleName': 'Eido', 'CFBundleDisplayName': 'Eido', 'CFBundleIconFile': 'Eido.icns',
-            'CFBundlePackageType': 'APPL', 'CFBundleShortVersionString': version.split('-')[0], 'CFBundleVersion': '4',
+            'CFBundlePackageType': 'APPL', 'CFBundleShortVersionString': version.split('-')[0], 'CFBundleVersion': version.split('-')[0],
             'NSHighResolutionCapable': True, 'NSPrincipalClass': 'NSApplication',
             'NSCameraUsageDescription': 'Eido uses the camera only when an enabled tool requests it.',
             'NSMicrophoneUsageDescription': 'Eido uses the microphone only when an enabled tool requests it.',

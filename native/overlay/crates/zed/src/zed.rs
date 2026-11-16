@@ -2104,6 +2104,7 @@ pub fn handle_keymap_file_changes(
     user_keymap_watcher: gpui::Task<()>,
     cx: &mut App,
 ) {
+    cx.observe_global::<eido_i18n::LocaleState>(reload_menus).detach();
     let (base_keymap_tx, mut base_keymap_rx) = mpsc::unbounded();
     let (keyboard_layout_tx, mut keyboard_layout_rx) = mpsc::unbounded();
     let mut old_base_keymap = *BaseKeymap::get_global(cx);
@@ -2294,6 +2295,12 @@ fn show_markdown_app_notification<F>(
 fn reload_menus(cx: &mut App) {
     let menus = app_menus(cx);
     cx.set_menus(menus);
+    // On Windows, this is set in the `update_jump_list` method of the `HistoryManager`.
+    #[cfg(not(target_os = "windows"))]
+    cx.set_dock_menu(vec![gpui::MenuItem::action(
+        eido_i18n::tr(cx, "menu.new_window"),
+        workspace::NewWindow,
+    )]);
 }
 
 fn reload_keymaps(cx: &mut App, mut user_key_bindings: Vec<KeyBinding>) {
@@ -2306,12 +2313,6 @@ fn reload_keymaps(cx: &mut App, mut user_key_bindings: Vec<KeyBinding>) {
     }
     cx.bind_keys(filter_disabled_ai_bindings(user_key_bindings, cx));
     reload_menus(cx);
-    // On Windows, this is set in the `update_jump_list` method of the `HistoryManager`.
-    #[cfg(not(target_os = "windows"))]
-    cx.set_dock_menu(vec![gpui::MenuItem::action(
-        "New Window",
-        workspace::NewWindow,
-    )]);
     // todo: nicer api here?
     keymap_editor::KeymapEventChannel::trigger_keymap_changed(cx);
 }

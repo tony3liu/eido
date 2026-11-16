@@ -13,6 +13,7 @@ export interface McpSessionBinding {
     sessionSignal: AbortSignal;
     getPi(): AgentSession | undefined;
     getTurnSignal(): AbortSignal | undefined;
+    getTurnId?(): string | undefined;
     isPublished(): boolean;
     emitDiagnostic(text: string): void;
     /** Adapter-allocated collision-safe token for this configured server. */
@@ -30,7 +31,7 @@ export declare function withMcpModelContent(result: CallToolResult, content: Con
 export declare function getMcpModelContent(result: CallToolResult): ContentBlock[] | undefined;
 export interface McpClientHandle {
     listTools(cursor: string | undefined, signal: AbortSignal, timeoutMs: number): Promise<McpListResult>;
-    callTool(name: string, args: unknown, signal: AbortSignal, timeoutMs: number, onprogress?: (progress: unknown) => void): Promise<CallToolResult>;
+    callTool(name: string, args: unknown, signal: AbortSignal, timeoutMs: number, onprogress?: (progress: unknown) => void, execution?: {toolCallId:string}): Promise<CallToolResult>;
     close(): Promise<void>;
     ping?(signal: AbortSignal, timeoutMs: number): Promise<void>;
     getCapabilities?(): ServerCapabilities | undefined;
@@ -52,6 +53,11 @@ export interface McpClientHandle {
     jsonSchemaValidator?: AjvJsonSchemaValidator;
     /** The handle's own close implementation enforces the shared physical deadline. */
     closeIsBounded?: boolean;
+}
+export interface BuiltinMcpClient {
+    name:string;
+    timeoutMs?:number;
+    connect(binding:McpSessionBinding,signal:AbortSignal):Promise<McpClientHandle>;
 }
 export declare class McpTimeoutError extends Error {
     constructor();

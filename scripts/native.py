@@ -257,7 +257,7 @@ def main():
                 'CFBundleIconFile': 'Eido.icns',
                 'CFBundleDisplayName': 'Eido',
                 'CFBundlePackageType': 'APPL',
-                'CFBundleShortVersionString': '0.0.1',
+                'CFBundleShortVersionString': json.loads((ROOT / 'package.json').read_text())['version'].split('-')[0],
                 'CFBundleVersion': '4',
                 'NSHighResolutionCapable': True,
             }, stream)

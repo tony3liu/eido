@@ -28,6 +28,7 @@ export async function resolveDeps(partial = {}) {
     };
     return {
         eidoClaimSession: partial.eidoClaimSession,
+        builtinMcpClients: partial.builtinMcpClients,
         createAgentSession: partial.createAgentSession ?? createAgentSession,
         sessions,
         modelRuntime,

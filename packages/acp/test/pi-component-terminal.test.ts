@@ -80,7 +80,7 @@ test('real component terminal handles split UTF-8, arrow keys and paste, then re
 test('overlay exposes a real handle and returns the plugin result', {timeout:10_000}, async () => {
   const t=transport(); let handle=false;
   const result=t.start<number>((_tui,_theme,_keys,done) => ({render:()=>['OVERLAY READY'],invalidate(){},handleInput(){done(7);}}),
-    {blocked:true,overlay:true,overlayOptions:()=>({width:40}),onHandle:value=>{handle=value.isFocused();}});
+    {blocked:{kind:'question',message:'Choose an option'},overlay:true,overlayOptions:()=>({width:40}),onHandle:value=>{handle=value.isFocused();}});
   await t.waitFor('OVERLAY READY');
   assert.ok(t.updates.some(update=>update.sessionUpdate==='tool_call' && update.title.includes('waiting for input')));
   t.send('x');

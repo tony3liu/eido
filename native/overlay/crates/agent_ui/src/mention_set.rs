@@ -40,6 +40,7 @@ pub type MentionTask = Shared<Task<Result<Mention, String>>>;
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum Mention {
+    Document(crate::eido_document::DocumentDescriptor),
     Text {
         content: String,
         tracked_buffers: Vec<Entity<Buffer>>,
@@ -121,11 +122,15 @@ impl MentionSet {
                 let entity = entity.downgrade();
                 let resolved = task.clone();
                 cx.spawn(async move |cx| {
+                    let resolved=resolved.await;
+                    if let Ok(Mention::Document(descriptor))=&resolved {
+                        let descriptor=descriptor.clone();entity.update(cx,|entity,cx|{entity.mention_uri=Some(MentionUri::Document{id:descriptor.attachment_id,name:descriptor.original_name});cx.notify();}).ok();
+                    }
                     if let Ok(Mention::Text {
                         content,
                         tracked_buffers,
                         capture,
-                    }) = resolved.await
+                    }) = resolved
                     {
                         entity
                             .update(cx, |entity, cx| {
@@ -165,6 +170,8 @@ impl MentionSet {
         cx: &mut Context<Self>,
     ) -> Task<Result<Mention>> {
         match mention_uri {
+            MentionUri::Requirement {id,revision,..}=>Task::ready(Ok(Mention::Text{content:serde_json::json!({"version":1,"requirementId":id,"revision":revision}).to_string(),tracked_buffers:Vec::new(),capture:None})),
+            MentionUri::Document { id, .. } => Task::ready(cx.global::<crate::eido_document::NativeDocuments>().0.lock().map_err(|_|anyhow!("Document registry unavailable")).and_then(|registry|registry.descriptor(&id)).map(Mention::Document)),
             MentionUri::Fetch { url } => self.confirm_mention_for_fetch(url, http_client, cx),
             MentionUri::Directory { .. } => Task::ready(Ok(Mention::Link)),
             MentionUri::Thread { id, .. } => self.confirm_mention_for_thread(id, cx),
@@ -229,6 +236,20 @@ impl MentionSet {
         let (uri, task) = self.mentions.get(crease_id)?;
         let mention = task.clone().now_or_never().and_then(|result| result.ok());
         Some((uri.clone(), mention))
+    }
+
+    /// Queue entries own document lifetimes; their display editor must not keep
+    /// files pinned after an entry is removed (a rendered editor may linger).
+    pub(crate) fn take_document_selections(&mut self)->Vec<crate::eido_document::DocumentDescriptor> {
+        let mut documents=Vec::new();
+        for (_,task) in self.mentions.values_mut(){
+            if let Some(Ok(Mention::Document(mut descriptor)))=task.clone().now_or_never(){
+                documents.push(descriptor.clone());
+                descriptor.lease=Arc::new(());
+                *task=Task::ready(Ok(Mention::Document(descriptor))).shared();
+            }
+        }
+        documents
     }
 
     pub fn clear(&mut self) -> impl Iterator<Item = (CreaseId, (MentionUri, MentionTask))> {
@@ -327,6 +348,8 @@ impl MentionSet {
         };
 
         let task = match mention_uri.clone() {
+            MentionUri::Requirement {id,revision,..}=>Task::ready(Ok(Mention::Text{content:serde_json::json!({"version":1,"requirementId":id,"revision":revision}).to_string(),tracked_buffers:Vec::new(),capture:None})),
+            MentionUri::Document { id, .. } => Task::ready(cx.global::<crate::eido_document::NativeDocuments>().0.lock().map_err(|_|anyhow!("Document registry unavailable")).and_then(|registry|registry.descriptor(&id)).map(Mention::Document)),
             MentionUri::Fetch { url } => {
                 self.confirm_mention_for_fetch(url, workspace.read(cx).client().http_client(), cx)
             }
@@ -407,6 +430,10 @@ impl MentionSet {
         supports_images: bool,
         cx: &mut Context<Self>,
     ) -> Task<Result<Mention>> {
+        if abs_path.extension().is_some_and(|extension|extension.eq_ignore_ascii_case("pdf")) {
+            let registry=cx.global::<crate::eido_document::NativeDocuments>().0.clone();
+            return cx.background_spawn(async move {registry.lock().map_err(|_|anyhow!("Document registry unavailable"))?.select(&abs_path).map(Mention::Document)});
+        }
         let Some(project) = self.project.upgrade() else {
             return Task::ready(Err(anyhow!("project not found")));
         };

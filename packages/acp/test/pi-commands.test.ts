@@ -768,6 +768,9 @@ test("clone and fork create independent pi journals and preserve source history"
   });
   try {
     const task=await h.newTask();
+    const {ResearchStore}=await import('../../runtime/src/research/store.mjs');
+    const research=new ResearchStore({directory:h.cwd,sessionId:task.sessionId});
+    const saved=await research.addSource({kind:'web'},{body:'Independent immutable research copy'});
     await h.prompt(task.sessionId,'First user marker');
     await h.prompt(task.sessionId,'Second user marker');
     const sourcePath=(await h.connection.agent.request(methods.agent.session.list,{cwd:h.cwd})).sessions.find(s=>s.sessionId===task.sessionId);
@@ -788,6 +791,9 @@ test("clone and fork create independent pi journals and preserve source history"
     assert.notEqual(clone.data.id,fork.data.id);
     await h.connection.agent.request(methods.agent.session.load,{sessionId:clone.data.id as string,cwd:h.cwd,mcpServers:[]});
     assert.match(h.text(clone.data.id as string),/Second response/);
+    await research.deleteSources([saved.versionId],(await research.manifest()).revision,'delete-original');
+    for(const copy of [fork,clone]){const store=new ResearchStore({directory:h.cwd,sessionId:copy.data.id as string});assert.equal((await store.read(saved.versionId)).text,'Independent immutable research copy');assert.equal((await store.source(saved.versionId)).ownerSession,copy.data.id);}
+
     assert.ok(h.updates.some(event => event.sessionId === clone.data.id && event.update.sessionUpdate === 'session_info_update' && event.update.title === clone.data.title));
     const files=await readdir(join(h.cwd,'sessions'));
     assert.ok(files.every(file=>!file.startsWith('.session-copy-')));

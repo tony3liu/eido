@@ -1,3 +1,4 @@
+import {ResearchUsage} from '../research/usage.mjs';
 import {piDirectory, runtimeRoot as root, bundledPiEntry} from '../paths.mjs';
 import { readFile, writeFile, mkdir, chmod, rename, mkdtemp, rm, access } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
@@ -8,6 +9,9 @@ import {computerSettings} from '../computer.mjs';
 import {runtimeSettings, mergeRuntimeSettings, modelSettings, mergeModelSettings, PiRuntimeSettingsError} from './runtime-settings.mjs';
 import {httpProxyStatus, mergeHttpProxy, PiHttpSettingsError} from './http-settings.mjs';
 import {refreshOpenRouterCatalog} from './model-catalog.mjs';
+import {ResearchClient} from '../research/client.mjs';
+import {randomUUID} from 'node:crypto';
+import {researchSettings, mergeResearchConfig, ResearchError, researchProvider} from '../research/config.mjs';
 
 export class PiConfigError extends Error {}
 
@@ -98,6 +102,7 @@ export function createPiSettings(directory = piDirectory(root), sourceDirectory 
       browserText: await browserTextSettings(directory,modelRuntime),
       computerUse: await computerSettings(directory),
       computerUseRevision: (await readJson(join(directory, 'settings.json'))).eido?.computerUse ?? null,
+      research: {...await researchSettings(directory, modelRuntime),usage:(await new ResearchUsage(directory).summary()).global},
       providers, update: await readJson(join(directory, "pi-update.json"), null) };
   }
 
@@ -105,7 +110,21 @@ export function createPiSettings(directory = piDirectory(root), sourceDirectory 
     const operation = request?.operation ?? "status";
     await mkdir(directory, { recursive: true, mode: 0o700 });
     if (!["status", "check-update", "import", "access"].includes(operation)) await status();
-    if (operation === 'http-proxy') {
+    if (operation === 'research') {
+      const key = typeof request.key === 'string' ? request.key.trim() : '';
+      if (key.length > 8192 || /[\r\n]/.test(key)) throw new PiConfigError('Enter a valid DeepSeek API key or environment reference.');
+      new FileSettingsStorage(directory, directory).withLock('global', current => {
+        try { return JSON.stringify(mergeResearchConfig(current ? JSON.parse(current) : {}, request.changes, request.expectedRevision), null, 2) + '\n'; }
+        catch(error) { throw new PiConfigError(error instanceof ResearchError ? error.message : 'Unable to read Research settings. Existing data was not changed.'); }
+      });
+      await chmod(join(directory, 'settings.json'), 0o600);
+      if (request.removeKey === true) await AuthStorage.create(authPath).delete(researchProvider);
+      else if (key) await AuthStorage.create(authPath).modify(researchProvider, async () => ({type:'api_key',key}));
+      if (key || request.removeKey) await chmod(authPath, 0o600);
+    } else if (operation === 'research-test') {
+      try {await new ResearchClient({directory,modelRuntime:await runtime()}).request('search',{query:'DeepSeek API documentation',count:1},{operationId:randomUUID(),ownerSession:'global-settings',turnId:randomUUID()});}
+      catch(error){if(!(error instanceof ResearchError))throw new PiConfigError('Research connection check failed.');}
+    } else if (operation === 'http-proxy') {
       new FileSettingsStorage(directory, directory).withLock('global', current => {
         try { return JSON.stringify(mergeHttpProxy(current ? JSON.parse(current) : {}, request.proxy, request.expected), null, 2) + '\n'; }
         catch (error) { throw new PiConfigError(error instanceof PiHttpSettingsError ? error.message : 'Unable to read global HTTP proxy settings. Repair settings.json before saving.'); }

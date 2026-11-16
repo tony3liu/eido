@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/eido_i18n",
     "crates/eido_ui",
     "crates/acp_thread",
     "crates/acp_tools",
@@ -272,6 +273,7 @@ publish = false
 edition = "2024"
 
 [workspace.dependencies]
+eido_i18n = { path = "crates/eido_i18n" }
 
 #
 # Workspace member crates

@@ -12,6 +12,10 @@ use std::{
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Evidence {
     version: u8,
+    #[serde(default)]
+    research: Option<serde_json::Value>,
+    #[serde(default)]
+    requirement_checks: Vec<serde_json::Value>,
     pub run_id: String,
     pub captured_at: String,
     cwd: PathBuf,
@@ -69,6 +73,36 @@ fn timestamp(value: &str) -> Option<i64> {
 }
 
 impl Evidence {
+    pub fn requirement_display(&self, current: &str, cx: &gpui::App) -> SharedString {
+        let Some(scope)=&self.research else { return eido_i18n::tr(cx, "review.requirements_unlinked"); };
+        let names=scope["requirements"].as_array().into_iter().flatten().map(|r|format!("{} · r{}",r["title"].as_str().unwrap_or("Requirement"),r["revision"])).collect::<Vec<_>>().join(", ");
+        let checks=if current!="Captured inputs current" {crate::eido_research::state_label(current,cx).to_string()}
+            else if self.requirement_checks.is_empty(){crate::eido_research::state_label("Not checked",cx).to_string()}
+            else{self.requirement_checks.iter().map(|c|format!("{}: {}",c["criterionId"].as_str().unwrap_or("Criterion"),crate::eido_research::state_label(c["status"].as_str().unwrap_or("Not checked"),cx))).collect::<Vec<_>>().join("; ")};
+        eido_i18n::tr_args(cx, "review.requirements_checks", &[("names", names), ("checks", checks)])
+    }
+    pub fn outcome_display(&self, raw: &str, cx: &gpui::App) -> SharedString {
+        // Numerical outcomes are derived from Eido's validated evidence, never model text.
+        if let Some(project)=&self.project {
+            let passed=project.checks.iter().filter(|c|c.exit_code==Some(0)&&c.finished_at.is_some()&&!c.timed_out).count();
+            let failed=project.checks.iter().filter(|c|c.finished_at.is_some()&&(c.exit_code!=Some(0)||c.timed_out)).count();
+            if raw.starts_with(&format!("{passed} check")) {
+                if failed>0 { return eido_i18n::tr_args(cx, "review.checks_failed", &[("passed", passed.to_string()), ("failed", failed.to_string())]); }
+                if raw.ends_with("Run incomplete") { return eido_i18n::tr_args(cx, "review.checks_incomplete", &[("passed", passed.to_string())]); }
+                if self.observation { return eido_i18n::tr_args(cx, "review.checks_observed", &[("passed", passed.to_string())]); }
+                return eido_i18n::tr_args(cx, "review.checks_passed", &[("passed", passed.to_string())]);
+            }
+        }
+        crate::eido_research::state_label(raw,cx)
+    }
+
+    pub fn requirement_label(&self,current:&str)->String {
+        let Some(scope)=&self.research else{return "Requirements: Unlinked".into();};
+        let names=scope["requirements"].as_array().into_iter().flatten().map(|r|format!("{} · r{}",r["title"].as_str().unwrap_or("Requirement"),r["revision"])).collect::<Vec<_>>().join(", ");
+        let checks=if current!="Captured inputs current" {current.to_owned()}else if self.requirement_checks.is_empty(){"Not checked".into()}else{self.requirement_checks.iter().map(|c|format!("{}: {}",c["criterionId"].as_str().unwrap_or("Criterion"),c["status"].as_str().unwrap_or("Not checked"))).collect::<Vec<_>>().join("; ")};
+        format!("Requirements: {names} · {checks}")
+    }
+
     fn applies_to(&self, path: &Path) -> bool {
         let Ok(path) = path.strip_prefix(&self.cwd) else {
             return false;
@@ -321,4 +355,33 @@ mod tests {
             "Browser observed · No acceptance verdict"
         );
     }
+}
+
+
+pub(crate) fn edit_requirements(thread:&AcpThread,paths:&[String])->String {
+    let mut names=std::collections::BTreeSet::new();
+    for entry in thread.entries(){let AgentThreadEntry::ToolCall(tool)=entry else{continue;};
+        let Some(value)=tool.raw_output.as_ref().and_then(|v|v.get("eidoResearchEdit"))else{continue;};
+        if !value["files"].as_array().into_iter().flatten().any(|f|f["path"].as_str().is_some_and(|p|paths.iter().any(|path|p.ends_with(path)))){continue;}
+        for r in value["requirements"].as_array().into_iter().flatten(){names.insert(format!("{} · r{}",r["title"].as_str().unwrap_or("Requirement"),r["revision"]));}
+    }
+    if names.is_empty(){"Requirements: Unlinked".into()}else{format!("Requirements: {} · See Sources & Requirements for checks",names.into_iter().collect::<Vec<_>>().join(", "))}
+}
+
+#[cfg(test)]
+mod research_tests {
+    use super::*;
+    #[test]
+    fn test_eido_requirement_checks_follow_native_freshness_instead_of_saved_pass_labels(){
+        let evidence:Evidence=serde_json::from_value(serde_json::json!({"version":1,"runId":"run","capturedAt":"2026-11-16T00:00:00Z","cwd":"/project","files":[],"dependencies":{"paths":[]},"freshness":{"state":"current","checkedAt":"2026-11-16T00:00:00Z"},"research":{"requirements":[{"title":"Unicode","revision":1}]},"requirementChecks":[{"criterionId":"c1","status":"Passed"}]})).unwrap();
+        assert!(evidence.requirement_label("Captured inputs current").contains("Passed"));
+        for state in ["Inputs changed","Inputs not rechecked","Inputs unavailable"]{let label=evidence.requirement_label(state);assert!(!label.contains("Passed"));assert!(label.contains(state));}
+    }
+}
+
+pub(crate) fn edit_requirements_display(thread: &AcpThread, paths: &[String], cx: &gpui::App) -> SharedString {
+    let raw=edit_requirements(thread,paths);
+    if raw=="Requirements: Unlinked" { return eido_i18n::tr(cx,"review.requirements_unlinked"); }
+    let names=raw.strip_prefix("Requirements: ").and_then(|value|value.strip_suffix(" · See Sources & Requirements for checks")).unwrap_or(&raw);
+    eido_i18n::tr_args(cx, "review.edit_requirements", &[("names", names.to_owned())])
 }

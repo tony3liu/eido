@@ -2321,6 +2321,7 @@ pub struct AcpThread {
     pending_terminal_exit: HashMap<acp::TerminalId, acp::TerminalExitStatus>,
     had_error: bool,
     eido_turn: EidoTurnState,
+    eido_document_descriptors: Vec<serde_json::Value>,
     /// The user's unsent prompt text, persisted so it can be restored when reloading the thread.
     draft_prompt: Option<Vec<acp::ContentBlock>>,
     /// The initial scroll position for the thread view, set during session registration.
@@ -2500,6 +2501,11 @@ impl AcpThread {
         mut prompt_capabilities_rx: watch::Receiver<acp::PromptCapabilities>,
         cx: &mut Context<Self>,
     ) -> Self {
+        cx.on_release(|this,cx| {
+            if let Some(host)=cx.try_global::<EidoDocumentHost>() {
+                let _=(host.0)(serde_json::json!({"version":1,"action":"release_session","sessionId":this.session_id.to_string()}));
+            }
+        }).detach();
         let prompt_capabilities = prompt_capabilities_rx.borrow().clone();
         let task = cx.spawn::<_, anyhow::Result<()>>(async move |this, cx| {
             loop {
@@ -2598,6 +2604,7 @@ impl AcpThread {
             pending_terminal_exit: HashMap::default(),
             had_error: false,
             eido_turn: EidoTurnState::default(),
+            eido_document_descriptors: Vec::new(),
             draft_prompt: None,
             ui_scroll_position: None,
             streaming_text_buffer: None,
@@ -2978,6 +2985,14 @@ impl AcpThread {
                     .and_then(|value| serde_json::from_value::<EidoTurnState>(value.clone()).ok())
                     .filter(|state| state.version == 1)
                 {
+                    if let Some(host)=cx.try_global::<EidoDocumentHost>() {
+                        if self.eido_turn.id!=state.id || state.status!=EidoTurnStatus::Running {
+                            if let Some(turn)=&self.eido_turn.id {let _=(host.0)(serde_json::json!({"version":1,"action":"release_turn","sessionId":self.session_id.to_string(),"turnId":turn}));}
+                        }
+                        if state.status==EidoTurnStatus::Running {
+                            if let Some(turn)=&state.id {for descriptor in &self.eido_document_descriptors {let _=(host.0)(serde_json::json!({"version":1,"action":"bind","sessionId":self.session_id.to_string(),"turnId":turn,"descriptor":descriptor}));}}
+                        }
+                    }
                     self.had_error = state.status == EidoTurnStatus::Failed;
                     self.eido_turn = state;
                     cx.emit(AcpThreadEvent::StatusChanged);
@@ -4109,6 +4124,9 @@ impl AcpThread {
         for chunk in &message {
             block.append_prompt(chunk.clone(), &language_registry, path_style, cx);
         }
+        self.eido_document_descriptors=message.iter().filter_map(|block|match block {
+            acp::ContentBlock::Resource(resource)=>match &resource.resource {
+                acp::EmbeddedResourceResource::TextResourceContents(text) if text.mime_type.as_deref()==Some("application/vnd.eido.document+json")=>serde_json::from_str(&text.text).ok(),_=>None},_=>None}).collect();
         let mut request = acp::PromptRequest::new(self.session_id.clone(), message.clone());
         if !delegated && self.parent_session_id.is_some() {
             request.meta = Some(acp::Meta::from_iter([("eidoUserMessage".into(), true.into())]));
@@ -11722,6 +11740,25 @@ mod tests {
         repeated.await;
         assert_eq!(request.await.unwrap().unwrap().stop_reason, acp::StopReason::Cancelled);
         assert_eq!(thread.read_with(cx, |thread, _| thread.status()), ThreadStatus::Idle);
+    }
+
+    #[gpui::test]
+    async fn test_eido_document_binding_uses_submitted_descriptors_and_actual_turn(cx:&mut TestAppContext){
+        init_test(cx);let project=Project::test(FakeFs::new(cx.executor()),[],cx).await;
+        let seen=std::sync::Arc::new(std::sync::Mutex::new(Vec::<serde_json::Value>::new()));let recorded=seen.clone();
+        cx.update(|cx|cx.set_global(EidoDocumentHost(std::sync::Arc::new(move|request|{recorded.lock().unwrap().push(request);Ok(serde_json::json!({}))}))));
+        let connection=Rc::new(FakeAgentConnection::new().on_user_message(|_,_,_|async move{Ok(acp::PromptResponse::new(acp::StopReason::EndTurn))}.boxed_local()));
+        let thread=cx.update(|cx|connection.new_session(project,PathList::new(&[Path::new(path!("/test"))]),cx)).await.unwrap();
+        let descriptor=serde_json::json!({"version":1,"attachmentId":"submitted","selectionIdentity":"selection"});
+        let block=acp::ContentBlock::Resource(acp::EmbeddedResource::new(acp::EmbeddedResourceResource::TextResourceContents(acp::TextResourceContents::new(descriptor.to_string(),"eido-document://submitted").mime_type("application/vnd.eido.document+json"))));
+        let request=thread.update(cx,|thread,cx|thread.send(vec![block],cx));
+        thread.update(cx,|thread,cx|thread.handle_session_update(acp::SessionUpdate::SessionInfoUpdate(acp::SessionInfoUpdate::new().meta(acp::Meta::from_iter([("eidoTurn".into(),serde_json::json!({"version":1,"id":"actual-acp-turn","status":"running"}))]))),cx).unwrap());
+        {let records=seen.lock().unwrap();let bound=records.iter().find(|r|r["action"]=="bind").unwrap();assert_eq!(bound["turnId"],"actual-acp-turn");assert_eq!(bound["descriptor"],descriptor);}
+        request.await.unwrap();
+        thread.update(cx,|thread,cx|thread.handle_session_update(acp::SessionUpdate::SessionInfoUpdate(acp::SessionInfoUpdate::new().meta(acp::Meta::from_iter([("eidoTurn".into(),serde_json::json!({"version":1,"id":"actual-acp-turn","status":"completed"}))]))),cx).unwrap());
+        assert!(seen.lock().unwrap().iter().any(|r|r["action"]=="release_turn"&&r["turnId"]=="actual-acp-turn"));
+        let session=thread.read_with(cx,|thread,_|thread.session_id().to_string());cx.update(|_|drop(thread));cx.run_until_parked();
+        assert!(seen.lock().unwrap().iter().any(|r|r["action"]=="release_session"&&r["sessionId"]==session));
     }
 
     #[gpui::test]

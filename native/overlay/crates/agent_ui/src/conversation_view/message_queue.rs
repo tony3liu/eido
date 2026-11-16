@@ -12,6 +12,7 @@ pub struct QueueEntry {
     pub needs_review: bool,
     pub boundary: bool,
     pub tracked_buffers: Vec<Entity<Buffer>>,
+    pub document_selections: Vec<crate::eido_document::DocumentDescriptor>,
     /// When true, this message interrupts the agent at the next turn boundary
     /// instead of waiting for generation to fully complete. Only the front
     /// entry's value matters, since messages are delivered in FIFO order.

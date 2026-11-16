@@ -210,11 +210,14 @@ fn open_mention_uri(
     window: &mut Window,
     cx: &mut App,
 ) {
+    if let MentionUri::Document{id,..}=&mention_uri {crate::eido_document::open_preview(id.clone(),workspace,window,cx);return;}
     let Some(workspace) = workspace.upgrade() else {
         return;
     };
 
     workspace.update(cx, |workspace, cx| match mention_uri {
+        MentionUri::Document { .. }=>{}
+        MentionUri::Requirement { .. }=>{}
         MentionUri::File { abs_path } => {
             open_abs_path_at_point(workspace, abs_path, None, window, cx);
         }

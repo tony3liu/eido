@@ -12,6 +12,7 @@ path = "src/eido_ui.rs"
 workspace = true
 
 [dependencies]
+eido_i18n.workspace = true
 agent_ui.workspace = true
 gpui.workspace = true
 project_panel.workspace = true

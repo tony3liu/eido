@@ -109,6 +109,12 @@ export function replayEntry(entry) {
         case "branch_summary":
             return [{sessionUpdate:"agent_message_chunk", messageId:entry.id, content:{type:"text", text:"**Branch summary**\n\n" + entry.summary}}];
         case "custom":
+            if (entry.customType === 'eido.research.event.v1' && entry.data?.eidoResearch?.version === 1) {
+                const research = structuredClone(entry.data.eidoResearch);
+                if (['queued','reserved','dispatched','running'].includes(research.status)) research.status = 'interrupted_unknown';
+                return [{sessionUpdate:'tool_call_update',toolCallId:'research-'+entry.data.operationId,title:'Research records',status:'completed',
+                    rawOutput:{structuredContent:{eidoResearch:research}}}];
+            }
             if (entry.customType === "eido.agents.event.v1" && entry.data?.update) {
                 const update = structuredClone(entry.data.update);
                 if (update.status === "in_progress" || update.status === "pending") {

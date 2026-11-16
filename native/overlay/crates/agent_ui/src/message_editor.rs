@@ -227,6 +227,8 @@ impl PromptCompletionProviderDelegate for MessageEditorCompletionDelegate {
     }
 }
 
+pub(crate) type MessageContents = (Vec<acp::ContentBlock>, Vec<Entity<Buffer>>, Vec<crate::eido_document::DocumentDescriptor>);
+
 pub struct MessageEditor {
     eido_component: Option<(
         String,
@@ -523,15 +525,15 @@ impl MessageEditor {
             editor.set_custom_context_menu(|editor, _point, window, cx| {
                 let has_selection = editor.has_non_empty_selection(&editor.display_snapshot(cx));
 
-                Some(ContextMenu::build(window, cx, |menu, _, _| {
-                    menu.action("Cut", Box::new(editor::actions::Cut))
+                Some(ContextMenu::build(window, cx, |menu, _, cx| {
+                    menu.action(eido_i18n::tr(cx, "composer.cut"), Box::new(editor::actions::Cut))
                         .action_disabled_when(
                             !has_selection,
-                            "Copy",
+                            eido_i18n::tr(cx, "composer.copy"),
                             Box::new(editor::actions::Copy),
                         )
-                        .action("Paste", Box::new(editor::actions::Paste))
-                        .action("Paste as Plain Text", Box::new(PasteRaw))
+                        .action(eido_i18n::tr(cx, "composer.paste"), Box::new(editor::actions::Paste))
+                        .action(eido_i18n::tr(cx, "composer.paste_plain"), Box::new(PasteRaw))
                 }))
             });
 
@@ -902,6 +904,10 @@ impl MessageEditor {
             .is_some_and(|menu| matches!(menu, CodeContextMenu::Completions(_)) && menu.visible())
     }
 
+    pub(crate) fn take_document_selections(&self,cx:&mut App)->Vec<crate::eido_document::DocumentDescriptor> {
+        self.mention_set.update(cx,|mentions,_|mentions.take_document_selections())
+    }
+
     #[cfg(test)]
     pub fn mention_set(&self) -> &Entity<MentionSet> {
         &self.mention_set
@@ -1001,7 +1007,7 @@ impl MessageEditor {
         &self,
         full_mention_content: bool,
         cx: &mut Context<Self>,
-    ) -> Task<Result<(Vec<acp::ContentBlock>, Vec<Entity<Buffer>>)>> {
+    ) -> Task<Result<MessageContents>> {
         let text = self.editor.read(cx).text(cx);
         let (available_commands, available_skills) = {
             let session_capabilities = self.session_capabilities.read();
@@ -1027,7 +1033,7 @@ impl MessageEditor {
     pub fn draft_contents(&self, cx: &mut Context<Self>) -> Task<Result<Vec<acp::ContentBlock>>> {
         let build_task = self.build_content_blocks(false, cx);
         cx.spawn(async move |_, _cx| {
-            let (blocks, _tracked_buffers) = build_task.await?;
+            let (blocks, _tracked_buffers, _documents) = build_task.await?;
             Ok(blocks)
         })
     }
@@ -1036,7 +1042,7 @@ impl MessageEditor {
         &self,
         full_mention_content: bool,
         cx: &mut Context<Self>,
-    ) -> Task<Result<(Vec<acp::ContentBlock>, Vec<Entity<Buffer>>)>> {
+    ) -> Task<Result<MessageContents>> {
         let contents = self
             .mention_set
             .update(cx, |store, cx| store.contents(full_mention_content, cx));
@@ -1047,10 +1053,13 @@ impl MessageEditor {
         cx.spawn(async move |_, cx| {
             let mut contents = contents.await?;
             Ok(editor.update(cx, |editor, cx| {
+                let documents=contents.values().filter_map(|(_,mention)|match mention {
+                    Mention::Document(descriptor)=>Some(cx.try_global::<crate::eido_document::NativeDocuments>().and_then(|host|host.0.lock().ok()?.retain_descriptor(descriptor).ok()).unwrap_or_else(||descriptor.clone())),_=>None
+                }).collect();
                 let crease_snapshot = editor.display_map.read(cx).crease_snapshot();
                 let buffer_snapshot = editor.buffer().read(cx).snapshot(cx);
                 let text = editor.text(cx);
-                build_chunks_from_creases(
+                let (blocks,buffers)=build_chunks_from_creases(
                     &text,
                     &crease_snapshot,
                     &buffer_snapshot,
@@ -1060,7 +1069,8 @@ impl MessageEditor {
                             .remove(crease_id)
                             .map(|(uri, mention)| (uri, Some(mention)))
                     },
-                )
+                );
+                (blocks,buffers,documents)
             }))
         })
     }
@@ -1775,6 +1785,22 @@ impl MessageEditor {
         }
     }
 
+    pub fn add_documents_from_picker(&mut self, window:&mut Window, cx:&mut Context<Self>) {
+        let paths=cx.prompt_for_paths(gpui::PathPromptOptions{files:true,directories:false,multiple:true,prompt:Some("Select PDF or Images to Extract".into())});
+        let registry=cx.global::<crate::eido_document::NativeDocuments>().0.clone();
+        cx.spawn_in(window,async move|this,cx|{
+            let Some(paths)=paths.await?? else{return Ok::<_,anyhow::Error>(());};
+            let documents=cx.background_spawn(async move{paths.into_iter().map(|path|registry.lock().map_err(|_|anyhow!("Document registry unavailable"))?.select(&path)).collect::<Result<Vec<_>>>()}).await?;
+            this.update_in(cx,|this,window,cx|{
+                let blocks=documents.iter().map(|d|{
+                    let uri=MentionUri::Document{id:d.attachment_id.clone(),name:d.original_name.clone()};
+                    mention_to_content_block(&uri,Some(&Mention::Document(d.clone())),true,&mut Vec::new())
+                }).collect();
+                this.set_cursor_offset(this.text(cx).len(),window,cx);this.append_message(blocks,Some("\n"),window,cx);
+            })?;Ok(())
+        }).detach_and_log_err(cx);
+    }
+
     pub fn add_images_from_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.session_capabilities.read().supports_images() {
             return;
@@ -1910,6 +1936,13 @@ impl MessageEditor {
                     let start = text.len();
                     append_normalized(&mut text, mention_uri.as_link().to_string());
                     let end = text.len();
+                    if resource.mime_type.as_deref()==Some("application/vnd.eido.document+json") {
+                        if let Ok(descriptor)=serde_json::from_str::<crate::eido_document::DocumentDescriptor>(&resource.text){
+                            let descriptor=cx.try_global::<crate::eido_document::NativeDocuments>().and_then(|host|host.0.lock().ok()?.retain_descriptor(&descriptor).ok()).unwrap_or(descriptor);
+                            mentions.push((start..end,mention_uri,Mention::Document(descriptor)));
+                        }
+                        continue;
+                    }
                     mentions.push((
                         start..end,
                         mention_uri,
@@ -2179,14 +2212,14 @@ impl Render for MessageEditor {
                         .justify_between()
                         .pr_6()
                         .child(
-                            Label::new("Extension editor")
+                            Label::new(eido_i18n::tr(cx, "composer.extension_editor"))
                                 .size(LabelSize::Small)
                                 .color(Color::Muted),
                         )
                         .child(
                             IconButton::new("close-pi-editor", IconName::Close)
                                 .icon_size(IconSize::Small)
-                                .tooltip(Tooltip::text("Use Native Editor"))
+                                .tooltip(Tooltip::text(eido_i18n::tr(cx, "composer.native_editor")))
                                 .on_click(move |_, _, cx| {
                                     terminal.update(cx, |terminal, cx| terminal.stop_by_user(cx))
                                 }),
@@ -2358,6 +2391,13 @@ fn mention_to_content_block(
     tracked_buffers: &mut Vec<Entity<Buffer>>,
 ) -> acp::ContentBlock {
     match mention {
+        Some(Mention::Text{content,..}) if matches!(uri,MentionUri::Requirement{..}) => acp::ContentBlock::Resource(acp::EmbeddedResource::new(acp::EmbeddedResourceResource::TextResourceContents(
+            acp::TextResourceContents::new(content.clone(),uri.to_uri().to_string()).mime_type("application/vnd.eido.requirement+json")))),
+        Some(Mention::Document(descriptor)) => {
+            let uri=MentionUri::Document{id:descriptor.attachment_id.clone(),name:descriptor.original_name.clone()};
+            acp::ContentBlock::Resource(acp::EmbeddedResource::new(acp::EmbeddedResourceResource::TextResourceContents(
+                acp::TextResourceContents::new(serde_json::to_string(descriptor).unwrap(),uri.to_uri().to_string()).mime_type("application/vnd.eido.document+json"))))
+        }
         Some(Mention::Text {
             content,
             tracked_buffers: mention_tracked_buffers,
@@ -2830,7 +2870,7 @@ mod tests {
             editor.backspace(&Default::default(), window, cx);
         });
 
-        let (content, _) = message_editor
+        let (content, _, _documents) = message_editor
             .update(cx, |message_editor, cx| message_editor.contents(false, cx))
             .await
             .unwrap();
@@ -2939,7 +2979,7 @@ mod tests {
             editor.set_text("Hello Claude!", window, cx);
         });
 
-        let (content, _) = message_editor
+        let (content, _, _documents) = message_editor
             .update(cx, |message_editor, cx| message_editor.contents(false, cx))
             .await
             .unwrap();
@@ -2957,7 +2997,7 @@ mod tests {
         });
 
         // The @ mention functionality should not be affected
-        let (content, _) = message_editor
+        let (content, _, _documents) = message_editor
             .update(cx, |message_editor, cx| message_editor.contents(false, cx))
             .await
             .unwrap();
@@ -4457,7 +4497,7 @@ mod tests {
             editor.set_text("  \u{A0}してhello world  ", window, cx);
         });
 
-        let (content, _) = message_editor
+        let (content, _, _documents) = message_editor
             .update(cx, |message_editor, cx| message_editor.contents(false, cx))
             .await
             .unwrap();
@@ -5918,6 +5958,27 @@ mod tests {
 
         cx.run_until_parked();
         (message_editor, cx)
+    }
+
+    #[gpui::test]
+    async fn test_eido_document_requirement_drafts_preserve_metadata_and_existing_text(cx:&mut TestAppContext){
+        init_test(cx);let(message_editor,cx)=setup_message_editor(cx).await;
+        let descriptor=crate::eido_document::DocumentDescriptor{version:1,attachment_id:"selected-document".into(),original_name:"Sample.pdf".into(),mime_type:"application/pdf".into(),size:100,expected_hash:"a".repeat(64),selection_identity:"explicit-choice".into(),lease:Arc::new(())};
+        let uri=MentionUri::Document{id:descriptor.attachment_id.clone(),name:descriptor.original_name.clone()};
+        let block=super::mention_to_content_block(&uri,Some(&Mention::Document(descriptor.clone())),true,&mut Vec::new());
+        message_editor.update_in(cx,|editor,window,cx|{
+            editor.session_capabilities.write().set_prompt_capabilities(acp::PromptCapabilities::new().embedded_context(true));
+            editor.set_message(vec!["Keep my existing draft. ".into()],window,cx);
+            editor.set_cursor_offset(editor.text(cx).len(),window,cx);editor.append_message(vec![block.clone()],Some("\n"),window,cx);
+        });
+        cx.run_until_parked();
+        let restored=message_editor.read_with(cx,|editor,cx|{assert!(editor.text(cx).contains("Keep my existing draft."));editor.draft_content_blocks_snapshot(cx)});
+        assert!(restored.iter().any(|item|item==&block));
+        let encoded=serde_json::to_string(&restored).unwrap();assert!(encoded.contains("application/vnd.eido.document+json"));assert!(!encoded.contains("blob"));
+        message_editor.update_in(cx,|editor,window,cx|editor.set_message(restored.clone(),window,cx));cx.run_until_parked();
+        let again=message_editor.read_with(cx,|editor,cx|editor.draft_content_blocks_snapshot(cx));assert!(again.iter().any(|item|item==&block));
+        let requirement=MentionUri::Requirement{id:"requirement-one".into(),revision:2,name:"Unicode".into()};
+        assert_eq!(MentionUri::parse(requirement.to_uri().as_str(),util::paths::PathStyle::local()).unwrap(),requirement);
     }
 
     #[gpui::test]

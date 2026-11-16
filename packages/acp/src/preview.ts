@@ -1,3 +1,4 @@
+import type {ResearchHooks,ResearchProvenance} from './research-requirements.ts';
 import { createHash, randomUUID } from "node:crypto";
 import { appendFile, cp, mkdir, mkdtemp, readFile, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
 import {tmpdir} from "node:os";
@@ -25,11 +26,12 @@ const serverScript = fileURLToPath(new URL("../helpers/preview/server.mjs", impo
 type Input = { path: string; hash: string; differsFromDisk: boolean };
 type Run = {
   runId: string; cwd: string; toolCallId: string; fingerprint: string; entry?: string; files: Input[]; capturedAt: string;
+  research?:ResearchProvenance; criterionIds?:string[];
   project: boolean; commands?: Command[]; server?: Command & { path?: string }; dependencies: Dependencies;
   directory: string; terminalId?: string; url?: string; stopped?: boolean; cleanup?: string;
 };
 
-export function createPreview(cwd: string, storage: string, sessionId: string, client: AgentContext, purpose: 'preview' | 'shell' = 'preview') {
+export function createPreview(cwd: string, storage: string, sessionId: string, client: AgentContext, purpose: 'preview' | 'shell' = 'preview', research?:ResearchHooks) {
   let active: Run | undefined;
   let stopping: Promise<void> | undefined;
   const temporaryInputs = new Map<string, Run>();
@@ -101,7 +103,7 @@ export function createPreview(cwd: string, storage: string, sessionId: string, c
 
   function description(run: Run) {
     return { runId: run.runId, toolCallId: run.toolCallId, cwd: run.cwd, fingerprint: run.fingerprint, url: run.url, capturedAt: run.capturedAt,
-      files: run.files, includesUnsavedBuffers: true,
+      files: run.files, includesUnsavedBuffers: true, research:run.research, criterionIds:run.criterionIds,
       dependencies: { paths: run.dependencies.roots, entries: run.dependencies.entries.length, bytes: run.dependencies.bytes },
       commands: run.commands, server: run.server, processCleanup: run.cleanup,
       scope: run.project ? "Records listed editor inputs and copied installed dependencies; system tools and external resources are outside the fingerprint. Commands run locally in the captured directory, not an OS sandbox. Generated outputs are not copied back." : "Only listed static inputs; no build or external dependencies.",
@@ -156,8 +158,9 @@ export function createPreview(cwd: string, storage: string, sessionId: string, c
         service = output.exitStatus ? "exited" : "running";
       } catch { signal?.throwIfAborted(); }
     }
-    return { ...description(run), service, ...(run.project ? { project: await projectResult(run) } : {}), freshness: await freshness(run, signal),
+    const evidence = { ...description(run), service, ...(run.project ? { project: await projectResult(run) } : {}), freshness: await freshness(run, signal),
       acceptance: "Not assessed. Browser observations and explicit acceptance criteria are required." };
+    return {...evidence,requirementChecks:await research?.checks(run.research,run.criterionIds,{...evidence,dependencyInputs:run.dependencies})??[]};
   }
 
   const details = (value: Record<string, unknown>) => ({[purpose === "shell" ? "eidoShell" : "eidoVerification"]: {version: 1, ...value}});
@@ -170,6 +173,7 @@ export function createPreview(cwd: string, storage: string, sessionId: string, c
       action: Type.Union([Type.Literal("start"), Type.Literal("status"), Type.Literal("stop")]),
       files: Type.Optional(Type.Array(Type.String(), { minItems: 1, maxItems: 512 })),
       entry: Type.Optional(Type.String()),
+      criterionIds: Type.Optional(Type.Array(Type.String({maxLength:128}),{maxItems:50})),
       dependencies: Type.Optional(Type.Array(Type.String(), { maxItems: 16 })),
       commands: Type.Optional(Type.Array(commandSchema, { minItems: 1, maxItems: 8 })),
       server: Type.Optional(Type.Object({
@@ -189,6 +193,7 @@ export function createPreview(cwd: string, storage: string, sessionId: string, c
         const value = active ? await status(active, signal) : {service: "not_started"};
         return {content: [text(value)], details: active ? details(value) : {}};
       }
+      const provenance=await research?.capture(toolCallId,params.criterionIds);
       const project = !!(params.commands?.length || params.server);
       if (!params.files || (!params.files.length && purpose !== 'shell') || (!project && !params.entry)) throw new Error("Start requires files and either an HTML entry, commands, or a server.");
       if (!project && params.dependencies?.length) throw new Error("Copied dependencies require a project command or server.");
@@ -220,7 +225,7 @@ export function createPreview(cwd: string, storage: string, sessionId: string, c
       if (project && entry) throw new Error("Use server.path for a project server, or omit commands/server for a static HTML entry.");
       const files = [...inputs].sort(([a], [b]) => a.localeCompare(b)).map(([path, file]) => ({ path, hash: hash(file.content), differsFromDisk: file.differsFromDisk }));
       const runId = randomUUID();
-      const run: Run = { runId, cwd: root, toolCallId, entry, files, capturedAt: new Date().toISOString(),
+      const run: Run = { research:provenance,criterionIds:params.criterionIds,runId, cwd: root, toolCallId, entry, files, capturedAt: new Date().toISOString(),
         project, commands: params.commands, server: params.server, dependencies: {roots: [], entries: [], bytes: 0}, fingerprint: "",
         directory: join(storage, hash(sessionId), runId) };
       await mkdir(run.directory, { recursive: true, mode: 0o700 });
@@ -237,7 +242,7 @@ export function createPreview(cwd: string, storage: string, sessionId: string, c
         await writeFile(target, file.content, { mode: 0o600 });
       }
       run.dependencies = await captureDependencies(root, params.dependencies ?? [], join(run.directory, "files"), files.map(file => file.path), signal);
-      run.fingerprint = hash(JSON.stringify({ entry, files: files.map(({path, hash}) => ({path, hash})), dependencies: run.dependencies, commands: run.commands, server: run.server }));
+      run.fingerprint = hash(JSON.stringify({ research:run.research,criterionIds:run.criterionIds,entry, files: files.map(({path, hash}) => ({path, hash})), dependencies: run.dependencies, commands: run.commands, server: run.server }));
       await writeFile(join(run.directory, "manifest.json"), JSON.stringify({ ...run, sessionId, piVersion: "1.5.2" }, null, 2), { mode: 0o600 });
       // Recheck after capture. Multi-file reads are sequential, not an atomic editor transaction.
       const captured = await freshness(run, signal);

@@ -375,7 +375,7 @@ impl MultiWorkspace {
             project_groups: Vec::new(),
             active_workspace_id,
             sidebar: None,
-            sidebar_open: false,
+            sidebar_open: std::env::var_os("EIDO_ROOT").is_some(),
             sidebar_overlay: None,
             pending_removal_tasks: Vec::new(),
             _serialize_task: None,

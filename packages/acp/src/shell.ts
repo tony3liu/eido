@@ -1,3 +1,4 @@
+import type {ResearchHooks} from './research-requirements.ts';
 import {createHash} from 'node:crypto';
 import {lstat, mkdir, readFile, readdir, writeFile} from 'node:fs/promises';
 import {join} from 'node:path';
@@ -16,7 +17,7 @@ type Change={path:string;kind:'modified'|'created'|'deleted'|'unsupported';statu
  * The copy is an execution directory, not a security sandbox. Only conditional
  * native writes can merge its text output back into the user's live buffers.
  */
-export function createShell(cwd:string, storage:string, sessionId:string, client:AgentContext) {
+export function createShell(cwd:string, storage:string, sessionId:string, client:AgentContext, research?:ResearchHooks) {
   let capturing=false;
   const inputs=new Map<string,Snapshot>();
   const request:AgentContext['request']=async (method:any,params:any,options:any)=>{
@@ -41,6 +42,7 @@ export function createShell(cwd:string, storage:string, sessionId:string, client
       files:Type.Optional(Type.Array(Type.String(),{maxItems:512})),dependencies:Type.Optional(Type.Array(Type.String(),{maxItems:16}))}),
     async execute(toolCallId,params,signal,onUpdate,context) {
       signal?.throwIfAborted();
+      const provenance=await research?.capture(toolCallId);
       let files=params.files;
       if(!files) {
         const result=await client.request<{output:string;truncated:boolean}>(EDITOR_QUERY,
@@ -103,21 +105,22 @@ export function createShell(cwd:string, storage:string, sessionId:string, client
             const binary=after && (after.includes(0) || !Buffer.from(content!).equals(after));
             if(!after || binary || before && snapshot?.buffer===null) {
               const response=await client.request<{reviewId:string}>('_eido/fs/propose',{
-                sessionId,path:canonical,runId:run.runId,toolCallId,
+                sessionId,path:canonical,runId:run.runId,toolCallId,research:provenance,
                 expectedDisk:snapshot?.disk??null,expectedBuffer:snapshot?.buffer??null,output:after?.toString('base64')??null,
               },{cancellationSignal:signal});
-              change.status='review';change.reviewId=response.reviewId;continue;
+              await research?.edit(provenance,canonical,after?hash(after):'deleted');change.status='review';change.reviewId=response.reviewId;continue;
             }
             const expected=snapshot?.buffer;
             if(before && typeof expected!=='string') throw new Error('Captured editor version could not be verified.');
             await client.request(methods.client.fs.writeTextFile,{sessionId,path:canonical,content,
-              _meta:before?{'eido.dev/expectedBuffer':expected!}:{'eido.dev/createFile':true}},
+              _meta:{...(before?{'eido.dev/expectedBuffer':expected!}:{'eido.dev/createFile':true}),...(provenance?{'eido.dev/research':provenance}:{})}},
               {cancellationSignal:signal});
+            await research?.edit(provenance,canonical,hash(after!));
             change.status='applied';
           } catch(error) {change.reason=error instanceof Error?error.message:String(error);}
         }
         const recovery=changes.some(change=>change.status==='preserved')?await runner.preserveInputs():undefined;
-        const value={runId:run.runId,command:params.command,checks:result.project?.checks??[],recovery,
+        const value={research:provenance,runId:run.runId,command:params.command,checks:result.project?.checks??[],recovery,
           cancelled:!!signal?.aborted,processCleanup:result.processCleanup,changes,
           includesUnsavedBuffers:true,files:run.files.map(file=>file.path),dependencies,
           scope:'Captured files and copied dependencies. System tools and absolute paths run locally outside this copy.',

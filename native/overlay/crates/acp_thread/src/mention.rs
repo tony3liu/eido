@@ -18,6 +18,8 @@ use util::{
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Hash)]
 pub enum MentionUri {
+    Document { id:String, name:String },
+    Requirement { id:String, revision:u64, name:String },
     File {
         abs_path: PathBuf,
     },
@@ -277,6 +279,18 @@ impl MentionUri {
                     bail!("invalid zed url: {:?}", input);
                 }
             }
+            "eido-requirement" => {
+                validate_query_params(&url,&["name"])?;let id=url.host_str().context("Requirement ID is required")?.to_owned();
+                let revision=url.path().trim_start_matches('/').parse::<u64>()?;
+                if revision==0 || !id.bytes().all(|b|b.is_ascii_alphanumeric()||b==b'-'||b==b'_') || !url.username().is_empty() || url.password().is_some() || url.fragment().is_some(){bail!("Invalid requirement reference");}
+                Ok(MentionUri::Requirement{id,revision,name:single_query_param(&url,"name")?.unwrap_or_else(||"Requirement".into())})
+            }
+            "eido-document" => {
+                validate_query_params(&url, &["name"])?;
+                let id=url.host_str().context("Document attachment ID is required")?.to_owned();
+                if !id.bytes().all(|b|b.is_ascii_alphanumeric()||b==b'-'||b==b'_') || !url.path().is_empty() || !url.username().is_empty() || url.password().is_some() || url.fragment().is_some() {bail!("Invalid document reference");}
+                Ok(MentionUri::Document{id,name:single_query_param(&url,"name")?.unwrap_or_else(||"Document".into())})
+            }
             "http" | "https" => Ok(MentionUri::Fetch { url }),
             other => bail!("unrecognized scheme {:?}", other),
         }
@@ -321,7 +335,8 @@ impl MentionUri {
             MentionUri::Skill {
                 skill_file_path, ..
             } => Some(skill_file_path),
-            MentionUri::PastedImage { .. }
+            MentionUri::Requirement { .. } | MentionUri::Document { .. }
+            | MentionUri::PastedImage { .. }
             | MentionUri::Thread { .. }
             | MentionUri::Rule { .. }
             | MentionUri::Diagnostics { .. }
@@ -339,7 +354,7 @@ impl MentionUri {
                 .unwrap_or_default()
                 .to_string_lossy()
                 .into_owned(),
-            MentionUri::PastedImage { name } => name.clone(),
+            MentionUri::Requirement { name, .. } | MentionUri::Document { name, .. } | MentionUri::PastedImage { name } => name.clone(),
             MentionUri::Symbol { name, .. } => name.clone(),
             MentionUri::Thread { name, .. } => name.clone(),
             MentionUri::Rule { name, .. } => name.clone(),
@@ -438,6 +453,8 @@ impl MentionUri {
             MentionUri::File { abs_path } => {
                 FileIcons::get_icon(abs_path, cx).unwrap_or_else(|| IconName::File.path().into())
             }
+            MentionUri::Requirement { .. } => IconName::Check.path().into(),
+            MentionUri::Document { .. } => IconName::File.path().into(),
             MentionUri::PastedImage { .. } => IconName::Image.path().into(),
             MentionUri::Directory { abs_path } => FileIcons::get_folder_icon(false, abs_path, cx)
                 .unwrap_or_else(|| IconName::Folder.path().into()),
@@ -460,6 +477,8 @@ impl MentionUri {
 
     pub fn to_uri(&self) -> Url {
         match self {
+            MentionUri::Requirement {id,revision,name}=>{let mut url=Url::parse(&format!("eido-requirement://{id}/{revision}")).unwrap();url.query_pairs_mut().append_pair("name",name);url},
+            MentionUri::Document { id, name } => {let mut url=Url::parse(&format!("eido-document://{id}")).unwrap();url.query_pairs_mut().append_pair("name",name);url},
             MentionUri::File { abs_path } => {
                 let mut url = Url::parse("file:///").unwrap();
                 url.set_path(&abs_path.to_string_lossy());

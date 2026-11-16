@@ -1,6 +1,6 @@
 import { ModelRuntime, SessionManager, type CreateAgentSessionOptions, type CreateAgentSessionResult, type NewSessionOptions, type SessionInfo } from "@earendil-works/pi-coding-agent";
 import type { McpServer } from "@agentclientprotocol/sdk";
-import { type McpClientHandle, type McpSessionBinding } from "./mcp-bridge.js";
+import { type McpClientHandle, type McpSessionBinding, type BuiltinMcpClient } from "./mcp-bridge.js";
 export interface PiAcpDeps {
     createAgentSession(opts: CreateAgentSessionOptions): Promise<CreateAgentSessionResult>;
     sessions: {
@@ -29,6 +29,7 @@ export interface PiAcpDeps {
     agentDir?: string;
     sessionDir?: string;
     connectMcpClient(server: McpServer, signal: AbortSignal, binding?: McpSessionBinding): Promise<McpClientHandle>;
+    builtinMcpClients?(binding: McpSessionBinding): Promise<readonly BuiltinMcpClient[]>;
     sleep(ms: number, signal: AbortSignal): Promise<void>;
     graceMs: number;
     mcpTimeoutMs: number;

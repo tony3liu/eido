@@ -1,12 +1,12 @@
 <p align="center">
-  <img src="native/branding/eido-readme.svg" alt="Eido — AI development workspace, 0.0.1" width="100%">
+  <img src="native/branding/eido-readme.svg" alt="Eido — AI workspace, 0.0.2" width="100%">
 </p>
 
-<h1 align="center">From intent to code you can trust.</h1>
+<h1 align="center">A workspace for getting things done with AI.</h1>
 
 <p align="center">
-  An AI workspace for understanding code, building with an agent,<br>
-  and reviewing every change that matters.
+  Ask questions, work with documents, build software, and use apps.<br>
+  Keep the task, conversation, and results together.
 </p>
 
 <p align="center">
@@ -15,133 +15,89 @@
 
 <p align="center">
   <a href="https://cairno.cn/eido/">Website</a> ·
-  <a href="#the-eido-experience">Experience</a> ·
+  <a href="#whats-new-in-002">What's new</a> ·
   <a href="#download-and-install">Download</a> ·
-  <a href="#your-first-task">Getting started</a> ·
-  <a href="#release-scope">Release scope</a> ·
-  <a href="#help-shape-the-next-version">Feedback</a> ·
+  <a href="#get-started">Get started</a> ·
+  <a href="#current-scope">Current scope</a> ·
   <a href="#acknowledgments-and-licensing">Open source</a>
 </p>
 
 ---
 
-Eido keeps the conversation and the code in the same place. Describe what you want to achieve, give the agent the context it needs, and work through the result in your editor. Your task, proposed changes, and review decisions stay connected as you move between planning and implementation.
+Eido is a native AI workspace built on [Zed](https://github.com/zed-industries/zed) and the official, unmodified [pi](https://github.com/earendil-works/pi) agent. Start with an outcome, bring in relevant context, and work through the result. The conversation is central; native files, code editing, and review are available when the task needs them.
 
-**Eido 0.0.1 is the first stable-channel release for macOS.** Download the app and try a focused task on a real project.
+**Eido 0.0.2 is available for Apple Silicon Macs running macOS 13 or later.** It bundles **pi 1.5.2**.
 
 <p>
-  <a href="https://github.com/tony3liu/eido/releases/download/v0.0.1/Eido-0.0.1-macos-arm64.dmg"><strong>Download for Mac · Apple Silicon</strong></a> ·
-  <a href="https://github.com/tony3liu/eido/releases/tag/v0.0.1">Release notes</a>
+  <a href="https://github.com/tony3liu/eido/releases/download/v0.0.2/Eido-0.0.2-macos-arm64.dmg"><strong>Download for Mac · Apple Silicon</strong></a> ·
+  <a href="https://github.com/tony3liu/eido/releases/tag/v0.0.2">Release notes and checksums</a>
 </p>
 
-macOS 13 or later · Apple Silicon (M-series)
+## What's new in 0.0.2
 
-This release bundles the official, unmodified **pi 1.3.0**. Full Access uses pi's autonomous execution for enabled tools across tasks, including Code Mode and subagents. It adds OpenRouter model-list refresh, saved sharing preferences, current-value form defaults and improved tool restoration when resuming sessions. Extension-triggered runs now finish before their browser and task resources are cleaned up.
+- **A clearer Workbench.** A centered new-task composer, task navigation, on-demand file views, and model and Agent Access controls together. Switching views preserves the conversation and draft.
+- **English and Simplified Chinese.** Choose Follow System, English, or 简体中文 at the top of Settings. Common Eido controls and menus are localized; user content, code, model output, and tool identifiers remain unchanged.
+- **More comfortable reading.** Interface and conversation text default to 16px. Ordinary completed tasks no longer leave a detached “Run finished” label; important status messages stay aligned with the input area. Existing custom font preferences are preserved.
+- **Window dragging restored.** Drag the empty area in the top toolbar to move a non-fullscreen window on macOS.
+- **pi 1.5.2 integration.** Updated runtime adaptation while retaining pi's public configuration and authentication interfaces.
+- **Research & Documents preview.** Search and fetch sources, inspect saved evidence, extract PDF/image text, and connect requirements with proposed changes and checks. These features are experimental, disabled by default, and require separate DeepSeek service configuration.
 
-The Ultrafast browser agent, adapted in TypeScript from browser-use/jev-ultrafast, shares your main model for text input and retains its inspector, recording, verification tools and Legacy fallback. Browser and desktop automation remain experimental; background desktop input and focus isolation are not reliable across all applications.
+## Work in one place
 
-## Watch the launch film
-
-[![Watch the Eido launch film](native/branding/eido-launch.webp)](https://cairno.cn/eido/film/)
-
-[Watch the launch film ↗](https://cairno.cn/eido/film/) · Professional IDE · Agent Harness · Browser & Computer Use — 56 seconds, in Chinese.
-
-## The Eido experience
-
-### Start with the intent
-
-Ask a question about unfamiliar code, describe a bug, or outline a feature. Use `@` to bring relevant code into the conversation and keep the task grounded in your project.
-
-> **Try a focused first task**<br>
-> “Explain how this module works, identify the cause of this bug, and propose a small fix with a way to check it.”
-
-### Work alongside the agent
-
-Read files, make your own edits, and review the agent’s progress without leaving the workspace. Choose the view that fits the moment:
-
-| View | Best for |
+| View | Use it for |
 | :--- | :--- |
-| **Workbench** | Planning a task, following the conversation, and coordinating the work. |
-| **Code** | Reading, navigating, and editing your project. |
-| **Split** | Keeping the conversation and the code visible together. |
+| **Task** | Discussing a goal, following progress, and coordinating the work. |
+| **Files** | Reading, navigating, editing, and reviewing project files. |
+| **Split** | Keeping the conversation and files visible together. |
 
-Switching views preserves your conversation and draft, so you can change focus without losing your train of thought.
+Reference relevant files with `@`, attach supporting material, and continue earlier tasks with their saved context. Review proposed file changes in the native editor before accepting them. Supported accepted file operations can be restored after checks that protect subsequent edits.
 
-### Make the changes yours
+Browser Use and Computer Use extend tasks to websites and desktop applications. Eido includes Chromium and its desktop driver. An existing [Poki](https://github.com/JosssphZhou/poki) MCP installation can also connect supported iPhone workflows; Poki and device preparation are separate setup steps. Automation compatibility varies by website, application, and device.
 
-Inspect proposed changes in the native review interface and decide what to accept or reject. Proposed file deletions and binary changes remain in review until you accept them. Supported accepted file operations can be restored, subject to checks that protect subsequent edits.
-
-Review is part of the workflow: understand the change, check the result, and keep what belongs in your project.
-
-### Return with context
-
-Revisit earlier tasks with their conversations and review context. Continue interrupted work without starting the discussion from scratch. Eido also includes recovery support for task state and supported file operations.
-
-### Reach beyond the editor
-
-Ask the agent to inspect a page or work with a desktop application alongside your code. Browser Use and Computer Use are available as experimental features, with enabled tools governed by your Agent Access choice. These workflows are still being refined across websites and applications.
+[Watch the earlier Eido launch film](https://cairno.cn/eido/film/) · 56 seconds, in Chinese.
 
 ## Download and install
 
-1. Download [Eido-0.0.1-macos-arm64.dmg](https://github.com/tony3liu/eido/releases/download/v0.0.1/Eido-0.0.1-macos-arm64.dmg).
-2. Open the disk image and drag **Eido** into **Applications**.
+1. Download [Eido-0.0.2-macos-arm64.dmg](https://github.com/tony3liu/eido/releases/download/v0.0.2/Eido-0.0.2-macos-arm64.dmg).
+2. Quit an older Eido instance, open the disk image, and drag **Eido** into **Applications**.
 3. Launch Eido and configure your model and authentication in global settings.
 
-This release is locally signed and has not been notarized by Apple. If macOS blocks the first launch, follow Apple's [instructions for opening an app from an unidentified developer](https://support.apple.com/guide/mac-help/open-a-mac-app-from-an-unknown-developer-mh40616/mac) after checking the download source. Release assets include SHA-256 checksums and source archives.
+Configuration and task history are stored outside the application bundle and preserved during local updates. Release assets include SHA-256 checksums, Eido source, and corresponding source for the native components.
+
+This release is locally signed and **has not been notarized by Apple**. If macOS blocks the first launch, verify the download source and follow Apple's [instructions for opening an app from an unidentified developer](https://support.apple.com/guide/mac-help/open-a-mac-app-from-an-unknown-developer-mh40616/mac).
 
 ### Enable Computer Use on Mac
 
-Enable **Computer Use** in Eido's global settings. The app includes its desktop driver; leave the driver path empty to use it.
+Enable **Computer Use** in global settings. Leave the driver path empty to use the bundled driver.
 
-In **System Settings → Privacy & Security**, allow **Eido** under both **Accessibility** and **Screen & System Audio Recording** (called **Screen Recording** on some macOS versions), then restart Eido. These permissions let the agent operate applications and capture their windows. Permission previously granted to a standalone Cua Driver does not apply to Eido. Eido currently requires these steps to be completed manually.
+In **System Settings → Privacy & Security**, allow **Eido** under **Accessibility** and **Screen & System Audio Recording** (called **Screen Recording** on some macOS versions), then restart Eido. These permissions allow input and window capture. Replacing a locally signed build can require re-enabling them. Permission previously granted to a standalone Cua Driver does not apply to Eido.
 
-## Your first task
+## Get started
 
-**1. Open a project**<br>
-Launch **Eido** from Applications and open a project folder. A small project with version history is a good place to begin.
+1. **Choose your language.** Open Settings and use the language selector at the top. The choice applies across tasks.
+2. **Configure your model.** Open **AI → pi Models & Credentials** in global settings. Model and thinking controls are beside the composer.
+3. **Set Agent Access.** Start with **Ask Before Actions**, or choose **Full Access** to let pi decide how to use enabled tools without individual approval prompts. This setting is global.
+4. **Describe an outcome.** For example: “Explain this project and propose a small fix,” or “Use these sources to compare the options and show the evidence.”
+5. **Review the result.** Read source references, inspect proposed changes, and decide what to keep.
 
-**2. Choose how you work**<br>
-Configure your model and authentication in global settings. Model, thinking, and **Agent Access** controls are available beside the conversation input.
+### Research and document extraction
 
-**3. Give the task a clear outcome**<br>
-Describe what should change and how you will know it works. Reference the relevant code, then let the agent investigate and propose a solution.
+To try the experimental service, find **Research & Documents** in global AI configuration, enable it, set the service base URL (default `https://api.deepseek.com/v1`), and save your DeepSeek credential. Use **Sources** or the attachment menu in the composer to work with supporting material.
 
-**4. Review and verify**<br>
-Inspect the changes, run the relevant checks, and decide what to keep. Continue the conversation when the result needs refinement.
+Search queries, requested URLs, and selected document/image content are sent to the configured service when these tools run. Service access and charges are separate from your main model configuration. Limits and usage records are available; estimated or unknown billing is not a confirmed charge. The real-service and full GUI acceptance pass for this preview is incomplete.
 
-### You set the level of access
+## Current scope
 
-| Agent Access | How it works |
-| :--- | :--- |
-| **Ask Before Actions** | The agent asks before actions that require approval. A useful starting point while you learn the workflow. |
-| **Full Access** | The agent decides how to use enabled tools without requesting approval for each action. |
+Eido keeps native editing and review while expanding beyond coding. This is still an early release:
 
-Agent Access applies globally across tasks. Your configuration and work history are kept outside the application bundle and preserved during local updates. Model requests go to the provider you configure.
+- Localization covers the main Eido workflow. Some advanced editor settings, deeper dialogs, and third-party content remain in their original language.
+- Browser Use, Computer Use, Poki integration, and Research/OCR are experimental. Background desktop input and focus isolation are not reliable across all applications.
+- Plugin compatibility, language tooling, large-project performance, and more recovery scenarios continue to improve.
+- The native editor is packaged from the dev profile with debug symbols disabled; this is not an optimized Cargo release build.
 
-## Release scope
+## Feedback
 
-The first stable-channel release focuses on the coding loop: **describe → investigate → edit → review → verify**.
-
-| Available to try | Still being refined |
-| :--- | :--- |
-| AI conversations with project context and tool execution. | Complete coverage of supported agent commands and extensions. |
-| Native file editing and code review. | Language support and smart editing setup across projects. |
-| Workbench, Code, and Split views with a shared conversation. | Plugin compatibility across the agent ecosystem. |
-| Task history, supported file-operation review, and recovery. | Large-project performance and broader upgrade and recovery scenarios. |
-| Browser Use and Computer Use with a bundled desktop driver. | Website and application compatibility, and macOS permission onboarding. |
-
-Smart code assistance depends on the language support you configure. Coverage across projects and plugins continues to improve. Computer Use background input, focus isolation and more complex browser workflows remain experimental.
-
-## Help shape the next version
-
-The most useful feedback starts with a real task. [Open an issue](https://github.com/tony3liu/eido/issues), including:
-
-- **Your goal** — what you were trying to accomplish.
-- **The friction** — what you expected and what happened instead.
-- **A small example** — steps to reproduce, a screenshot, or the relevant error text.
-- **The version** — Eido **0.0.1**, plus your macOS version.
-
-Please remove credentials and private project information from shared examples.
+[Open an issue](https://github.com/tony3liu/eido/issues) with your goal, expected and actual behavior, a small reproduction, and **Eido 0.0.2** plus your macOS version. Remove credentials and private project content from screenshots and logs.
 
 ## Acknowledgments and licensing
 
@@ -165,5 +121,5 @@ If you fork, modify, or distribute Eido, you must comply with the licenses that 
 
 <p align="center">
   <strong>Understand. Create. Evolve.</strong><br>
-  <sub>Eido · 0.0.1 · macOS</sub>
+  <sub>Eido · 0.0.2 · macOS</sub>
 </p>

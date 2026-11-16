@@ -1,8 +1,9 @@
 import {createMcpConnector} from './mcp.ts';
+import {createResearchServices} from './research.ts';
 import {sessionOwners} from './session-owner.ts';
 import {createShell} from './shell.ts';
 import {refreshPiNetwork} from './pi-network.ts';
-import {preparePromptContent} from './prompt-content.ts';
+import {preparePromptContent,submittedDocuments,submittedRequirements} from './prompt-content.ts';
 import {createDeliveryLedger, DELIVERY} from './delivery.ts';
 import {nativeUiAction} from './native-ui.ts';
 import { runAcp } from "../adapter/src/lib.js";
@@ -32,6 +33,7 @@ export async function startEidoAgent(agentDir: string, sessionDir: string, strea
   let supportsNativeUi = false;
   const subagents = createSubagents(agentDir, sessionDir);
   const mcp = createMcpConnector(agentDir);
+  const research = createResearchServices(agentDir);
   const deliveries = new Map<string, ReturnType<typeof createDeliveryLedger>>();
   const clientReady = new Promise<AgentContext>(resolve => { connectClient = resolve; });
   // The transport can receive initialize/new while asynchronous Eido setup is
@@ -51,6 +53,7 @@ export async function startEidoAgent(agentDir: string, sessionDir: string, strea
       agentDir,
       sessionDir,
       connectMcpClient: mcp,
+      builtinMcpClients: research.builtinMcpClients,
       modelRuntime: runtime,
       createAgentSession: async options => {
         if (!options.cwd || !options.sessionManager) throw new Error("Missing ACP session context.");
@@ -58,8 +61,9 @@ export async function startEidoAgent(agentDir: string, sessionDir: string, strea
         let liveSession:AgentSession|undefined;
         const browserDecision = await browserDecisionEnvironment(agentDir);
         const images = codemodeImages();
-        const preview = createPreview(options.cwd, join(agentDir, "previews"), options.sessionManager.getSessionId(), client);
-        const shell = createShell(options.cwd, join(agentDir, "commands"), options.sessionManager.getSessionId(), client);
+        const researchHooks=research.get(options.sessionManager.getSessionId())?.hooks;
+        const preview = createPreview(options.cwd, join(agentDir, "previews"), options.sessionManager.getSessionId(), client, 'preview', researchHooks);
+        const shell = createShell(options.cwd, join(agentDir, "commands"), options.sessionManager.getSessionId(), client, researchHooks);
         // Settings are owned by pi. New tasks see credentials/models changed in
         // Eido's settings without replacing the model of an active conversation.
         if (!modelRuntime) await runtime.refresh({ allowNetwork: false });
@@ -89,12 +93,13 @@ export async function startEidoAgent(agentDir: string, sessionDir: string, strea
           // Preserve pi's defaultTools lifecycle with native file operations.
           tools: undefined,
           noTools: undefined,
-          customTools: [...[...editorTools(options.cwd, options.sessionManager.getSessionId(), client, images.get),
+          customTools: [...[...editorTools(options.cwd, options.sessionManager.getSessionId(), client, images.get, researchHooks),
             ...editorQueryTools(options.cwd, options.sessionManager.getSessionId(), client)]
             .map(tool => ({...tool, defaultActive: false})), preview.tool, shell.tool,
             ...(subagents.enabled ? [subagents.tool(options.sessionManager.getSessionId(), client)] : [])],
         });
         liveSession=created.session;
+        await research.attach(created.session);
         const disposeImages = images.attach(created.session);
         // pi reads most runtime settings dynamically. These Agent properties
         // are copied at creation, so refresh them at the same reload boundary.
@@ -126,7 +131,7 @@ export async function startEidoAgent(agentDir: string, sessionDir: string, strea
             await created.session.waitForIdle();
             return result;
           } finally {
-            const cleanup = await Promise.allSettled([mcp.finishTurn(created.session.sessionId), browser.close(), preview.finishTurn(!!child), shell.finishTurn()]);
+            const cleanup = await Promise.allSettled([research.finishTurn(created.session.sessionId),mcp.finishTurn(created.session.sessionId), browser.close(), preview.finishTurn(!!child), shell.finishTurn()]);
             const failed = cleanup.find(result => result.status === "rejected");
             if (failed?.status === "rejected") throw failed.reason;
           }
@@ -136,7 +141,7 @@ export async function startEidoAgent(agentDir: string, sessionDir: string, strea
         const abort = created.session.abort.bind(created.session);
         created.session.abort = async () => {
           try { await abort(); } finally {
-            const results = await Promise.allSettled([mcp.finishTurn(created.session.sessionId), preview.finishTurn(true), shell.finishTurn(), browser.close()]);
+            const results = await Promise.allSettled([research.finishTurn(created.session.sessionId),mcp.finishTurn(created.session.sessionId), preview.finishTurn(true), shell.finishTurn(), browser.close()]);
             const failed = results.find(result => result.status === "rejected");
             if (failed?.status === "rejected") throw failed.reason;
           }
@@ -171,6 +176,7 @@ export async function startEidoAgent(agentDir: string, sessionDir: string, strea
     subagents.setEnabled(context.params.clientCapabilities?._meta?.eidoSubagents === 1);
     const result = initialize(context);
     return {...result, agentCapabilities: {...result.agentCapabilities,
+      _meta:{eidoResearch:1,eidoDocuments:1},
       promptCapabilities: {...result.agentCapabilities?.promptCapabilities, embeddedContext: true}}};
   };
   await subagents.connect(server);
@@ -178,13 +184,15 @@ export async function startEidoAgent(agentDir: string, sessionDir: string, strea
   server.agent.prompt = context => {
     const prepared = {...context, params: {...context.params, prompt: preparePromptContent(context.params.prompt)}};
     const ledger = deliveries.get(context.params.sessionId);
-    return ledger ? ledger.deliver(context.params, () => deliver(prepared)) : deliver(prepared);
+    const dispatch=async()=>{await research.submit(context.params.sessionId,submittedDocuments(context.params.prompt),submittedRequirements(context.params.prompt));return deliver(prepared);};
+    return ledger ? ledger.deliver(context.params, dispatch) : dispatch();
   };
   const steer = server.agent.steer.bind(server.agent);
   server.agent.steer = context => {
     const prepared = {...context, params: {...context.params, prompt: preparePromptContent(context.params.prompt)}};
     const ledger = deliveries.get(context.params.sessionId);
-    return ledger ? ledger.steer(context.params, () => steer(prepared)) : steer(prepared);
+    const dispatch=async()=>{await research.submit(context.params.sessionId,submittedDocuments(context.params.prompt),submittedRequirements(context.params.prompt));return steer(prepared);};
+    return ledger ? ledger.steer(context.params, dispatch) : dispatch();
   };
   // The configured servers enter the same ACP MCP bridge as built-in tools.
   const withMcp = async <T extends {params: {mcpServers?: McpServer[]; cwd: string}}>(context: T): Promise<T> => {
