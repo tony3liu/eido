@@ -26,6 +26,13 @@ export interface PiAcpDeps {
      * compatible: a hand-built deps object that omits it keeps the previous ambient behaviour.
      * `resolveDeps` always populates it.
      */
+    eidoImages?: {
+        supports(model: {provider: string; id: string} | undefined): boolean;
+        runDirect(session: import("@earendil-works/pi-coding-agent").AgentSession, options: {
+            text: string; images?: import("@earendil-works/pi-ai").ImageContent[];
+            signal: AbortSignal; operationId: string;
+        }): Promise<{content: (import("@earendil-works/pi-ai").TextContent | import("@earendil-works/pi-ai").ImageContent)[]; path: string} | undefined>;
+    };
     agentDir?: string;
     sessionDir?: string;
     connectMcpClient(server: McpServer, signal: AbortSignal, binding?: McpSessionBinding): Promise<McpClientHandle>;

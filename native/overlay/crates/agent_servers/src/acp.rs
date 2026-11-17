@@ -33,7 +33,7 @@ use std::path::PathBuf;
 use std::process::ExitStatus;
 use std::rc::Rc;
 use std::sync::Arc;
-use std::{any::Any, cell::RefCell};
+use std::{any::Any, cell::{Cell, RefCell}};
 use task::SpawnInTerminal;
 use thiserror::Error;
 use util::ResultExt as _;
@@ -41,7 +41,7 @@ use util::path_list::PathList;
 use util::process::Child;
 
 use anyhow::{Context as _, Result};
-use gpui::{App, AppContext as _, AsyncApp, Entity, SharedString, Subscription, Task, WeakEntity};
+use gpui::{App, AppContext as _, AsyncApp, Entity, EntityId, SharedString, Subscription, Task, WeakEntity};
 
 use acp_thread::{AcpThread, AuthRequired, LoadError, TerminalProviderEvent};
 use terminal::TerminalBuilder;
@@ -242,12 +242,14 @@ pub struct AcpConnection {
     connection: ConnectionTo<Agent>,
     sessions: Rc<RefCell<HashMap<acp::SessionId, AcpSession>>>,
     pending_sessions: Rc<RefCell<HashMap<acp::SessionId, PendingAcpSession>>>,
+    closing_sessions: Rc<RefCell<HashMap<acp::SessionId, ClosingAcpSession>>>,
     auth_methods: Vec<acp::AuthMethod>,
     agent_server_store: WeakEntity<AgentServerStore>,
     agent_capabilities: acp::AgentCapabilities,
     request_elicitations: Entity<ElicitationStore>,
     defaults: AcpConnectionDefaults,
     child: Option<Child>,
+    process_exited: Rc<Cell<bool>>,
     session_list: Option<Rc<AcpSessionList>>,
     debug_log: AcpDebugLog,
     _settings_subscription: Subscription,
@@ -333,6 +335,12 @@ impl AcpConnectionDefaults {
 
 struct PendingAcpSession {
     task: Shared<Task<Result<Entity<AcpThread>, Arc<anyhow::Error>>>>,
+}
+
+#[derive(Clone)]
+struct ClosingAcpSession {
+    thread_id: EntityId,
+    task: Shared<Task<Result<(), Arc<anyhow::Error>>>>,
 }
 
 struct SessionConfigResponse {
@@ -838,11 +846,16 @@ impl AcpConnection {
             return Err(UnsupportedVersion.into());
         }
 
+        let process_exited = Rc::new(Cell::new(false));
         let wait_task = cx.spawn({
+            let process_exited = process_exited.clone();
             let sessions = sessions.clone();
             let debug_log = debug_log.clone();
             async move |cx| {
                 let status = status_fut.await?;
+                // Record confirmed child exit before draining inherited pipes. A
+                // cached connection can outlive its process and its last view.
+                process_exited.set(true);
                 let load_error =
                     exited_load_error_after_drain(status, drained, &debug_log, cx).await;
                 emit_load_error_to_all_sessions(&sessions, load_error, cx);
@@ -916,6 +929,7 @@ impl AcpConnection {
             agent_version,
             sessions,
             pending_sessions: Rc::new(RefCell::new(HashMap::default())),
+            closing_sessions: Rc::new(RefCell::new(HashMap::default())),
             agent_capabilities: response.agent_capabilities,
             request_elicitations,
             defaults,
@@ -927,7 +941,14 @@ impl AcpConnection {
             _wait_task: wait_task,
             _stderr_task: stderr_task,
             child: Some(child),
+            process_exited,
         })
+    }
+
+    /// Process/transport evidence for deciding whether a cached connection can
+    /// be reused. Provider errors and failed session closes do not set this.
+    pub fn is_disconnected(&self) -> bool {
+        self.process_exited.get() || self.connection.is_incoming_closed()
     }
 
     pub fn prompt_capabilities(&self) -> &acp::PromptCapabilities {
@@ -956,12 +977,14 @@ impl AcpConnection {
             connection,
             sessions,
             pending_sessions: Rc::new(RefCell::new(HashMap::default())),
+            closing_sessions: Rc::new(RefCell::new(HashMap::default())),
             auth_methods: vec![],
             agent_server_store,
             agent_capabilities,
             request_elicitations,
             defaults,
             child: None,
+            process_exited: Rc::new(Cell::new(false)),
             session_list: None,
             debug_log: AcpDebugLog::default(),
             _settings_subscription: settings_subscription,
@@ -993,29 +1016,13 @@ impl AcpConnection {
             let thread_id = thread.entity_id();
             let sessions = self.sessions.clone();
             let connection = self.connection.clone();
+            let closing_sessions = self.closing_sessions.clone();
             let supports_close = self.agent_supports_session_close();
             move |_, cx| {
-                let removed = {
-                    let mut sessions = sessions.borrow_mut();
-                    match sessions.get(&session_id) {
-                        Some(session) if session.thread.entity_id() == thread_id => {
-                            sessions.remove(&session_id)
-                        }
-                        _ => None,
-                    }
-                };
-                if removed.is_none() || !supports_close {
-                    return;
-                }
-                cx.foreground_executor()
-                    .spawn(async move {
-                        connection
-                            .send_request(acp::CloseSessionRequest::new(session_id))
-                            .block_task()
-                            .await
-                            .log_err();
-                    })
-                    .detach();
+                retire_session(
+                    &sessions, &closing_sessions, connection, session_id, thread_id,
+                    supports_close, cx,
+                );
             }
         });
         self.sessions.borrow_mut().insert(
@@ -1071,6 +1078,18 @@ impl AcpConnection {
             return Task::ready(Ok(thread));
         }
 
+        // A WeakEntity may stop upgrading before observe_release runs. Retire that
+        // exact generation now; its later release callback cannot close a replacement.
+        let retired_thread = self.sessions.borrow().get(&session_id)
+            .map(|session| session.thread.entity_id());
+        if let Some(thread_id) = retired_thread {
+            retire_session(
+                &self.sessions, &self.closing_sessions, self.connection.clone(),
+                session_id.clone(), thread_id, self.agent_supports_session_close(), cx,
+            );
+        }
+        let closing = self.closing_sessions.borrow().get(&session_id).cloned();
+
         let directories = match self.session_directories_from_work_dirs(&work_dirs) {
             Ok(directories) => directories,
             Err(error) => return Task::ready(Err(error)),
@@ -1081,6 +1100,18 @@ impl AcpConnection {
                 let session_id = session_id.clone();
                 let this = self.clone();
                 async move |cx| {
+                    if let Some(closing) = closing {
+                        if let Err(error) = closing.task.await {
+                            this.pending_sessions.borrow_mut().remove(&session_id);
+                            // Keep the failed close record. Loading would race or unlock an
+                            // unconfirmed owner; reopening never retries the original prompt.
+                            return Err(error);
+                        }
+                        let mut sessions = this.closing_sessions.borrow_mut();
+                        if sessions.get(&session_id).is_some_and(|entry| entry.thread_id == closing.thread_id) {
+                            sessions.remove(&session_id);
+                        }
+                    }
                     let parent_session_id = cx.update(|cx| this.sessions.borrow().iter().find_map(|(id, session)| {
                         let thread = session.thread.upgrade()?;
                         thread.read(cx).tool_call_for_subagent(&session_id).map(|_| id.clone())
@@ -1372,6 +1403,40 @@ fn work_dirs_from_session_info(cwd: PathBuf, additional_directories: Vec<PathBuf
     }
 
     PathList::new(&paths)
+}
+
+/// Register the close barrier synchronously while retiring only an unreferenced
+/// generation. Both release notifications and immediate reopen use this path.
+fn retire_session(
+    sessions: &Rc<RefCell<HashMap<acp::SessionId, AcpSession>>>,
+    closing_sessions: &Rc<RefCell<HashMap<acp::SessionId, ClosingAcpSession>>>,
+    connection: ConnectionTo<Agent>,
+    session_id: acp::SessionId,
+    thread_id: EntityId,
+    supports_close: bool,
+    cx: &mut App,
+) {
+    let removed = {
+        let mut sessions = sessions.borrow_mut();
+        match sessions.get(&session_id) {
+            Some(session) if session.thread.entity_id() == thread_id && session.thread.upgrade().is_none() => sessions.remove(&session_id),
+            _ => None,
+        }
+    };
+    if removed.is_none() || !supports_close {
+        return;
+    }
+    let task = cx.foreground_executor().spawn({
+        let session_id = session_id.clone();
+        async move {
+            connection.send_request(acp::CloseSessionRequest::new(session_id))
+                .block_task().await.map(|_| ()).map_err(|error| Arc::new(anyhow!(error)))
+        }
+    }).shared();
+    closing_sessions.borrow_mut().insert(session_id, ClosingAcpSession {thread_id, task: task.clone()});
+    // Continue cleanup even if no view reopens; the shared result remains available
+    // to the next loader, including a failure rather than a silently dropped error.
+    cx.foreground_executor().spawn(async move { task.await.ok(); }).detach();
 }
 
 fn emit_load_error_to_all_sessions(
@@ -3809,6 +3874,7 @@ exit 7
                 .await
                 .expect("initialize scripted agent"),
             );
+            assert!(!connection.is_disconnected(), "a live process must remain reusable");
             let thread = cx
                 .update(|cx| {
                     connection.clone().new_session(
@@ -3853,6 +3919,7 @@ exit 7
 
             let (transcript_at_exit, error, incoming_closed_at_exit, stderr_captured_at_exit) =
                 exit_receiver.recv().await.expect("receive process exit");
+            assert!(connection.is_disconnected(), "confirmed child exit must invalidate cached liveness even with inherited pipes");
             if inherit_handles {
                 assert!(
                     !incoming_closed_at_exit,
@@ -3897,6 +3964,21 @@ exit 7
 
     async fn connect_fake_agent(
         cx: &mut gpui::TestAppContext,
+    ) -> (
+        Rc<AcpConnection>,
+        Entity<project::Project>,
+        Arc<AtomicUsize>,
+        Arc<AtomicUsize>,
+        Arc<std::sync::Mutex<Vec<acp::SessionUpdate>>>,
+        Arc<std::sync::Mutex<Option<async_channel::Receiver<()>>>>,
+        Task<anyhow::Result<()>>,
+    ) {
+        connect_fake_agent_with_close_gate(cx, None).await
+    }
+
+    async fn connect_fake_agent_with_close_gate(
+        cx: &mut gpui::TestAppContext,
+        close_gate: Option<async_channel::Receiver<Result<(), &'static str>>>,
     ) -> (
         Rc<AcpConnection>,
         Entity<project::Project>,
@@ -4011,8 +4093,15 @@ exit 7
             .on_receive_request(
                 {
                     let close_count = close_count.clone();
+                    let close_gate = Arc::new(Mutex::new(close_gate));
                     async move |_req: acp::CloseSessionRequest, responder, _cx| {
                         close_count.fetch_add(1, Ordering::SeqCst);
+                        let gate = close_gate.lock().unwrap().take();
+                        if let Some(gate) = gate {
+                            if let Ok(Err(message)) = gate.recv().await {
+                                return responder.respond_with_error(acp::Error::internal_error().data(message));
+                            }
+                        }
                         responder.respond(acp::CloseSessionResponse::new())
                     }
                 },
@@ -4168,6 +4257,44 @@ exit 7
         let contents = child.update(cx, |thread, cx| thread.observe_text_file("/a/shared.txt".into(), cx)).await.unwrap();
         assert_eq!(contents, "disk\n");
 
+    }
+
+    #[gpui::test]
+    async fn test_eido_session_reload_waits_for_close_and_retains_failure(cx: &mut gpui::TestAppContext) {
+        for fail_close in [false, true] {
+            let (gate_tx, gate_rx) = async_channel::bounded(1);
+            let (connection, project, loads, closes, _, _, _keep_alive) =
+                connect_fake_agent_with_close_gate(cx, Some(gate_rx)).await;
+            let session_id = acp::SessionId::new("eido-close-barrier");
+            let dirs = util::path_list::PathList::new(&[std::path::Path::new("/a")]);
+            let thread = cx.update(|cx| connection.clone().load_session(session_id.clone(), project.clone(), dirs.clone(), None, cx)).await.unwrap();
+            // Drop and reopen in the same update: the release observer has not run.
+            let reload = cx.update(|cx| {
+                drop(thread);
+                connection.clone().load_session(session_id.clone(), project.clone(), dirs.clone(), None, cx)
+            });
+            cx.run_until_parked();
+            assert_eq!(closes.load(Ordering::SeqCst), 1);
+            assert_eq!(loads.load(Ordering::SeqCst), 1, "load must wait for the delayed close response");
+            assert!(!connection.sessions.borrow().contains_key(&session_id), "do not register a new generation before close");
+            gate_tx.send(if fail_close {Err("close failed")} else {Ok(())}).await.unwrap();
+            let reloaded = reload.await;
+            if fail_close {
+                assert!(reloaded.is_err());
+                let retried = cx.update(|cx| connection.clone().load_session(session_id.clone(), project, dirs, None, cx)).await;
+                assert!(retried.is_err(), "a failed close remains a barrier on subsequent Restore");
+                assert_eq!(loads.load(Ordering::SeqCst), 1);
+                assert_eq!(closes.load(Ordering::SeqCst), 1, "do not silently retry close");
+            } else {
+                let reloaded = reloaded.unwrap();
+                assert_eq!(loads.load(Ordering::SeqCst), 2);
+                release_dropped_entities(cx);
+                assert_eq!(closes.load(Ordering::SeqCst), 1, "old release callbacks cannot close the new live generation");
+                drop(reloaded);
+                release_dropped_entities(cx);
+                assert_eq!(closes.load(Ordering::SeqCst), 2);
+            }
+        }
     }
 
     #[gpui::test]

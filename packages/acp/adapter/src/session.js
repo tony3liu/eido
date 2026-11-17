@@ -2,7 +2,7 @@
 import {randomUUID} from "node:crypto";
 import {resolve} from "node:path";
 import {homedir} from "node:os";
-import {appendEidoEntry} from "./session-persistence.js";
+import {appendEidoEntry, persistSession} from "./session-persistence.js";
 import {TURN_RECORD, savedTurnState, terminalTurnStatus} from "./turn-state.js";
 import { methods, } from "@agentclientprotocol/sdk";
 import { adapterError, classifyPreflight, isRequestError, unexpectedError } from "./errors.js";
@@ -481,6 +481,11 @@ export class PiSession {
             if (turn.completed)
                 return;
             if (turn.commandError) throw adapterError("command_error");
+            if (turn.imageTurn) {
+                this.discardOrphanedSteering();
+                this.finish(turn, {response:{stopReason:turn.controller.signal.aborted ? "cancelled" : "end_turn"}});
+                return;
+            }
             const terminal = terminalAssistant(messages);
             const stopReason = stopReasonFor(terminal, turn.controller.signal.aborted || turn.piAborted);
             this.discardOrphanedSteering();
@@ -501,7 +506,7 @@ export class PiSession {
             try {
                 await this.drain();
                 this.discardOrphanedSteering();
-                this.finish(turn, { error: turn.commandError ? adapterError("command_error") : classifyPreflight(error) });
+                this.finish(turn, { error: turn.commandError ? adapterError("command_error") : isRequestError(error) ? error : classifyPreflight(error) });
             }
             catch {
                 this.notificationFailure();
@@ -529,6 +534,9 @@ export class PiSession {
     async prompt(params, requestSignal) {
         if (this.busy)
             throw adapterError("session_busy");
+        if (this.deps.eidoImages?.supports(this.pi.model)
+            && (params._meta?.eidoHasAttachments || params.prompt.some(block => block.type !== "text")))
+            throw adapterError("provider_error", {details:"Image generation accepts a text description only. Remove attachments before sending."});
         return this.startTurn(convertPromptContent(params.prompt), { requestSignal });
     }
     /** Open the session's single turn slot and run one pi prompt through the full turn
@@ -557,6 +565,7 @@ export class PiSession {
         appendEidoEntry(this.manager, TURN_RECORD, {version: 1, id: eidoId, status: "running"});
         const turn = {
             eidoId,
+            imageTurn: !text.trimStart().startsWith("/") && !!this.deps.eidoImages?.supports(this.pi.model),
             controller: new AbortController(),
             settlement,
             resolveSettlement,
@@ -606,6 +615,19 @@ export class PiSession {
                 piPromise = (async () => {
                     const commands = this.pi[Symbol.for("eido.pi.commands")];
                     if (commands && await commands.run(text, converted.images, this)) { await this.pi[Symbol.for("eido.pi.ui.state")]?.flush(); return; }
+                    if (turn.imageTurn) {
+                        appendEidoEntry(this.manager, "eido.image.input.v1", {text});
+                        const image = await this.deps.eidoImages.runDirect(this.pi, {
+                            text, images: converted.images, signal: turn.controller.signal, operationId: turn.eidoId,
+                        });
+                        if (!image) throw adapterError("invalid_model");
+                        if (!turn.controller.signal.aborted) {
+                            this.manager.appendCustomMessageEntry("eido.image.result.v1", image.content, true, {path:image.path});
+                            persistSession(this.manager);
+                            for (const content of image.content) this.enqueue({sessionUpdate:"agent_message_chunk",content});
+                        }
+                        return;
+                    }
                     const result = await this.pi.prompt(text, { images: converted.images });
                     await this.pi[Symbol.for("eido.pi.ui.state")]?.flush();
                     return result;
@@ -633,6 +655,7 @@ export class PiSession {
         if (!turn || turn.completed || turn.controller.signal.aborted) {
             return { outcome: "promptRequired", reason: "noRunningTurn" };
         }
+        if (turn.imageTurn) throw adapterError("session_busy", {details:"Image generation is in progress. Wait or cancel before sending another message."});
         const converted = convertPromptContent(params.prompt);
         // A committed-but-not-yet-streaming turn is steerable too: pi's run loop polls the
         // steering queue before its first LLM call, so the message joins the imminent turn.

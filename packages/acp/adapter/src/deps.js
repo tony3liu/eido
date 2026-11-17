@@ -28,6 +28,7 @@ export async function resolveDeps(partial = {}) {
     };
     return {
         eidoClaimSession: partial.eidoClaimSession,
+        eidoImages: partial.eidoImages,
         builtinMcpClients: partial.builtinMcpClients,
         createAgentSession: partial.createAgentSession ?? createAgentSession,
         sessions,

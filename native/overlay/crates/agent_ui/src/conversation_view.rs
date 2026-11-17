@@ -1032,16 +1032,27 @@ impl ConversationView {
             .request_elicitations()
     }
 
-    /// Drops the cached connection for this agent (so the next request spawns a
-    /// fresh server process) and rebuilds the thread state from scratch.
+    /// Retry task loading, preserving an existing healthy shared connection.
     pub(crate) fn retry_connection(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.connection_store.update(cx, |store, cx| {
-            store.restart_connection(self.connection_key.clone(), self.agent.clone(), cx);
-        });
+        // Reuse a healthy shared ACP process. Restore only this task's history;
+        // restarting it here would also interrupt unrelated conversations.
+        if self.connection_store.read(cx).connection_status(&self.connection_key, cx)
+            == crate::agent_connection_store::AgentConnectionStatus::Disconnected
+        {
+            self.connection_store.update(cx, |store, cx| {
+                store.restart_connection(self.connection_key.clone(), self.agent.clone(), cx);
+            });
+        }
         self.reset(window, cx);
     }
 
     fn reset(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if matches!(self.server_state, ServerState::Loading { .. })
+            || self.as_connected().is_some_and(|connected| connected.threads.values()
+                .any(|view| matches!(view.read(cx).thread.read(cx).status(), ThreadStatus::Generating)))
+        {
+            return;
+        }
         let (resume_session_id, work_dirs, title) = self
             .root_thread_view()
             .map(|thread_view| {
@@ -1591,16 +1602,10 @@ impl ConversationView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // If we're in a LoadError state OR have a thread_error set (which can happen
-        // when agent.connect() fails during loading), retry loading the thread.
-        // This handles the case where a thread is restored before authentication completes.
-        let should_retry = match &self.server_state {
-            ServerState::Loading { .. } => false,
-            ServerState::LoadError { .. } => true,
-            ServerState::Connected(connected) => {
-                connected.auth_state.is_ok() && connected.has_thread_error(cx)
-            }
-        };
+        // A provider/model failure belongs to the existing task. Reloading it
+        // on a catalog update races its close and discards the model controls.
+        // Connection/loading failures still need the saved-session retry path.
+        let should_retry = matches!(&self.server_state, ServerState::LoadError { .. });
 
         if should_retry {
             if let Some(active) = self.root_thread_view() {
@@ -5851,6 +5856,40 @@ pub(crate) mod tests {
                 ),
             }
         });
+    }
+
+    #[gpui::test]
+    async fn test_eido_provider_error_keeps_task_on_model_catalog_update(cx: &mut TestAppContext) {
+        init_test(cx);
+        let connection = StubAgentConnection::new();
+        let (conversation, cx) =
+            setup_conversation_view(StubAgentServer::new(connection.clone()), cx).await;
+        let original = active_thread(&conversation, cx);
+        let project = conversation.read_with(cx, |view, _| view.project.clone());
+        original.update(cx, |view, cx| {
+            view.handle_thread_error(ThreadError::Other {
+                message: "provider rejected the selected model".into(),
+                acp_error_code: None,
+            }, cx);
+        });
+        project.update(cx, |project, cx| {
+            project.agent_server_store().update(cx, |_, cx| cx.emit(project::AgentServersUpdated));
+        });
+        cx.run_until_parked();
+        conversation.read_with(cx, |view, cx| {
+            assert!(view.as_connected().is_some(), "a model error must not reload the task");
+            assert_eq!(view.active_thread(), Some(&original), "the model controls and draft keep their view");
+            assert!(original.read(cx).thread_error.is_some(), "retain the visible provider error until the next action");
+        });
+        message_editor(&conversation, cx).update_in(cx, |editor, window, cx| {
+            editor.set_text("Continue after choosing another model", window, cx);
+        });
+        original.update_in(cx, |view, window, cx| view.send(window, cx));
+        cx.run_until_parked();
+        let session = original.read_with(cx, |view, cx| view.thread.read(cx).session_id().clone());
+        connection.end_turn(session, acp::StopReason::EndTurn);
+        cx.run_until_parked();
+        original.read_with(cx, |view, _| assert!(view.thread_error.is_none()));
     }
 
     #[gpui::test]

@@ -20,7 +20,7 @@ export async function customImagePolicy(directory: string) {
   };
   await refresh();
   return {refresh, allowsDefault:(model: Pick<Model<Api>, 'provider'|'id'>) => defaults.has(`${model.provider}/${model.id}`),
-    async assertCurrent(model: {provider:string; id:string; baseUrl:string; api:string}) {
+    async assertCurrent(model: {provider:string; id:string; baseUrl:string; api:string; eidoSourceApi?:string}) {
       // The selected object can outlive a connection edit while pi resolves fresh
       // credentials per request. Read the saved destination before every request,
       // including plain text, rather than relying on the asynchronous catalog watcher.
@@ -29,7 +29,7 @@ export async function customImagePolicy(directory: string) {
       const configured = provider.models?.find(candidate => candidate.id === model.id);
       const baseUrl = configured?.baseUrl ?? provider.baseUrl;
       const api = configured?.api ?? provider.api;
-      if ((baseUrl !== undefined && baseUrl !== model.baseUrl) || (api !== undefined && api !== model.api)) {
+      if ((baseUrl !== undefined && baseUrl !== model.baseUrl) || (api !== undefined && api !== (model.api === 'eido-openai-images' ? model.eidoSourceApi : model.api))) {
         throw new Error('This connection changed. Reselect the model before sending to load its current address and API format.');
       }
     },

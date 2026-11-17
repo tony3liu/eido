@@ -87,6 +87,13 @@ export function adapterError(kind, extras = {}) {
     return RequestError.internalError(data);
 }
 export function classifyPreflight(error) {
+    if (error?.name === 'ImageGenerationError') {
+        const codes = new Set(['authentication_failed','rate_limited','provider_rejected','response_too_large','invalid_response','invalid_image','invalid_image_url','download_failed','connection_changed','invalid_connection','unsupported_input','image_editing_not_supported','interrupted_or_unknown','previously_failed','operation_conflict','requires_new_user_request','authentication_or_provider_failed','timed_out','cancelled','failed','session_unavailable','unsupported_provider']);
+        const code = codes.has(error.code) ? error.code : 'failed';
+        const status = Number.isInteger(error.status) && error.status >= 100 && error.status <= 599 ? ` (HTTP ${error.status})` : '';
+        return adapterError(code === 'authentication_failed' ? 'auth_error' : code === 'rate_limited' ? 'rate_limit' : 'provider_error',
+            {details:`Image generation ${code}${status}. No automatic retry was made.`});
+    }
     const message = error instanceof Error ? error.message.toLowerCase() : "";
     if (message.includes('this connection changed.')) {
         return adapterError('provider_error', {details:'This connection changed. Reselect the model before sending to load its current address and API format.'});

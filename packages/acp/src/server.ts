@@ -24,6 +24,7 @@ import { configuredMcp } from "../../runtime/src/pi/extensions.mjs";
 import { browserDecisionEnvironment } from "../../runtime/src/browser/config.mjs";
 import {computerMcp} from '../../runtime/src/computer.mjs';
 import {codemodeImages} from './codemode-images.ts';
+import {createImageGeneration} from './image-generation.ts';
 import {customImagePolicy, installCustomImagePolicy} from './custom-model-policy.ts';
 
 export async function startEidoAgent(agentDir: string, sessionDir: string, stream?: Stream, modelRuntime?: ModelRuntime) {
@@ -43,6 +44,7 @@ export async function startEidoAgent(agentDir: string, sessionDir: string, strea
     return auth;
   };
   runtime.getAuth = guardedGetAuth;
+  const imageGeneration = await createImageGeneration(agentDir, runtime);
   let connectClient!: (client: AgentContext) => void;
   let supportsForms = false;
   let supportsNativeUi = false;
@@ -70,6 +72,7 @@ export async function startEidoAgent(agentDir: string, sessionDir: string, strea
       connectMcpClient: mcp,
       builtinMcpClients: research.builtinMcpClients,
       modelRuntime: runtime,
+      eidoImages: imageGeneration,
       createAgentSession: async options => {
         if (!options.cwd || !options.sessionManager) throw new Error("Missing ACP session context.");
         const client = await clientReady;
@@ -83,11 +86,12 @@ export async function startEidoAgent(agentDir: string, sessionDir: string, strea
         // Eido's settings without replacing the model of an active conversation.
         await imagePolicy.refresh();
         if (!modelRuntime) await runtime.refresh({ allowNetwork: false });
+        await imageGeneration.refresh();
         // Let pi resolve explicit lists, +/- modifiers, pending registrations and
         // reload additions. Only the absent-setting fallback is Eido-specific.
         if (options.settingsManager) {
           const defaults = options.settingsManager.getDefaultTools.bind(options.settingsManager);
-          options.settingsManager.getDefaultTools = () => defaults() ?? ["read", "edit", "write", "find", "grep", "ls", "bash"];
+          options.settingsManager.getDefaultTools = () => defaults() ?? ["read", "edit", "write", "find", "grep", "ls", "bash", "generate_image"];
         }
         if (options.resourceLoader) {
           const getExtensions = options.resourceLoader.getExtensions.bind(options.resourceLoader);
@@ -112,6 +116,7 @@ export async function startEidoAgent(agentDir: string, sessionDir: string, strea
           customTools: [...[...editorTools(options.cwd, options.sessionManager.getSessionId(), client, images.get, researchHooks),
             ...editorQueryTools(options.cwd, options.sessionManager.getSessionId(), client)]
             .map(tool => ({...tool, defaultActive: false})), preview.tool, shell.tool,
+            imageGeneration.tool(() => liveSession, options.sessionManager.getSessionId()),
             ...(subagents.enabled ? [subagents.tool(options.sessionManager.getSessionId(), client)] : [])],
         });
         liveSession=created.session;
@@ -174,6 +179,7 @@ export async function startEidoAgent(agentDir: string, sessionDir: string, strea
         const reload = created.session.reload.bind(created.session);
         created.session.reload = async (...args) => {
           await reload(...args);
+          await imageGeneration.refresh();
           toolPolicy.changed();
         };
         installPiCommands(created.session, client, supportsForms, agentDir, supportsNativeUi, () => server.agent.refreshGlobalModelScope());
@@ -199,14 +205,14 @@ export async function startEidoAgent(agentDir: string, sessionDir: string, strea
   await subagents.connect(server);
   const deliver = server.agent.prompt.bind(server.agent);
   server.agent.prompt = context => {
-    const prepared = {...context, params: {...context.params, prompt: preparePromptContent(context.params.prompt)}};
+    const prepared = {...context, params: {...context.params, prompt: preparePromptContent(context.params.prompt), _meta:{...context.params._meta,eidoHasAttachments:context.params.prompt.some(block=>block.type!=='text')}}};
     const ledger = deliveries.get(context.params.sessionId);
     const dispatch=async()=>{await research.submit(context.params.sessionId,submittedDocuments(context.params.prompt),submittedRequirements(context.params.prompt));return deliver(prepared);};
     return ledger ? ledger.deliver(context.params, dispatch) : dispatch();
   };
   const steer = server.agent.steer.bind(server.agent);
   server.agent.steer = context => {
-    const prepared = {...context, params: {...context.params, prompt: preparePromptContent(context.params.prompt)}};
+    const prepared = {...context, params: {...context.params, prompt: preparePromptContent(context.params.prompt), _meta:{...context.params._meta,eidoHasAttachments:context.params.prompt.some(block=>block.type!=='text')}}};
     const ledger = deliveries.get(context.params.sessionId);
     const dispatch=async()=>{await research.submit(context.params.sessionId,submittedDocuments(context.params.prompt),submittedRequirements(context.params.prompt));return steer(prepared);};
     return ledger ? ledger.steer(context.params, dispatch) : dispatch();
@@ -241,6 +247,7 @@ export async function startEidoAgent(agentDir: string, sessionDir: string, strea
         if (stopped) return;
         await imagePolicy.refresh();
         await runtime.refresh({allowNetwork:false});
+        await imageGeneration.refresh();
         if (!stopped && !runtime.getError()) await server.agent.refreshGlobalModelScope();
       }).catch(() => { /* Keep current options; the settings view reports configuration errors. */ });
     }, 100);

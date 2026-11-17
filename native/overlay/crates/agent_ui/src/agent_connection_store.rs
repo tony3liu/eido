@@ -47,7 +47,15 @@ impl AgentConnectionEntry {
     pub fn status(&self) -> AgentConnectionStatus {
         match self {
             AgentConnectionEntry::Connecting { .. } => AgentConnectionStatus::Connecting,
-            AgentConnectionEntry::Connected(_) => AgentConnectionStatus::Connected,
+            AgentConnectionEntry::Connected(state) => {
+                if state.connection.clone().downcast::<AcpConnection>()
+                    .is_some_and(|connection| connection.is_disconnected())
+                {
+                    AgentConnectionStatus::Disconnected
+                } else {
+                    AgentConnectionStatus::Connected
+                }
+            },
             AgentConnectionEntry::Error { .. } => AgentConnectionStatus::Disconnected,
         }
     }
