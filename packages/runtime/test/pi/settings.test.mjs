@@ -252,6 +252,55 @@ test("custom model editing preserves pi advanced parameters and other models", a
   assert.equal(await readFile(join(f.target,"models.json"),"utf8"),before);
 });
 
+test("custom model credentials are saved for that provider and become available to the workbench", async t => {
+  const f = await fixture(t);
+  await f.put(f.target, 'auth.json', {deepseek:{type:'api_key',key:'keep-existing'}});
+  const request = {operation:'custom-model',provider:'sr',baseUrl:'https://example.invalid/v1',api:'openai-completions',model:'fixture-model'};
+  await f.bridge.execute({...request,key:'fixture-sr-key'});
+  const runtime = await ModelRuntime.create({authPath:join(f.target,'auth.json'),modelsPath:join(f.target,'models.json'),allowModelNetwork:false});
+  assert.ok((await runtime.getAvailable()).some(m => m.provider === 'sr' && m.id === 'fixture-model'));
+  await f.bridge.execute({...request,key:''});
+  const auth = await f.get(f.target,'auth.json');
+  assert.equal(auth.sr.key,'fixture-sr-key');
+  assert.equal(auth.deepseek.key,'keep-existing');
+  assert.equal((await f.get(f.target,'models.json')).providers.sr.apiKey,undefined);
+  const before = await readFile(join(f.target,'auth.json'),'utf8');
+  await assert.rejects(f.bridge.execute({...request,baseUrl:'file:///invalid',key:'must-not-save'}));
+  assert.equal(await readFile(join(f.target,'auth.json'),'utf8'),before);
+});
+
+test("import handles the retired DeepSeek default without changing the source", async t => {
+  const f = await fixture(t);
+  await f.put(f.source,'settings.json',{defaultProvider:'deepseek',defaultModel:'deepseek-v4-flash',defaultThinkingLevel:'high'});
+  await f.put(f.source,'auth.json',{deepseek:{type:'api_key',key:'fixture-key'}});
+  const before = await readFile(join(f.source,'settings.json'),'utf8');
+  const result = await f.bridge.execute({operation:'import'});
+  assert.equal(result.defaultProvider,'deepseek');
+  assert.equal(result.defaultModel,'deepseek-flash');
+  assert.equal(result.defaultThinkingLevel,'high');
+  assert.match(result.modelCatalogNotice,/deepseek-v4-flash.*deepseek-flash/);
+  assert.equal(await readFile(join(f.source,'settings.json'),'utf8'),before);
+  assert.deepEqual((await readdir(f.source)).sort(),['auth.json','settings.json']);
+});
+
+test("import restores a cached pi model offline and preserves unrelated target catalogs", async t => {
+  const f = await fixture(t);
+  const rt = await ModelRuntime.create({authPath:join(f.target,'auth.json'),modelsPath:join(f.target,'models.json'),allowModelNetwork:false});
+  const model = {...rt.getModel('deepseek','deepseek-flash'),id:'future-fixture-model',name:'Future fixture'};
+  const source = {deepseek:{models:[model],lastModified:4102444800000}};
+  const target = {anthropic:{models:[],lastModified:4102444800001}};
+  await f.put(f.source,'models-store.json',source);
+  await f.put(f.target,'models-store.json',target);
+  await f.put(f.source,'settings.json',{defaultProvider:'deepseek',defaultModel:model.id,defaultThinkingLevel:'high'});
+  const before = await readFile(join(f.source,'models-store.json'),'utf8');
+  const result = await f.bridge.execute({operation:'import'});
+  assert.equal(result.defaultModel,model.id);
+  assert.ok(result.providers.find(p=>p.id==='deepseek').models.some(m=>m.id===model.id));
+  assert.deepEqual((await f.get(f.target,'models-store.json')).anthropic,target.anthropic);
+  assert.equal(await readFile(join(f.source,'models-store.json'),'utf8'),before);
+  assert.deepEqual((await readdir(f.source)).sort(),['models-store.json','settings.json']);
+});
+
 test("import merges models and all auth without mutating the source or dropping target settings", async t => {
   const f=await fixture(t);
   const sourceModel={providers:{"eido-fixture":{api:"openai-completions",baseUrl:"https://example.invalid/v1",models:[{id:"source-model",reasoning:false}]}}};

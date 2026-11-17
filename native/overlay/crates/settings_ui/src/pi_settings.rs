@@ -19,6 +19,9 @@ pub(crate) struct PiSettingsView {
     provider: String,
     model: String,
     thinking: String,
+    section: &'static str,
+    custom_model_open: bool,
+    service_open: HashSet<&'static str>,
     model_settings_open: bool,
     model_settings: HashMap<String, ModelSettingsDraft>,
     default_tools: Entity<Editor>,
@@ -32,6 +35,7 @@ pub(crate) struct PiSettingsView {
     custom_provider: Entity<Editor>,
     custom_url: Entity<Editor>,
     custom_model: Entity<Editor>,
+    custom_key: Entity<Editor>,
     custom_api: String,
     jev_url: Entity<Editor>,
     jev_model: Entity<Editor>,
@@ -66,6 +70,7 @@ impl PiSettingsView {
     pub(crate) fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let mut view = Self {
             data: None, scroll_handle: gpui::ScrollHandle::new(), provider: String::new(), model: String::new(), thinking: "off".into(),
+            section: "models", custom_model_open: false, service_open: HashSet::new(),
             model_settings_open: false, model_settings: HashMap::new(),
             default_tools: input("settings.placeholder.tools", false, window, cx),
             runtime_inputs: HashMap::new(), runtime_values: HashMap::new(), runtime_expected: HashMap::new(), runtime_open: HashSet::new(),
@@ -74,6 +79,7 @@ impl PiSettingsView {
             custom_provider: input("settings.placeholder.provider", false, window, cx),
             custom_url: input("settings.placeholder.base_url", false, window, cx),
             custom_model: input("settings.placeholder.model", false, window, cx),
+            custom_key: input("settings.placeholder.key_keep", true, window, cx),
             jev_url: input("settings.placeholder.jev_url", false, window, cx),
             jev_model: input("settings.placeholder.jev_model", false, window, cx),
             jev_key: input("settings.placeholder.key_keep", true, window, cx),
@@ -108,6 +114,7 @@ impl PiSettingsView {
             (&self.custom_provider, "settings.placeholder.provider"),
             (&self.custom_url, "settings.placeholder.base_url"),
             (&self.custom_model, "settings.placeholder.model"),
+            (&self.custom_key, "settings.placeholder.key_keep"),
             (&self.jev_url, "settings.placeholder.jev_url"),
             (&self.jev_model, "settings.placeholder.jev_model"),
             (&self.jev_key, "settings.placeholder.key_keep"),
@@ -142,6 +149,8 @@ impl PiSettingsView {
         self.notice.clear();
         self.failed = false;
         let operation = request["operation"].as_str().unwrap_or("status").to_owned();
+        let saved_provider = request["provider"].as_str().unwrap_or_default().trim().to_owned();
+        let saved_model_id = request["model"].as_str().unwrap_or_default().trim().to_owned();
         let saved_model = format!("{}/{}", request["provider"].as_str().unwrap_or_default(), request["model"].as_str().unwrap_or_default());
         let root = std::env::var_os("EIDO_ROOT").map(std::path::PathBuf::from);
         let node = std::env::var_os("EIDO_NODE");
@@ -221,6 +230,18 @@ impl PiSettingsView {
                             }
                         }
                         view.data = Some(data);
+                        if operation == "custom-model" {
+                            view.provider = saved_provider.clone();
+                            view.model = saved_model_id.clone();
+                            if !view.levels().contains(&view.thinking) { view.thinking = "off".into(); }
+                            view.custom_key.update(cx, |editor, cx| editor.set_text("", window, cx));
+                            view.key.update(cx, |editor, cx| editor.set_text("", window, cx));
+                            view.custom_model_open = false;
+                            view.scroll_handle.set_offset(gpui::point(px(0.), px(0.)));
+                        }
+                        if operation == "key" {
+                            view.key.update(cx, |editor, cx| editor.set_text("", window, cx));
+                        }
                         if matches!(operation.as_str(), "status" | "import") { view.model_settings.clear(); }
                         if operation == "model-settings" { view.model_settings.remove(&saved_model); }
                         if view.provider.is_empty() {
@@ -231,7 +252,7 @@ impl PiSettingsView {
                         view.notice = match operation.as_str() {
                             "status" => model_catalog_notice,
                             "check-update" => String::new(),
-                            "import" => "Local pi configuration imported. New tasks will use these settings.".into(),
+                            "import" => if model_catalog_notice.is_empty() { "Local pi configuration imported. New tasks will use these settings.".into() } else { model_catalog_notice },
                             "defaults" => "Defaults saved for new tasks. Existing tasks keep their models.".into(),
                             "model-settings" => "Model overrides saved. New tasks use them; /reload updates compaction in open tasks. Thinking applies when selecting this model.".into(),
                             "tool-defaults" => "Tool defaults saved. New tasks use this list; /reload adds newly selected tools to the current task.".into(),
@@ -462,6 +483,16 @@ impl PiSettingsView {
         section.child(h_flex().child(Button::new("pi-save-runtime", tr(cx, "settings.runtime.save")).style(ButtonStyle::Outlined).disabled(self.busy)
             .on_click(cx.listener(|view, _, window, cx| view.save_runtime(window, cx))))).into_any_element()
     }
+    fn service_heading(&self, id: &'static str, label: &'static str, cx: &Context<Self>) -> gpui::AnyElement {
+        h_flex().w_full().pb_2().border_b_1().border_color(cx.theme().colors().border_variant)
+            .child(Button::new(id, tr(cx, label))
+                .start_icon(Icon::new(if self.service_open.contains(id) { IconName::ChevronDown } else { IconName::ChevronRight }))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    if !this.service_open.remove(id) { this.service_open.insert(id); }
+                    cx.notify();
+                }))).into_any_element()
+    }
+
     fn selected_provider(&self) -> Option<&Value> {
         self.providers().iter().find(|p| p["id"].as_str() == Some(self.provider.as_str()))
     }
@@ -573,67 +604,60 @@ impl Render for PiSettingsView {
             _ => tr(cx, "settings.choice.update_unchecked").to_string(),
         };
         let checked_at = update.and_then(|u| u["checkedAt"].as_str()).map(|s| tr_args(cx, "settings.update.checked_at", &[("time", s.to_owned())]));
-        v_flex().id("eido-pi-settings").size_full().overflow_y_scroll().track_scroll(&self.scroll_handle).px_8().pb_12().gap_6()
-            .child(v_flex().gap_2().pt_4()
-                .child(Label::new(tr_args(cx, "settings.bundled_version", &[("version", version.to_owned())])))
-                .child(Label::new(tr(cx, "settings.description")).size(LabelSize::Small).color(Color::Muted)))
-            .when(!self.notice.is_empty(), |this| this.child(Label::new(notice_message(&self.notice, self.failed, cx)).size(LabelSize::Small).color(if self.failed { Color::Error } else { Color::Success })))
-            .child(v_flex().gap_4()
-                .child(field(tr(cx, "settings.model.provider"), self.selector("pi-provider", provider_name, providers, window, cx)))
-                .child(field(tr(cx, "settings.model.default"), self.selector("pi-model", model_name, models, window, cx)))
-                .child(field(tr(cx, "settings.model.thinking"), self.selector("pi-thinking", level_label(&self.thinking, cx), levels, window, cx)))
-                .child(h_flex().gap_2()
-                    .child(Button::new("pi-save-defaults", tr(cx, "settings.model.save_defaults")).style(ButtonStyle::Filled).disabled(self.busy || self.model.is_empty())
-                        .on_click(cx.listener(|this, _, window, cx| this.request(json!({"operation":"defaults", "provider":this.provider,"model":this.model,"thinking":this.thinking}), window, cx))))
-                    .child(Button::new("pi-refresh", tr(cx, "settings.reload")).disabled(self.busy)
-                        .on_click(cx.listener(|this, _, window, cx| this.request(json!({"operation":"status", "refreshModels":true}), window, cx))))))
-            .child(self.model_settings_section(window, cx))
-            .child(v_flex().gap_3().pt_4().border_t_1().border_color(cx.theme().colors().border_variant)
-                .child(Label::new(tr(cx, "settings.tools.title")))
-                .child(text_field(self.default_tools.clone(), cx))
-                .child(Label::new(tr(cx, "settings.tools.defaults_help")).size(LabelSize::Small).color(Color::Muted))
-                .child(Label::new(tr(cx, "settings.tools.syntax_help")).size(LabelSize::Small).color(Color::Muted))
-                .child(Button::new("pi-save-tool-defaults", tr(cx, "settings.tools.save")).style(ButtonStyle::Outlined).disabled(self.busy)
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        let text = this.default_tools.read(cx).text(cx);
-                        let tools = if text.trim().is_empty() { Value::Null }
-                            else if text.trim() == "[]" { json!([]) }
-                            else { json!(text.split(',').map(str::trim).collect::<Vec<_>>()) };
-                        let expected = this.data.as_ref().map(|data| data["defaultTools"].clone()).unwrap_or(Value::Null);
-                        this.request(json!({"operation":"tool-defaults", "tools":tools, "expected":expected}), window, cx);
-                    }))))
-            .child(self.runtime_section(window, cx))
-            .child(v_flex().gap_3().pt_4().border_t_1().border_color(cx.theme().colors().border_variant)
-                .child(Label::new(tr_args(cx, "settings.auth.summary", &[("status", auth_label.to_string())])))
-                .child(text_field(self.key.clone(), cx))
-                .child(h_flex().gap_2()
-                    .child(Button::new("pi-save-key", tr(cx, "settings.auth.save_key")).style(ButtonStyle::Outlined).disabled(self.busy || self.provider.is_empty())
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            let key = this.key.read(cx).text(cx);
-                            this.key.update(cx, |editor, cx| editor.set_text("", window, cx));
-                            this.request(json!({"operation":"key", "provider":this.provider, "key":key}), window, cx);
-                        })))
-                    .child(Button::new("pi-remove-key", tr(cx, "settings.auth.remove")).disabled(self.busy || credential == "none")
-                        .on_click(cx.listener(|this, _, window, cx| this.request(json!({"operation":"remove-key", "provider":this.provider}), window, cx)))))
-                .child(Label::new(tr(cx, "settings.auth.help")).size(LabelSize::Small).color(Color::Muted))
-                .child(Button::new("pi-import", tr(cx, "settings.auth.import")).disabled(self.busy)
-                    .on_click(cx.listener(|this, _, window, cx| this.request(json!({"operation":"import"}), window, cx)))))
-            .child(v_flex().gap_3().pt_4().border_t_1().border_color(cx.theme().colors().border_variant)
-                .child(Label::new(tr(cx, "settings.model.custom")))
-                .child(text_field(self.custom_provider.clone(), cx))
-                .child(text_field(self.custom_url.clone(), cx))
-                .child(self.selector("pi-custom-api", self.custom_api.clone(), vec![
-                    ("openai-completions".into(), "OpenAI Chat Completions".into()),
-                    ("openai-responses".into(), "OpenAI Responses".into()),
-                    ("anthropic-messages".into(), "Anthropic Messages".into()),
-                ], window, cx))
-                .child(text_field(self.custom_model.clone(), cx))
-                .child(Button::new("pi-save-custom", tr(cx, "settings.model.save")).style(ButtonStyle::Outlined).disabled(self.busy)
-                    .on_click(cx.listener(|this, _, window, cx| this.request(json!({"operation":"custom-model",
-                        "provider":this.custom_provider.read(cx).text(cx), "baseUrl":this.custom_url.read(cx).text(cx),
-                        "api":this.custom_api, "model":this.custom_model.read(cx).text(cx)}), window, cx)))))
-            .child(v_flex().gap_3().pt_4().border_t_1().border_color(cx.theme().colors().border_variant)
-                .child(Label::new(tr(cx, "settings.browser.title")))
+        let mut content = v_flex().w_full().max_w(px(820.)).gap_6();
+        match self.section {
+            "models" => {
+                content = content
+                    .child(h_flex().gap_2().flex_wrap()
+                        .child(Button::new("pi-import", tr(cx, "settings.auth.import")).style(ButtonStyle::Outlined).disabled(self.busy)
+                            .on_click(cx.listener(|this, _, window, cx| this.request(json!({"operation":"import"}), window, cx))))
+                        .child(Button::new("pi-custom-toggle", tr(cx, "settings.connection.custom"))
+                            .start_icon(Icon::new(if self.custom_model_open { IconName::ChevronDown } else { IconName::Plus }))
+                            .on_click(cx.listener(|this, _, _, cx| { this.custom_model_open = !this.custom_model_open; cx.notify(); }))));
+                if self.custom_model_open {
+                    content = content.child(v_flex().gap_4()
+                        .child(Label::new(tr(cx, "settings.connection.custom_help")).size(LabelSize::Small).color(Color::Muted))
+                        .child(field(tr(cx, "settings.connection.provider_id"), text_field(self.custom_provider.clone(), cx)))
+                        .child(field(tr(cx, "settings.api.base_url"), text_field(self.custom_url.clone(), cx)))
+                        .child(field(tr(cx, "settings.connection.protocol"), self.selector("pi-custom-api", match self.custom_api.as_str() {
+                            "openai-responses" => "OpenAI Responses", "anthropic-messages" => "Anthropic Messages", _ => "OpenAI Chat Completions",
+                        }.into(), vec![("openai-completions".into(), "OpenAI Chat Completions".into()),
+                            ("openai-responses".into(), "OpenAI Responses".into()), ("anthropic-messages".into(), "Anthropic Messages".into())], window, cx)))
+                        .child(field(tr(cx, "settings.placeholder.model"), text_field(self.custom_model.clone(), cx)))
+                        .child(field(tr(cx, "settings.api.key"), text_field(self.custom_key.clone(), cx)))
+                        .child(Label::new(tr(cx, "settings.connection.key_help")).size(LabelSize::Small).color(Color::Muted))
+                        .child(h_flex().child(Button::new("pi-save-custom", tr(cx, "settings.connection.save")).style(ButtonStyle::Filled).disabled(self.busy)
+                            .on_click(cx.listener(|this, _, window, cx| this.request(json!({"operation":"custom-model",
+                                "provider":this.custom_provider.read(cx).text(cx), "baseUrl":this.custom_url.read(cx).text(cx),
+                                "api":this.custom_api, "model":this.custom_model.read(cx).text(cx), "key":this.custom_key.read(cx).text(cx)}), window, cx))))));
+                } else {
+                    content = content.child(v_flex().gap_4()
+                        .child(field(tr(cx, "settings.model.provider"), self.selector("pi-provider", provider_name, providers, window, cx)))
+                        .child(v_flex().gap_2()
+                            .child(h_flex().gap_2().justify_between()
+                                .child(Label::new(tr(cx, "settings.api.key")).size(LabelSize::Small))
+                                .child(Label::new(auth_label).size(LabelSize::Small).color(Color::Muted)))
+                            .child(text_field(self.key.clone(), cx))
+                            .when(credential == "none", |this| this.child(Label::new(tr(cx, "settings.connection.missing_key")).size(LabelSize::Small).color(Color::Warning)))
+                            .child(h_flex().gap_2()
+                                .child(Button::new("pi-save-key", tr(cx, "settings.auth.save_key")).style(ButtonStyle::Outlined).disabled(self.busy || self.provider.is_empty())
+                                    .on_click(cx.listener(|this, _, window, cx| this.request(json!({"operation":"key", "provider":this.provider, "key":this.key.read(cx).text(cx)}), window, cx))))
+                                .child(Button::new("pi-remove-key", tr(cx, "settings.auth.remove")).disabled(self.busy || credential == "none")
+                                    .on_click(cx.listener(|this, _, window, cx| this.request(json!({"operation":"remove-key", "provider":this.provider}), window, cx))))))
+                        .child(field(tr(cx, "settings.model.default"), self.selector("pi-model", model_name, models, window, cx)))
+                        .child(field(tr(cx, "settings.model.thinking"), self.selector("pi-thinking", level_label(&self.thinking, cx), levels, window, cx)))
+                        .child(h_flex().gap_2().flex_wrap()
+                            .child(Button::new("pi-save-defaults", tr(cx, "settings.model.save_defaults")).style(ButtonStyle::Filled).disabled(self.busy || self.model.is_empty())
+                                .on_click(cx.listener(|this, _, window, cx| this.request(json!({"operation":"defaults", "provider":this.provider,"model":this.model,"thinking":this.thinking}), window, cx))))
+                            .child(Button::new("pi-refresh", tr(cx, "settings.reload")).disabled(self.busy)
+                                .on_click(cx.listener(|this, _, window, cx| this.request(json!({"operation":"status", "refreshModels":true}), window, cx))))))
+                        .child(self.model_settings_section(window, cx));
+                }
+            }
+            "services" => {
+                content = content.child(self.service_heading("browser", "settings.browser.title", cx));
+                if self.service_open.contains("browser") { content = content
+            .child(v_flex().gap_3()
                 .child(Label::new(tr(cx, "settings.browser.description")).size(LabelSize::Small).color(Color::Muted))
                 .child(field(tr(cx, "settings.browser.execution"), self.selector("pi-browser-engine", if self.browser_engine == "legacy" { "Legacy" } else { "Ultrafast" }.into(),
                     vec![("ultrafast".into(), "Ultrafast".into()), ("legacy".into(), "Legacy".into())], window, cx)))
@@ -656,9 +680,10 @@ impl Render for PiSettingsView {
                         })))
                     .child(Button::new("pi-remove-jev-key", tr(cx, "settings.api.remove_key")).disabled(self.busy)
                         .on_click(cx.listener(|this, _, window, cx| this.request(json!({"operation":"browser-decision",
-                            "apiUrl":this.jev_url.read(cx).text(cx), "model":this.jev_model.read(cx).text(cx), "removeKey":true}), window, cx))))))
-            .child(v_flex().gap_3().pt_4().border_t_1().border_color(cx.theme().colors().border_variant)
-                .child(Label::new(tr(cx, "settings.browser_text.title")))
+                            "apiUrl":this.jev_url.read(cx).text(cx), "model":this.jev_model.read(cx).text(cx), "removeKey":true}), window, cx)))))); }
+                content = content.child(self.service_heading("text", "settings.browser_text.title", cx));
+                if self.service_open.contains("text") { content = content
+            .child(v_flex().gap_3()
                 .child(Label::new(tr(cx, "settings.browser_text.description")).size(LabelSize::Small).color(Color::Muted))
                 .when_some(self.data.as_ref().and_then(|d| d["browserText"]["message"].as_str()).map(str::to_owned), |this, message| this.child(Label::new(browser_text_message(&message, cx)).size(LabelSize::Small).color(Color::Muted)))
                 .child(field(tr(cx, "settings.api.base_url"), text_field(self.browser_text_url.clone(), cx)))
@@ -682,9 +707,10 @@ impl Render for PiSettingsView {
                                 "model":this.browser_text_model.read(cx).text(cx), "reasoning":this.browser_text_reasoning, "key":key}), window, cx);
                         })))
                     .child(Button::new("pi-remove-browser-text-key", tr(cx, "settings.browser_text.remove_key")).disabled(self.busy)
-                        .on_click(cx.listener(|this, _, window, cx| this.request(json!({"operation":"browser-text", "removeKey":true}), window, cx))))))
-            .child(v_flex().gap_3().pt_4().border_t_1().border_color(cx.theme().colors().border_variant)
-                .child(Label::new(tr(cx, "settings.computer.title")))
+                        .on_click(cx.listener(|this, _, window, cx| this.request(json!({"operation":"browser-text", "removeKey":true}), window, cx)))))); }
+                content = content.child(self.service_heading("computer", "settings.computer.title", cx));
+                if self.service_open.contains("computer") { content = content
+            .child(v_flex().gap_3()
                 .child(Label::new(owned_message(self.data.as_ref().and_then(|d| d["computerUse"]["message"].as_str()).unwrap_or("Checking Cua Driver..."), cx)).size(LabelSize::Small).color(Color::Muted))
                 .child(field(tr(cx, "settings.computer.executable"), text_field(self.cua_path.clone(), cx)))
                 .child(h_flex().gap_2()
@@ -694,15 +720,54 @@ impl Render for PiSettingsView {
                             .on_click(cx.listener(move |this, _, window, cx| this.request(json!({"operation":"computer-use", "enabled":enabled,
                                 "path":this.cua_path.read(cx).text(cx), "expected":this.data.as_ref().map(|d| &d["computerUseRevision"])}), window, cx)))
                     })))
-                .child(Label::new(tr(cx, "settings.computer.help")).size(LabelSize::Small).color(Color::Muted)))
-            .child(self.research_section(cx))
+                .child(Label::new(tr(cx, "settings.computer.help")).size(LabelSize::Small).color(Color::Muted))); }
+                content = content.child(self.service_heading("research", "settings.research.title", cx));
+                if self.service_open.contains("research") { content = content.child(self.research_section(cx)); }
+                content = content.child(self.service_heading("tools", "settings.tools.title", cx));
+                if self.service_open.contains("tools") { content = content
+            .child(v_flex().gap_3().pt_4().border_t_1().border_color(cx.theme().colors().border_variant)
+                .child(Label::new(tr(cx, "settings.tools.title")))
+                .child(text_field(self.default_tools.clone(), cx))
+                .child(Label::new(tr(cx, "settings.tools.defaults_help")).size(LabelSize::Small).color(Color::Muted))
+                .child(Label::new(tr(cx, "settings.tools.syntax_help")).size(LabelSize::Small).color(Color::Muted))
+                .child(Button::new("pi-save-tool-defaults", tr(cx, "settings.tools.save")).style(ButtonStyle::Outlined).disabled(self.busy)
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        let text = this.default_tools.read(cx).text(cx);
+                        let tools = if text.trim().is_empty() { Value::Null }
+                            else if text.trim() == "[]" { json!([]) }
+                            else { json!(text.split(',').map(str::trim).collect::<Vec<_>>()) };
+                        let expected = this.data.as_ref().map(|data| data["defaultTools"].clone()).unwrap_or(Value::Null);
+                        this.request(json!({"operation":"tool-defaults", "tools":tools, "expected":expected}), window, cx);
+                    })))); }
+            }
+            _ => { content = content.child(self.runtime_section(window, cx))
             .child(v_flex().gap_2().pt_4().border_t_1().border_color(cx.theme().colors().border_variant)
                 .child(Label::new(tr(cx, "settings.update.title")))
+                .child(Label::new(tr_args(cx, "settings.bundled_version", &[("version", version.to_owned())])).size(LabelSize::Small).color(Color::Muted))
                 .child(Label::new(update_label).size(LabelSize::Small).color(Color::Muted))
                 .when_some(checked_at, |this, text| this.child(Label::new(text).size(LabelSize::XSmall).color(Color::Muted)))
                 .child(Button::new("pi-check-update", if self.busy { tr(cx, "settings.choice.please_wait") } else { tr(cx, "settings.choice.check_updates") }).style(ButtonStyle::Outlined).disabled(self.busy)
                     .on_click(cx.listener(|this, _, window, cx| this.request(json!({"operation":"check-update"}), window, cx))))
-                .child(Label::new(tr(cx, "settings.update.help")).size(LabelSize::Small).color(Color::Muted)))
+                .child(Label::new(tr(cx, "settings.update.help")).size(LabelSize::Small).color(Color::Muted))); }
+        }
+        v_flex().id("eido-pi-settings").size_full().min_h_0()
+            .child(v_flex().flex_none().px_8().pt_4().pb_3().gap_3()
+                .child(Label::new(tr(cx, "settings.connection.title")).size(LabelSize::Large))
+                .child(Label::new(tr(cx, "settings.connection.description")).size(LabelSize::Small).color(Color::Muted))
+                .child(h_flex().gap_2().flex_wrap().children([
+                    ("models", "settings.section.models"), ("services", "settings.section.services"), ("advanced", "settings.section.advanced"),
+                ].into_iter().map(|(id, label)| Button::new(id, tr(cx, label))
+                    .style(if self.section == id { ButtonStyle::Filled } else { ButtonStyle::Transparent })
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.section = id;
+                        this.scroll_handle.set_offset(gpui::point(px(0.), px(0.)));
+                        window.blur(cx);
+                        cx.notify();
+                    }))))))
+            .child(v_flex().id("pi-settings-content").flex_1().min_h_0().overflow_y_scroll().track_scroll(&self.scroll_handle).px_8().py_4().gap_4()
+                .when(!self.notice.is_empty(), |this| this.child(Label::new(notice_message(&self.notice, self.failed, cx)).size(LabelSize::Small).color(if self.failed { Color::Error } else { Color::Success })))
+                .child(content))
+
     }
 }
 
@@ -731,6 +796,8 @@ fn settings_message_key(message: &str) -> Option<&'static str> {
         "Computer Use configuration saved. New tasks use this configuration." => "settings.notice.computer_saved",
         "Research configuration saved locally. New requests use these settings; your conversation model is unchanged." => "settings.notice.research_saved",
         "Connection check finished. Search availability does not confirm OCR availability." => "settings.notice.research_checked",
+        "Local pi configuration imported. Retired deepseek/deepseek-v4-flash was updated to deepseek/deepseek-flash." => "settings.notice.import_alias",
+        "Invalid cached pi model catalog. Nothing was imported." => "settings.notice.invalid_catalog",
         "Model saved. Select it above to make it the default." => "settings.notice.custom_model_saved",
         "pi credentials updated." => "settings.notice.credentials_saved",
         "Research limits must be positive whole numbers." => "settings.notice.invalid_research_limits",

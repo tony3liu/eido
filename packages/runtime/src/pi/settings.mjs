@@ -22,7 +22,7 @@ const { ModelRuntime, SettingsManager, readStoredCredential } = await import(piE
 const { FileSettingsStorage } = await import(new URL("core/settings-manager.js", piEntry).href);
 const { AuthStorage, ReadOnlyAuthStorage } = await import(new URL("core/auth-storage.js", piEntry).href);
 const { ModelConfig } = await import(new URL("core/model-config.js", piEntry).href);
-const { getSupportedThinkingLevels } = await import(pathToFileURL(join(root, "packages/acp/node_modules/@earendil-works/pi-ai/dist/index.js")).href);
+const { getSupportedThinkingLevels, InMemoryModelsStore } = await import(pathToFileURL(join(root, "packages/acp/node_modules/@earendil-works/pi-ai/dist/index.js")).href);
 const manifest = JSON.parse(await readFile(new URL("../package.json", piEntry), "utf8"));
 export const bundledVersion = manifest.version;
 if (bundledVersion !== "1.5.2") throw new PiConfigError("Eido requires bundled pi 1.5.2. Run setup:acp.");
@@ -60,14 +60,15 @@ export function createPiSettings(directory = piDirectory(root), sourceDirectory 
     if (config.getError()) throw new PiConfigError("models.json did not pass pi validation. Check the provider, model, and API fields.");
     return config;
   };
-  const writeModels = async (providers, validateOnly = false) => {
+  const writeModels = async (providers, validateOnly = false, modelsStore) => {
     await mkdir(directory, { recursive: true, mode: 0o700 });
     const temporary = await mkdtemp(join(directory, ".models-validation-"));
     try {
       const path = join(temporary, "models.json");
       await atomicJson(path, { providers });
       await validateModels(path);
-      const check = await ModelRuntime.create({ authPath, modelsPath: path, refreshOnCreate: false, allowModelNetwork: false });
+      const check = await ModelRuntime.create({ credentials:new ReadOnlyAuthStorage(authPath), modelsPath: path, modelsStore,
+        refreshOnCreate: modelsStore !== undefined, allowModelNetwork: false });
       if (check.getError()) throw new PiConfigError("Invalid custom model API, URL, or parameters. Configuration was not changed.");
       if (!validateOnly) await atomicJson(modelsPath, { providers });
       return check;
@@ -108,6 +109,7 @@ export function createPiSettings(directory = piDirectory(root), sourceDirectory 
 
   async function execute(request) {
     const operation = request?.operation ?? "status";
+    let importNotice = '';
     await mkdir(directory, { recursive: true, mode: 0o700 });
     if (!["status", "check-update", "import", "access"].includes(operation)) await status();
     if (operation === 'research') {
@@ -259,6 +261,10 @@ export function createPiSettings(directory = piDirectory(root), sourceDirectory 
       const api = text(request.api, "API Type");
       if (!["openai-completions", "openai-responses", "anthropic-messages"].includes(api)) throw new PiConfigError("Select a supported API type.");
       const id = text(request.model, "Model ID");
+      // Optional credentials belong to this provider, never to the provider
+      // currently selected elsewhere in the settings window.
+      const key = request.key === undefined || request.key === '' ? undefined : text(request.key, "API Key");
+      if (key) await new ReadOnlyAuthStorage(authPath).list();
       const config = await validateModels(modelsPath);
       const providers = Object.fromEntries(config.providers);
       const current = providers[provider] ?? {};
@@ -268,6 +274,11 @@ export function createPiSettings(directory = piDirectory(root), sourceDirectory 
       if (index >= 0) models[index] = model; else models.push(model);
       providers[provider] = { ...current, baseUrl, api, models };
       await writeModels(providers);
+      if (key) {
+        await AuthStorage.create(authPath).modify(provider, async current => ({type:"api_key", key,
+          ...(current?.type === "api_key" && current.env ? {env:current.env} : {})}));
+        await chmod(authPath, 0o600);
+      }
     } else if (operation === "import") {
       if (resolve(sourceDirectory) === resolve(directory)) throw new PiConfigError("The source is already the Eido pi configuration directory.");
       if (!(await Promise.all(["models.json", "auth.json", "settings.json"].map(name => access(join(sourceDirectory, name)).then(() => true, () => false)))).some(Boolean)) {
@@ -290,10 +301,32 @@ export function createPiSettings(directory = piDirectory(root), sourceDirectory 
       }
       // Validate all input files and the resulting defaults before changing any
       // destination file. The source credential store is strictly read-only.
-      const checked = await writeModels(mergedProviders, true);
+      const mergedCatalog = Object.create(null);
+      for (const dir of [directory, sourceDirectory]) {
+        const catalog = await readJson(join(dir, "models-store.json"));
+        if (!catalog || typeof catalog !== 'object' || Array.isArray(catalog)) throw new PiConfigError("Invalid cached pi model catalog. Nothing was imported.");
+        for (const [id, entry] of Object.entries(catalog)) {
+          if (!entry || !Array.isArray(entry.models) || entry.models.some(model => !model || typeof model.id !== 'string' || model.provider !== id)) {
+            throw new PiConfigError("Invalid cached pi model catalog. Nothing was imported.");
+          }
+          if (!Object.hasOwn(mergedCatalog, id) || (entry.lastModified ?? 0) > (mergedCatalog[id].lastModified ?? 0)) {
+            mergedCatalog[id] = entry;
+          }
+        }
+      }
+      const catalogStore = new InMemoryModelsStore();
+      for (const [id, entry] of Object.entries(mergedCatalog)) await catalogStore.write(id, entry);
+      const checked = await writeModels(mergedProviders, true, catalogStore);
       const provider = sourceSettings.getDefaultProvider();
-      const modelId = sourceSettings.getDefaultModel();
+      let modelId = sourceSettings.getDefaultModel();
       const thinking = sourceSettings.getDefaultThinkingLevel();
+      // Upstream pi retired this DeepSeek alias (pi changelog, issue #9423).
+      // Migrate only this known alias; unknown model IDs still fail validation.
+      if (provider === 'deepseek' && modelId === 'deepseek-v4-flash' && !checked.getModel(provider, modelId)
+          && checked.getModel(provider, 'deepseek-flash')) {
+        modelId = 'deepseek-flash';
+        importNotice = 'Local pi configuration imported. Retired deepseek/deepseek-v4-flash was updated to deepseek/deepseek-flash.';
+      }
       if (provider && modelId) {
         const model = checked.getModel(provider, modelId);
         if (!model) throw new PiConfigError("The local pi default model is missing from the merged catalog. Nothing was imported.");
@@ -301,6 +334,7 @@ export function createPiSettings(directory = piDirectory(root), sourceDirectory 
       }
       const importedCredentials = credentials.map(entry => [entry.providerId, readStoredCredential(entry.providerId, join(sourceDirectory, "auth.json"))]);
       await writeModels(mergedProviders);
+      if (Object.keys(mergedCatalog).length) await atomicJson(join(directory, "models-store.json"), mergedCatalog);
       const target = AuthStorage.create(authPath);
       for (const [id, credential] of importedCredentials) {
         if (credential) await target.modify(id, async () => credential);
@@ -318,7 +352,8 @@ export function createPiSettings(directory = piDirectory(root), sourceDirectory 
     } else if (operation !== "status") {
       throw new PiConfigError("Unsupported pi settings operation.");
     }
-    return status(operation === 'status' && request.refreshModels === true);
+    const result = await status(operation === 'status' && request.refreshModels === true);
+    return importNotice ? {...result, modelCatalogNotice:importNotice} : result;
   }
   return { execute, status };
 }

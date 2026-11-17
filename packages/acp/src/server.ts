@@ -9,6 +9,7 @@ import {nativeUiAction} from './native-ui.ts';
 import { runAcp } from "../adapter/src/lib.js";
 import { createAgentSession, ModelRuntime, type AgentSession } from "@earendil-works/pi-coding-agent";
 import { join } from "node:path";
+import {watchFile, unwatchFile} from 'node:fs';
 import { ndJsonStream, type AgentContext, type McpServer, type Stream } from "@agentclientprotocol/sdk";
 import {Readable, Writable} from 'node:stream';
 import { editorTools } from "./editor-tools.ts";
@@ -209,6 +210,36 @@ export async function startEidoAgent(agentDir: string, sessionDir: string, strea
   const create = server.agent.newSession.bind(server.agent), load = server.agent.loadSession.bind(server.agent);
   server.agent.newSession = async context => create(await withMcp(context));
   server.agent.loadSession = async context => load(await withMcp(context));
+  // Settings run in a separate process. Refresh the advertised model options
+  // when global model/auth files change, without replacing a task's model.
+  // watchFile also follows atomic replacement of files and needs no directory
+  // watcher for secrets, history, or transient lock files.
+  let stopped = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let refresh = Promise.resolve();
+  const changed = () => {
+    if (stopped) return;
+    clearTimeout(timer);
+    timer = setTimeout(() => {
+      refresh = refresh.then(async () => {
+        if (stopped) return;
+        await runtime.refresh({allowNetwork:false});
+        if (!stopped && !runtime.getError()) await server.agent.refreshGlobalModelScope();
+      }).catch(() => { /* Keep current options; the settings view reports configuration errors. */ });
+    }, 100);
+    timer.unref();
+  };
+  const watched = ['auth.json', 'models.json', 'models-store.json'].map(name => join(agentDir, name));
+  for (const path of watched) watchFile(path, {persistent:false, interval:500}, changed);
+  const stopWatching = () => {
+    stopped = true;
+    clearTimeout(timer);
+    for (const path of watched) unwatchFile(path, changed);
+  };
+  const dispose = server.agent.dispose.bind(server.agent);
+  server.agent.dispose = async () => { stopWatching(); await refresh; await dispose(); };
+  const close = server.connection.close.bind(server.connection);
+  server.connection.close = () => { stopWatching(); return close(); };
   connectClient(server.connection.client);
   admitRequests();
   return server;
