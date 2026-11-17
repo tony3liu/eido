@@ -37,6 +37,11 @@ pub(crate) struct PiSettingsView {
     custom_model: Entity<Editor>,
     custom_key: Entity<Editor>,
     custom_api: String,
+    custom_editing: Option<String>,
+    custom_revision: Value,
+    custom_candidates: Vec<Value>,
+    custom_selected: HashSet<String>,
+    custom_incomplete: bool,
     jev_url: Entity<Editor>,
     jev_model: Entity<Editor>,
     jev_key: Entity<Editor>,
@@ -78,7 +83,7 @@ impl PiSettingsView {
             key: input("settings.placeholder.key", true, window, cx),
             custom_provider: input("settings.placeholder.provider", false, window, cx),
             custom_url: input("settings.placeholder.base_url", false, window, cx),
-            custom_model: input("settings.placeholder.model", false, window, cx),
+            custom_model: cx.new(|cx| { let mut editor = Editor::auto_height(3, 8, window, cx); editor.set_placeholder_text(&tr(cx, "settings.connection.models_help"), window, cx); editor }),
             custom_key: input("settings.placeholder.key_keep", true, window, cx),
             jev_url: input("settings.placeholder.jev_url", false, window, cx),
             jev_model: input("settings.placeholder.jev_model", false, window, cx),
@@ -91,6 +96,7 @@ impl PiSettingsView {
             research_url: input("settings.placeholder.research_url", false, window, cx),
             research_key: input("settings.placeholder.research_key", true, window, cx),
             research_enabled: false, research_limits: HashMap::new(),
+            custom_editing: None, custom_revision: Value::Null, custom_candidates: Vec::new(), custom_selected: HashSet::new(), custom_incomplete: false,
             custom_api: "openai-completions".into(), busy: false, notice: String::new(), failed: false,
             locale_revision: cx.try_global::<LocaleState>().map_or(0, |state| state.revision),
         };
@@ -113,7 +119,7 @@ impl PiSettingsView {
             (&self.key, "settings.placeholder.key"),
             (&self.custom_provider, "settings.placeholder.provider"),
             (&self.custom_url, "settings.placeholder.base_url"),
-            (&self.custom_model, "settings.placeholder.model"),
+            (&self.custom_model, "settings.connection.models_help"),
             (&self.custom_key, "settings.placeholder.key_keep"),
             (&self.jev_url, "settings.placeholder.jev_url"),
             (&self.jev_model, "settings.placeholder.jev_model"),
@@ -178,6 +184,18 @@ impl PiSettingsView {
                 view.busy = false;
                 match result {
                     Ok(data) => {
+                        if operation == "list-connection-models" {
+                            view.custom_candidates = data["candidates"].as_array().cloned().unwrap_or_default();
+                            view.custom_selected.clear();
+                            view.custom_incomplete = data["incomplete"].as_bool().unwrap_or(false);
+                            cx.notify();
+                            return;
+                        }
+                        if operation == "custom-connection" {
+                            view.custom_key.update(cx, |editor, cx| editor.set_text("", window, cx));
+                            view.custom_model_open = false;
+                            view.custom_candidates.clear();
+                        }
                         let model_catalog_notice = data["modelCatalogNotice"].as_str().unwrap_or_default().to_owned();
                         if view.data.is_none() || matches!(operation.as_str(), "status" | "http-proxy" | "import") {
                             view.http_proxy_expected = data["httpProxy"]["revision"].clone();
@@ -263,6 +281,7 @@ impl PiSettingsView {
                             "computer-use" => "Computer Use configuration saved. New tasks use this configuration.".into(),
                             "research" => "Research configuration saved locally. New requests use these settings; your conversation model is unchanged.".into(),
                             "research-test" => "Connection check finished. Search availability does not confirm OCR availability.".into(),
+                            "custom-connection" => "Connection saved. New tasks use it; reselect the model to refresh an open task. Defaults are unchanged.".into(),
                             "custom-model" => "Model saved. Select it above to make it the default.".into(),
                             _ => "pi credentials updated.".into(),
                         };
@@ -273,6 +292,31 @@ impl PiSettingsView {
             });
         }).detach();
         cx.notify();
+    }
+
+    fn edit_connection(&mut self, connection: Option<Value>, window: &mut Window, cx: &mut Context<Self>) {
+        if self.busy { return; }
+        let value = connection.unwrap_or(Value::Null);
+        self.custom_editing = value["id"].as_str().map(str::to_owned);
+        self.custom_revision = value["revision"].clone();
+        self.custom_api = value["api"].as_str().unwrap_or("openai-completions").into();
+        for (editor, text) in [(&self.custom_provider, value["id"].as_str().unwrap_or_default().to_owned()),
+            (&self.custom_url, value["baseUrl"].as_str().unwrap_or_default().to_owned()),
+            (&self.custom_model, value["models"].as_array().into_iter().flatten().filter_map(|m| m["id"].as_str()).collect::<Vec<_>>().join("\n")),
+            (&self.custom_key, String::new())] {
+            editor.update(cx, |editor, cx| editor.set_text(text, window, cx));
+        }
+        self.custom_candidates.clear(); self.custom_selected.clear(); self.custom_incomplete = false;
+        self.custom_model_open = true;
+        cx.notify();
+    }
+
+    fn connection_request(&self, operation: &str, cx: &App) -> Value {
+        let models = self.custom_model.read(cx).text(cx).split([',', '，', '\n', '\r']).map(str::trim)
+            .filter(|s| !s.is_empty()).map(str::to_owned).collect::<Vec<_>>();
+        json!({"operation":operation, "provider":self.custom_editing.clone().unwrap_or_else(|| self.custom_provider.read(cx).text(cx)),
+            "baseUrl":self.custom_url.read(cx).text(cx), "api":self.custom_api, "models":models,
+            "key":self.custom_key.read(cx).text(cx), "expectedRevision":self.custom_revision})
     }
 
     fn providers(&self) -> &[Value] {
@@ -613,23 +657,57 @@ impl Render for PiSettingsView {
                             .on_click(cx.listener(|this, _, window, cx| this.request(json!({"operation":"import"}), window, cx))))
                         .child(Button::new("pi-custom-toggle", tr(cx, "settings.connection.custom"))
                             .start_icon(Icon::new(if self.custom_model_open { IconName::ChevronDown } else { IconName::Plus }))
-                            .on_click(cx.listener(|this, _, _, cx| { this.custom_model_open = !this.custom_model_open; cx.notify(); }))));
+                            .disabled(self.busy).on_click(cx.listener(|this, _, window, cx| { this.edit_connection(None, window, cx); }))));
+                for connection in self.data.as_ref().and_then(|d| d["customConnections"].as_array()).into_iter().flatten() {
+                    let connection = connection.clone();
+                    let id = connection["id"].as_str().unwrap_or_default().to_owned();
+                    content = content.child(h_flex().justify_between().gap_2()
+                        .child(Label::new(id.clone()))
+                        .child(Button::new(gpui::ElementId::Name(format!("pi-edit-connection-{id}").into()), tr(cx, "settings.connection.edit")).disabled(self.busy)
+                            .on_click(cx.listener(move |this, _, window, cx| this.edit_connection(Some(connection.clone()), window, cx)))));
+                }
                 if self.custom_model_open {
                     content = content.child(v_flex().gap_4()
                         .child(Label::new(tr(cx, "settings.connection.custom_help")).size(LabelSize::Small).color(Color::Muted))
-                        .child(field(tr(cx, "settings.connection.provider_id"), text_field(self.custom_provider.clone(), cx)))
+                        .child(field(tr(cx, "settings.connection.provider_id"), if let Some(id) = &self.custom_editing { Label::new(id.clone()).into_any_element() } else { text_field(self.custom_provider.clone(), cx) }))
                         .child(field(tr(cx, "settings.api.base_url"), text_field(self.custom_url.clone(), cx)))
                         .child(field(tr(cx, "settings.connection.protocol"), self.selector("pi-custom-api", match self.custom_api.as_str() {
                             "openai-responses" => "OpenAI Responses", "anthropic-messages" => "Anthropic Messages", _ => "OpenAI Chat Completions",
                         }.into(), vec![("openai-completions".into(), "OpenAI Chat Completions".into()),
                             ("openai-responses".into(), "OpenAI Responses".into()), ("anthropic-messages".into(), "Anthropic Messages".into())], window, cx)))
-                        .child(field(tr(cx, "settings.placeholder.model"), text_field(self.custom_model.clone(), cx)))
+                        .child(field(tr(cx, "settings.connection.models"), text_field(self.custom_model.clone(), cx)))
+                        .child(Label::new(tr(cx, "settings.connection.models_help")).size(LabelSize::Small).color(Color::Muted))
                         .child(field(tr(cx, "settings.api.key"), text_field(self.custom_key.clone(), cx)))
                         .child(Label::new(tr(cx, "settings.connection.key_help")).size(LabelSize::Small).color(Color::Muted))
-                        .child(h_flex().child(Button::new("pi-save-custom", tr(cx, "settings.connection.save")).style(ButtonStyle::Filled).disabled(self.busy)
-                            .on_click(cx.listener(|this, _, window, cx| this.request(json!({"operation":"custom-model",
-                                "provider":this.custom_provider.read(cx).text(cx), "baseUrl":this.custom_url.read(cx).text(cx),
-                                "api":this.custom_api, "model":this.custom_model.read(cx).text(cx), "key":this.custom_key.read(cx).text(cx)}), window, cx))))));
+                        .child(h_flex().gap_2()
+                            .child(Button::new("pi-fetch-models", tr(cx, "settings.connection.fetch")).disabled(self.busy)
+                                .on_click(cx.listener(|this, _, window, cx| this.request(this.connection_request("list-connection-models", cx), window, cx))))
+                            .child(Button::new("pi-save-custom", tr(cx, "settings.connection.save")).style(ButtonStyle::Filled).disabled(self.busy)
+                                .on_click(cx.listener(|this, _, window, cx| this.request(this.connection_request("custom-connection", cx), window, cx))))
+                            .child(Button::new("pi-cancel-custom", tr(cx, "settings.connection.cancel")).disabled(self.busy)
+                                .on_click(cx.listener(|this, _, _, cx| { this.custom_model_open = false; cx.notify(); }))))
+                        .when(self.custom_incomplete, |this| this.child(Label::new(tr(cx, "settings.connection.incomplete")).size(LabelSize::Small).color(Color::Warning)))
+                        .children(self.custom_candidates.iter().filter_map(|item| {
+                            let id = item["id"].as_str()?.to_owned();
+                            let label = format!("{} {}", if self.custom_selected.contains(&id) { "☑" } else { "☐" }, id);
+                            Some(Button::new(gpui::ElementId::Name(format!("pi-model-candidate-{id}").into()), label).disabled(self.busy)
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    if !this.custom_selected.remove(&id) { this.custom_selected.insert(id.clone()); }
+                                    cx.notify();
+                                })))
+                        }))
+                        .when(!self.custom_candidates.is_empty(), |this| this.child(Button::new("pi-add-model-candidates", tr(cx, "settings.connection.add_selected")).disabled(self.busy)
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                let current = this.custom_model.read(cx).text(cx);
+                                let mut ids = current.split([',', '，', '\n', '\r']).map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned).collect::<Vec<_>>();
+                                for item in &this.custom_candidates {
+                                    if let Some(id) = item["id"].as_str() { if this.custom_selected.contains(id) && !ids.iter().any(|v| v == id) { ids.push(id.to_owned()); } }
+                                }
+                                this.custom_model.update(cx, |editor, cx| editor.set_text(ids.join("\n"), window, cx));
+                                this.custom_candidates.clear(); this.custom_selected.clear(); this.custom_incomplete = false;
+                                cx.notify();
+                            })))));
+
                 } else {
                     content = content.child(v_flex().gap_4()
                         .child(field(tr(cx, "settings.model.provider"), self.selector("pi-provider", provider_name, providers, window, cx)))
@@ -798,6 +876,22 @@ fn settings_message_key(message: &str) -> Option<&'static str> {
         "Connection check finished. Search availability does not confirm OCR availability." => "settings.notice.research_checked",
         "Local pi configuration imported. Retired deepseek/deepseek-v4-flash was updated to deepseek/deepseek-flash." => "settings.notice.import_alias",
         "Invalid cached pi model catalog. Nothing was imported." => "settings.notice.invalid_catalog",
+        "Connection saved. New tasks use it; reselect the model to refresh an open task. Defaults are unchanged." => "settings.notice.connection_saved",
+        "Connection changed while this page was open. Reload before saving." => "settings.notice.connection_stale",
+        "This would remove the global default model. Choose another default before saving." => "settings.notice.connection_default",
+        "Enter between 1 and 500 model IDs, separated by commas or new lines." => "settings.notice.connection_models_invalid",
+        "Enter an HTTP(S) base URL without credentials, query or fragment." => "settings.notice.connection_url_invalid",
+        "Select a supported API type." => "settings.notice.connection_api_invalid",
+        "Use an API key or a $ENV_VAR reference for this connection." => "settings.notice.connection_key_invalid",
+        "Unable to resolve connection credentials." => "settings.notice.connection_credentials",
+        "Model list authentication failed. Check this connection’s credentials." => "settings.notice.models_auth",
+        "Model list rate limited. Try again later." => "settings.notice.models_rate",
+        "Unable to fetch models. Your draft was not changed." => "settings.notice.models_failed",
+        "The model list response has an unsupported format." => "settings.notice.models_format",
+        "The model list is too large. Enter model IDs manually." => "settings.notice.models_large",
+        "Model list request timed out. Your draft was not changed." => "settings.notice.models_timeout",
+        "Unable to fetch models. Redirects are not allowed; your draft was not changed." => "settings.notice.models_network",
+        "Connection saved, but its API key could not be saved. Reload and enter the key again." => "settings.notice.connection_partial",
         "Model saved. Select it above to make it the default." => "settings.notice.custom_model_saved",
         "pi credentials updated." => "settings.notice.credentials_saved",
         "Research limits must be positive whole numbers." => "settings.notice.invalid_research_limits",

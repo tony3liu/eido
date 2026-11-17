@@ -32,7 +32,7 @@ RUNTIME_FILES = (
     'packages/runtime/src/browser/ultrafast/index.js', 'packages/runtime/src/browser/ultrafast/recording.js',
     'packages/runtime/src/browser/ultrafast/json.js', 'packages/runtime/src/browser/ultrafast/inspector.js', 'packages/runtime/src/browser/ultrafast/verification.js',
     'packages/runtime/src/browser/ultrafast/static/index.html', 'packages/runtime/src/browser/ultrafast/static/app.js', 'packages/runtime/src/browser/ultrafast/static/style.css', 'packages/runtime/src/browser/ultrafast/static/scenarios.html',
-    'packages/runtime/src/pi/settings.mjs', 'packages/runtime/src/pi/extensions.mjs',
+    'packages/runtime/src/pi/settings.mjs', 'packages/runtime/src/pi/custom-models.mjs', 'packages/runtime/src/pi/extensions.mjs',
     'packages/runtime/src/pi/http-settings.mjs', 'packages/runtime/src/pi/runtime-settings.mjs',
     'packages/runtime/src/pi/model-catalog.mjs',
     'packages/runtime/src/mcp/config.mjs', 'packages/runtime/src/mcp/status.mjs',

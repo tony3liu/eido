@@ -105,3 +105,58 @@ test('document descriptors reach the model as metadata without raw PDF bytes',()
   assert.equal(result[0]?.type,'text');assert.match((result[0] as {text:string}).text,/document_extract/);assert.doesNotMatch(JSON.stringify(result),/JVBER/);
   assert.throws(()=>preparePromptContent([{type:'resource',resource:{uri:'eido-document://other',mimeType:'application/vnd.eido.document+json',text:JSON.stringify(descriptor)}}]),/identity/);
 });
+
+test('custom models send user and tool images through the real compatible protocol without fallback', {timeout:20_000}, async () => {
+  const {createServer} = await import('node:http');
+  const cwd = await realpath(await mkdtemp(join(tmpdir(),'eido-image-protocol-')));
+  let mode = 'tool'; const bodies: any[] = [];
+  const http = createServer(async (req,res) => {
+    const chunks: Buffer[]=[]; for await(const chunk of req) chunks.push(Buffer.from(chunk));
+    bodies.push(JSON.parse(Buffer.concat(chunks).toString()));
+    if(mode==='rejected'){res.writeHead(400,{'content-type':'application/json'});res.end(JSON.stringify({error:{message:'image_url is unsupported; private-fixture-key',type:'invalid_request_error'}}));return;}
+    if(mode==='auth'){res.writeHead(401,{'content-type':'application/json'});res.end(JSON.stringify({error:{message:'invalid api key'}}));return;}
+    if(mode==='network'){res.destroy();return;}
+    res.writeHead(200,{'content-type':'text/event-stream'});
+    const delta = mode==='tool' ? {role:'assistant',tool_calls:[{index:0,id:'screenshot-call',type:'function',function:{name:'fixture_screenshot',arguments:'{}'}}]} : {role:'assistant',content:'Images received.'};
+    res.write(`data: ${JSON.stringify({id:'local',object:'chat.completion.chunk',created:1,model:'sr-image',choices:[{index:0,delta,finish_reason:null}]})}\n\n`);
+    res.write(`data: ${JSON.stringify({id:'local',object:'chat.completion.chunk',created:1,model:'sr-image',choices:[{index:0,delta:{},finish_reason:mode==='tool'?'tool_calls':'stop'}],usage:{prompt_tokens:20,completion_tokens:3,total_tokens:23}})}\n\n`);
+    res.end('data: [DONE]\n\n'); if(mode==='tool')mode='ok';
+  });
+  await new Promise<void>(resolve=>http.listen(0,'127.0.0.1',resolve));
+  const settings = {defaultProvider:'sr',defaultModel:'sr-image',cacheWarming:'off',images:{autoResize:false},retry:{enabled:false,provider:{maxRetries:0}},defaultTools:['fixture_screenshot'],eido:{fullAccess:true}};
+  await writeFile(join(cwd,'settings.json'),JSON.stringify(settings));
+  await writeFile(join(cwd,'models.json'),JSON.stringify({providers:{sr:{baseUrl:`http://127.0.0.1:${(http.address() as import('node:net').AddressInfo).port}/v1`,api:'openai-completions',models:[{id:'sr-image'}]}}}));
+  await writeFile(join(cwd,'auth.json'),JSON.stringify({sr:{type:'api_key',key:'private-fixture-key'}}));
+  await mkdir(join(cwd,'extensions'));
+  await writeFile(join(cwd,'extensions/screenshot.js'),`export default pi => pi.registerTool({name:'fixture_screenshot',label:'Screenshot fixture',description:'Return a local screenshot',parameters:{type:'object',properties:{}},execute:async()=>({content:[{type:'image',mimeType:'image/png',data:${JSON.stringify(png)}}]})});`);
+  const toAgent=new TransformStream(),toClient=new TransformStream();
+  const server=await startEidoAgent(cwd,join(cwd,'sessions'),{readable:toAgent.readable,writable:toClient.writable});
+  const connection=client({name:'image-protocol-test'}).connect({readable:toClient.readable,writable:toAgent.writable});
+  try {
+    await connection.agent.request(methods.agent.initialize,{protocolVersion:1,clientCapabilities:{}});
+    const task=await connection.agent.request(methods.agent.session.new,{cwd,mcpServers:[]});
+    const send=(prompt:ContentBlock[])=>connection.agent.request(methods.agent.session.prompt,{sessionId:task.sessionId,prompt});
+    assert.equal((await send([text('Inspect this image and take a screenshot'),image])).stopReason,'end_turn');
+    assert.equal(bodies.length,2);
+    const wireImages=(body:any)=>body.messages.flatMap((m:any)=>Array.isArray(m.content)?m.content:[]).filter((part:any)=>part.type==='image_url');
+    assert.equal(wireImages(bodies[0]).length,1,'the real pi OpenAI serializer retains the user image');
+    assert.equal(wireImages(bodies[1]).length,2,'tool screenshot and user image both reach the next request');
+    assert.ok(wireImages(bodies[1]).every((part:any)=>part.image_url.url.includes(png)));
+    for(mode of ['rejected','auth','network']) {
+      const before: number=bodies.length;
+      await assert.rejects(send([text('Try this image'),image]),error=>{
+        const details=JSON.stringify(error);
+        assert.doesNotMatch(details,/private-fixture-key/);
+        if(mode==='rejected')assert.match(details,/rejected image input/);
+        return true;
+      });
+      assert.equal(bodies.length,before+1,'errors do not trigger a text-only retry or model fallback');
+    }
+    mode='ok';await send([text('Images still enabled'),image]);
+    assert.ok(wireImages(bodies.at(-1)).length>0,'failures do not change the image policy');
+    await writeFile(join(cwd,'settings.json'),JSON.stringify({...settings,images:{autoResize:false,blockImages:true}}));
+    await send([text('/reload')]);
+    await send([text('Images are now blocked'),image]);
+    assert.equal(wireImages(bodies.at(-1)).length,0,'global blockImages removes image bytes from the actual request');
+  } finally {await server.agent.dispose();connection.close();server.connection.close();http.closeAllConnections();http.close();await rm(cwd,{recursive:true,force:true});}
+});

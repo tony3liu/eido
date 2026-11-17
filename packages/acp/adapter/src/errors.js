@@ -45,6 +45,19 @@ const INVALID_KINDS = new Set([
     "invalid_cursor",
     "unknown_auth_method",
 ]);
+const errorSecrets = new Map();
+export function rememberErrorSecrets(owner, values) {
+    const secrets = values.filter(value => typeof value === 'string' && value.length > 0);
+    if (secrets.length) errorSecrets.set(owner, secrets); else errorSecrets.delete(owner);
+}
+function imageFailureDetail(message) {
+    let value = String(message ?? '');
+    if (!/(?:image(?:_url)?|vision)[^\n]{0,100}(?:not support|unsupported|not allow|reject|invalid)|(?:not support|unsupported|not allow|reject|invalid)[^\n]{0,100}(?:image(?:_url)?|vision)/i.test(value)) return undefined;
+    for (const secrets of errorSecrets.values()) for (const secret of secrets) value = value.split(secret).join('[redacted]');
+    value = value.replace(/(?:authorization|api[-_ ]?key|token|secret)\s*[=:]\s*["']?[^\s,"'}]+/gi, '[redacted auth]')
+        .replace(/Bearer\s+[^\s,"'}]+/gi, 'Bearer [redacted]').replace(/[\x00-\x08\x0b-\x1f]/g, '');
+    return `The API rejected image input. The images were not resent as text. ${value.slice(0,600)}`;
+}
 export function redactedDiagnostics(diagnostics) {
     return diagnostics?.length
         ? diagnostics.map(({ type, timestamp }) => ({ type, timestamp }))
@@ -66,6 +79,9 @@ export function adapterError(kind, extras = {}) {
 }
 export function classifyPreflight(error) {
     const message = error instanceof Error ? error.message.toLowerCase() : "";
+    if (message.includes('this connection changed.')) {
+        return adapterError('provider_error', {details:'This connection changed. Reselect the model before sending to load its current address and API format.'});
+    }
     if (message.includes("no model selected"))
         return adapterError("invalid_model");
     if (message.includes("no api key found") ||
@@ -73,9 +89,16 @@ export function classifyPreflight(error) {
         message.includes("run '/login")) {
         return adapterError("auth_error");
     }
+    if (message.includes('explicitly disables image input')) return adapterError('provider_error', {details:'This model explicitly disables image input. Choose another model to send these images.'});
     return adapterError("provider_error");
 }
 export function classifyTerminal(message) {
+    if (message.errorMessage?.includes('This connection changed.')) {
+        return adapterError('provider_error', {details:'This connection changed. Reselect the model before sending to load its current address and API format.'});
+    }
+    if (message.errorMessage?.includes('This model explicitly disables image input.')) {
+        return adapterError('provider_error', {details:'This model explicitly disables image input. Choose another model to send these images.'});
+    }
     const diagnostics = message.diagnostics ?? [];
     const haystack = [
         message.errorMessage ?? "",
@@ -96,7 +119,7 @@ export function classifyTerminal(message) {
     if (/\b429\b|rate limit|too many requests|overloaded/.test(haystack)) {
         return adapterError("rate_limit");
     }
-    return adapterError("provider_error", { details: redactedDiagnostics(diagnostics) });
+    return adapterError("provider_error", { details: imageFailureDetail(message.errorMessage) ?? redactedDiagnostics(diagnostics) });
 }
 export function unexpectedError(error, terminal) {
     console.error("pi-acp internal error:", error);

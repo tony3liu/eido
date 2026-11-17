@@ -77,7 +77,7 @@ test('text-only, image-blocked and changed models cannot use old visual evidence
   assert.equal((await f.call('click',{pid:7,window_id:10,x:20,y:30,eido_observation:observationId(initial)})).isError,true);
   const blind=await f.observe();assert.equal(blind.content.some(c=>c.type==='image'),false);
   assert.equal((await f.call('press_key',{pid:7,window_id:10,key:'return',eido_observation:observationId(blind)})).isError,true);
-  f.vision(true);assert.match(computerGuidance(f.pi),/fixture\/vision.*accepts images/);
+  f.vision(true);assert.match(computerGuidance(f.pi),/fixture\/vision.*attempt to send/);
   f.blocked(true);assert.match(computerGuidance(f.pi),/Images are blocked/);
   assert.equal((await f.observe()).content.some(c=>c.type==='image'),false);
   f.blocked(false);const visible=await f.observe();
@@ -271,9 +271,9 @@ createInterface({input:process.stdin}).on('line',line=>{
   try {
     await conn.agent.request(methods.agent.initialize,{protocolVersion:1,clientCapabilities:{}});
     const task=await conn.agent.request(methods.agent.session.new,{cwd:dir,mcpServers:[]});
-    assert.match(JSON.stringify(task.configOptions),/Vision/);
+    assert.doesNotMatch(JSON.stringify(task.configOptions),/Vision|Text only/);
     const prompt=()=>conn.agent.request(methods.agent.session.prompt,{sessionId:task.sessionId,prompt:[{type:'text',text:'Verify the isolated desktop fixture.'}]});
-    const observe:FixtureStep=ctx=>{assert.match(JSON.stringify(ctx),/current pi model accepts images/);return modelCall('mcp__eido_computer__get_window_state',{pid:7,window_id:10});};
+    const observe:FixtureStep=ctx=>{assert.match(JSON.stringify(ctx),/attempt to send screenshots/);return modelCall('mcp__eido_computer__get_window_state',{pid:7,window_id:10});};
     steps.push(observe,ctx=>{
       const id=/Eido observation ([\w-]+)\./.exec(lastToolText(ctx,'mcp__eido_computer__get_window_state'))![1]!;
       return modelCall('codemode',{code:`const r=await tools.mcp__eido_computer__press_key({pid:7,window_id:10,key:"return",eido_observation:${JSON.stringify(id)}}); for(const c of r.content ?? []){if(c.type==="image")image(c);else if(c.type==="text")text(c.text);}`});
@@ -302,4 +302,22 @@ createInterface({input:process.stdin}).on('line',line=>{
     assert.equal((await prompt()).stopReason,'end_turn');
     assert.equal((await rows()).filter(r=>r.name==='end_session').length,4,'explicit and finalizer cleanup must not end a session twice');
   }finally{await server.agent.dispose();conn.close();server.connection.close();await rm(dir,{recursive:true,force:true});}
+});
+
+test('custom default image policy enables screenshots without changing explicit inputs or blockImages',async()=>{
+  const {installCustomImagePolicy}=await import('../src/custom-model-policy.ts');
+  const {computerVision}=await import('../src/computer-use.ts');
+  const f=await fixture();f.vision(false);
+  const originalModel=f.pi.model;
+  (f.pi as any).agent={prepareRequest:async(request:any)=>({...request,context:{messages:[{role:'user',content:[{type:'image',data:png,mimeType:'image/png'}]}]},thinkingLevel:'off'})};
+  (f.pi as any).modelRuntime={getAuth:async()=>undefined};
+  const dispose=installCustomImagePolicy(f.pi,{allowsDefault:model=>model.id==='text'});
+  try {
+    assert.equal(computerVision(f.pi).enabled,true);
+    assert.match(computerVision(f.pi).reason,/attempt to send/);
+    const observed=await f.observe();assert.ok(observed.content.some(part=>part.type==='image'));
+    const prepared=await f.pi.agent.prepareRequest!({model:originalModel!,context:{messages:[]},thinkingLevel:'off'} as any,undefined);
+    assert.deepEqual(prepared?.model?.input,['text','image']);assert.deepEqual(f.pi.model!.input,['text']);
+    f.blocked(true);assert.equal(computerVision(f.pi).enabled,false);
+  }finally{dispose();}
 });

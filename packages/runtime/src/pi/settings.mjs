@@ -11,6 +11,7 @@ import {httpProxyStatus, mergeHttpProxy, PiHttpSettingsError} from './http-setti
 import {refreshOpenRouterCatalog} from './model-catalog.mjs';
 import {ResearchClient} from '../research/client.mjs';
 import {randomUUID} from 'node:crypto';
+import {connectionRevision, projectConnections, normalizeModelIds, connectionEndpoint, fetchConnectionModels, resolveDraftKey} from './custom-models.mjs';
 import {researchSettings, mergeResearchConfig, ResearchError, researchProvider} from '../research/config.mjs';
 
 export class PiConfigError extends Error {}
@@ -48,6 +49,12 @@ function providerId(value) {
   const id = text(value, "Provider ID");
   if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(id)) throw new PiConfigError("Provider IDs may only contain letters, numbers, dots, hyphens, and underscores.");
   return id;
+}
+
+export async function validatedCustomProviders(directory) {
+  const config = await ModelConfig.load(join(directory, 'models.json'));
+  if (config.getError()) throw new PiConfigError('models.json did not pass pi validation. Check the provider, model, and API fields.');
+  return config.providers;
 }
 
 export function createPiSettings(directory = piDirectory(root), sourceDirectory = join(homedir(), ".pi/agent")) {
@@ -104,6 +111,7 @@ export function createPiSettings(directory = piDirectory(root), sourceDirectory 
       computerUse: await computerSettings(directory),
       computerUseRevision: (await readJson(join(directory, 'settings.json'))).eido?.computerUse ?? null,
       research: {...await researchSettings(directory, modelRuntime),usage:(await new ResearchUsage(directory).summary()).global},
+      customConnections: projectConnections(await validatedCustomProviders(directory), modelRuntime),
       providers, update: await readJson(join(directory, "pi-update.json"), null) };
   }
 
@@ -253,6 +261,46 @@ export function createPiSettings(directory = piDirectory(root), sourceDirectory 
       await chmod(authPath, 0o600);
     } else if (operation === "remove-key") {
       await AuthStorage.create(authPath).delete(providerId(request.provider));
+    } else if (operation === 'list-connection-models') {
+      try {
+        const provider = providerId(request.provider);
+        const endpoint = connectionEndpoint(request.baseUrl, request.api);
+        const config = await validateModels(modelsPath);
+        const current = config.providers.get(provider);
+        const modelRuntime = await runtime();
+        const key = request.key?.trim() ? resolveDraftKey(request.key) : undefined;
+        let auth;
+        try { auth = modelRuntime.getProvider(provider) ? await modelRuntime.getAuth(provider, key ? {apiKey:key} : undefined) : undefined; }
+        catch { throw new PiConfigError('Unable to resolve connection credentials.'); }
+        return await fetchConnectionModels(endpoint, request.api, key, auth, auth?.auth.headers ?? current?.headers);
+      } catch (error) { throw new PiConfigError(error instanceof PiConfigError || error?.name === 'ConnectionError' ? error.message : 'Unable to fetch models. Your draft was not changed.'); }
+    } else if (operation === 'custom-connection') {
+      const provider = providerId(request.provider);
+      try { connectionEndpoint(request.baseUrl, request.api); }
+      catch (error) { throw new PiConfigError(error.message); }
+      let ids;
+      try { ids = normalizeModelIds(request.models); } catch (error) { throw new PiConfigError(error.message); }
+      const key = request.key?.trim() || undefined;
+      if (key && (key.length > 8192 || /[\r\n]/.test(key) || key.startsWith('!'))) throw new PiConfigError('Use an API key or a $ENV_VAR reference for this connection.');
+      if (key) await new ReadOnlyAuthStorage(authPath).list();
+      const config = await validateModels(modelsPath);
+      const providers = Object.fromEntries(config.providers);
+      const current = providers[provider];
+      if ((request.expectedRevision ?? null) !== (current ? connectionRevision(current) : null)) throw new PiConfigError('Connection changed while this page was open. Reload before saving.');
+      const previous = new Map((current?.models ?? []).map(model => [model.id, model]));
+      providers[provider] = {...current, baseUrl:request.baseUrl.trim(), api:request.api,
+        models:ids.map(id => previous.get(id) ?? {id, name:id})};
+      const checked = await writeModels(providers, true);
+      const manager = settings();
+      if (manager.getDefaultProvider() === provider && manager.getDefaultModel() && !checked.getModel(manager.getDefaultProvider(), manager.getDefaultModel())) throw new PiConfigError('This would remove the global default model. Choose another default before saving.');
+      await writeModels(providers);
+      if (key) {
+        try {
+          await AuthStorage.create(authPath).modify(provider, async current => ({type:'api_key', key,
+            ...(current?.type === 'api_key' && current.env ? {env:current.env} : {})}));
+          await chmod(authPath, 0o600);
+        } catch { throw new PiConfigError('Connection saved, but its API key could not be saved. Reload and enter the key again.'); }
+      }
     } else if (operation === "custom-model") {
       const provider = providerId(request.provider);
       const baseUrl = text(request.baseUrl, "Base URL");

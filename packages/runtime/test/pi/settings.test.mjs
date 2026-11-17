@@ -428,3 +428,63 @@ test('Research save and status are local; explicit connection check uses one bud
   const checked=await f.bridge.execute({operation:'research-test'});assert.equal(requests,1);assert.equal(checked.research.status,'Connected');assert.equal(checked.research.capabilities.search.status,'Connected');assert.equal(checked.research.capabilities.ocr,undefined);assert.equal(checked.defaultModel,'test-model');
   const {ResearchUsage}=await import('../../src/research/usage.mjs');assert.equal((await new ResearchUsage(f.target).summary()).global.attempts,1);
 });
+
+test('custom connections edit multiple models without exposing keys or losing advanced fields', async t => {
+  const f = await fixture(t);
+  const advanced = {id:'sr-one',name:'Existing name',input:['text'],contextWindow:64000,maxTokens:3000,compat:{supportsStore:false},cost:{input:1,output:2,cacheRead:0,cacheWrite:0}};
+  f.config.providers.sr = {api:'openai-completions',baseUrl:'https://example.invalid/v1',apiKey:'private-inline-key',headers:{'x-fixture':'private-header'},models:[advanced,{id:'removed'}]};
+  await f.put(f.target,'models.json',f.config);
+  await f.put(f.target,'auth.json',{sr:{type:'api_key',key:'saved-private-key'}});
+  const initial = await f.bridge.status();
+  const sr = initial.customConnections.find(c=>c.id==='sr');
+  assert.deepEqual(sr.models,[{id:'sr-one',name:'Existing name'},{id:'removed',name:'removed'}]);
+  assert.equal(sr.credentialConfigured,true);
+  assert.doesNotMatch(JSON.stringify(sr),/private|headers|apiKey|input|cost/);
+  const request = {operation:'custom-connection',provider:'sr',baseUrl:'https://example.invalid/v2',api:'openai-completions',key:'',models:[' sr-one，new-one\nnew-two ','new-one'],expectedRevision:sr.revision};
+  const result = await f.bridge.execute(request);
+  const config = await f.get(f.target,'models.json');
+  assert.deepEqual(config.providers.sr.models,[advanced,{id:'new-one',name:'new-one'},{id:'new-two',name:'new-two'}]);
+  assert.deepEqual(config.providers['eido-fixture'],f.config.providers['eido-fixture']);
+  assert.equal(config.providers.sr.apiKey,'private-inline-key');
+  assert.equal((await f.get(f.target,'auth.json')).sr.key,'saved-private-key');
+  assert.equal(result.defaultModel,'test-model');
+  const saved = await readFile(join(f.target,'models.json'),'utf8');
+  await assert.rejects(f.bridge.execute(request),/changed while/);
+  assert.equal(await readFile(join(f.target,'models.json'),'utf8'),saved);
+  const defaultConnection = result.customConnections.find(c=>c.id==='eido-fixture');
+  await assert.rejects(f.bridge.execute({...request,provider:'eido-fixture',models:['new'],expectedRevision:defaultConnection.revision}),/global default/);
+  assert.equal(await readFile(join(f.target,'models.json'),'utf8'),saved);
+  await f.bridge.execute({...request,expectedRevision:result.customConnections.find(c=>c.id==='sr').revision,models:['sr-one','new-one','new-two'],key:'replacement-key'});
+  assert.equal((await f.get(f.target,'auth.json')).sr.key,'replacement-key');
+  assert.equal((await createPiSettings(f.target).status()).customConnections.find(c=>c.id==='sr').models.length,3);
+});
+
+test('connection model listing is read-only, bounded and never follows redirects', async t => {
+  const {createServer} = await import('node:http');
+  const {fetchConnectionModels, connectionEndpoint} = await import('../../src/pi/custom-models.mjs');
+  const f = await fixture(t);
+  let mode = 'success', redirected = 0; const requests=[];
+  const target = createServer((req,res)=>{redirected++;res.end('{}');});
+  await new Promise(resolve=>target.listen(0,'127.0.0.1',resolve));
+  const server = createServer((req,res)=>{
+    requests.push({url:req.url,authorization:req.headers.authorization,key:req.headers['x-api-key']});
+    if(mode==='redirect'){res.writeHead(302,{Location:`http://127.0.0.1:${target.address().port}/stolen`});res.end();}
+    else if(mode==='401'){res.writeHead(401);res.end('private-key');}
+    else if(mode==='bad')res.end('{bad');
+    else if(mode==='timeout')setTimeout(()=>res.end('{}'),100);
+    else res.end(JSON.stringify({data:[{id:'a'},{id:'a'},{id:'b',name:'Second'}],has_more:mode==='page'}));
+  });
+  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+  t.after(()=>{server.closeAllConnections();target.closeAllConnections();server.close();target.close();});
+  const baseUrl=`http://127.0.0.1:${server.address().port}/v1`;
+  const before=await readFile(join(f.target,'models.json'),'utf8');
+  const request={operation:'list-connection-models',provider:'sr',baseUrl,api:'openai-completions',key:'private-key'};
+  assert.deepEqual(await f.bridge.execute(request),{candidates:[{id:'a'},{id:'b',name:'Second'}],incomplete:false});
+  assert.deepEqual(requests[0],{url:'/v1/models',authorization:'Bearer private-key',key:undefined});
+  mode='page';assert.equal((await f.bridge.execute({...request,api:'anthropic-messages'})).incomplete,true);
+  assert.equal(requests[1].key,'private-key');
+  for (mode of ['401','bad','redirect']) await assert.rejects(f.bridge.execute(request),error=>!error.message.includes('private-key'));
+  mode='timeout';await assert.rejects(fetchConnectionModels(connectionEndpoint(baseUrl,'openai-completions'),'openai-completions','private-key',undefined,undefined,15),/timed out/);
+  assert.equal(redirected,0);assert.equal(await readFile(join(f.target,'models.json'),'utf8'),before);
+  for(const url of ['ftp://example.org','https://u:p@example.org','https://example.org?key=x','https://example.org#x']) await assert.rejects(f.bridge.execute({...request,baseUrl:url}));
+});

@@ -24,11 +24,25 @@ import { configuredMcp } from "../../runtime/src/pi/extensions.mjs";
 import { browserDecisionEnvironment } from "../../runtime/src/browser/config.mjs";
 import {computerMcp} from '../../runtime/src/computer.mjs';
 import {codemodeImages} from './codemode-images.ts';
+import {customImagePolicy, installCustomImagePolicy} from './custom-model-policy.ts';
 
 export async function startEidoAgent(agentDir: string, sessionDir: string, stream?: Stream, modelRuntime?: ModelRuntime) {
   const runtime = modelRuntime ?? await ModelRuntime.create({
     authPath: join(agentDir, "auth.json"), modelsPath: join(agentDir, "models.json"), allowModelNetwork: false,
   });
+  const imagePolicy = await customImagePolicy(agentDir);
+  // Pi resolves credentials through this public method for ordinary requests and
+  // direct summaries alike. Check both sides of async credential resolution so
+  // an edit between them cannot pair a fresh key with the old destination.
+  const originalGetAuth = runtime.getAuth;
+  const resolveAuth = originalGetAuth.bind(runtime);
+  const guardedGetAuth: ModelRuntime['getAuth'] = async (model, options) => {
+    if (typeof model !== 'string') await imagePolicy.assertCurrent(model);
+    const auth = await (typeof model === 'string' ? resolveAuth(model, options) : resolveAuth(model, options));
+    if (typeof model !== 'string') await imagePolicy.assertCurrent(model);
+    return auth;
+  };
+  runtime.getAuth = guardedGetAuth;
   let connectClient!: (client: AgentContext) => void;
   let supportsForms = false;
   let supportsNativeUi = false;
@@ -67,6 +81,7 @@ export async function startEidoAgent(agentDir: string, sessionDir: string, strea
         const shell = createShell(options.cwd, join(agentDir, "commands"), options.sessionManager.getSessionId(), client, researchHooks);
         // Settings are owned by pi. New tasks see credentials/models changed in
         // Eido's settings without replacing the model of an active conversation.
+        await imagePolicy.refresh();
         if (!modelRuntime) await runtime.refresh({ allowNetwork: false });
         // Let pi resolve explicit lists, +/- modifiers, pending registrations and
         // reload additions. Only the absent-setting fallback is Eido-specific.
@@ -100,6 +115,7 @@ export async function startEidoAgent(agentDir: string, sessionDir: string, strea
             ...(subagents.enabled ? [subagents.tool(options.sessionManager.getSessionId(), client)] : [])],
         });
         liveSession=created.session;
+        const disposeImagePolicy = installCustomImagePolicy(created.session, imagePolicy);
         await research.attach(created.session);
         const disposeImages = images.attach(created.session);
         // pi reads most runtime settings dynamically. These Agent properties
@@ -120,7 +136,7 @@ export async function startEidoAgent(agentDir: string, sessionDir: string, strea
         deliveries.set(created.session.sessionId, ledger);
         Object.defineProperty(created.session, DELIVERY, {value:ledger});
         const dispose = created.session.dispose.bind(created.session);
-        created.session.dispose = () => { disposeImages(); ledger.dispose(); if(deliveries.get(created.session.sessionId)===ledger)deliveries.delete(created.session.sessionId); dispose(); };
+        created.session.dispose = () => { disposeImagePolicy(); disposeImages(); ledger.dispose(); if(deliveries.get(created.session.sessionId)===ledger)deliveries.delete(created.session.sessionId); dispose(); };
         const browser = browserLifecycle(created.session);
         const prompt = created.session.prompt.bind(created.session);
         created.session.prompt = async (...args) => {
@@ -223,6 +239,7 @@ export async function startEidoAgent(agentDir: string, sessionDir: string, strea
     timer = setTimeout(() => {
       refresh = refresh.then(async () => {
         if (stopped) return;
+        await imagePolicy.refresh();
         await runtime.refresh({allowNetwork:false});
         if (!stopped && !runtime.getError()) await server.agent.refreshGlobalModelScope();
       }).catch(() => { /* Keep current options; the settings view reports configuration errors. */ });
@@ -237,7 +254,10 @@ export async function startEidoAgent(agentDir: string, sessionDir: string, strea
     for (const path of watched) unwatchFile(path, changed);
   };
   const dispose = server.agent.dispose.bind(server.agent);
-  server.agent.dispose = async () => { stopWatching(); await refresh; await dispose(); };
+  server.agent.dispose = async () => {
+    stopWatching(); await refresh;
+    try { await dispose(); } finally { if (runtime.getAuth === guardedGetAuth) runtime.getAuth = originalGetAuth; }
+  };
   const close = server.connection.close.bind(server.connection);
   server.connection.close = () => { stopWatching(); return close(); };
   connectClient(server.connection.client);

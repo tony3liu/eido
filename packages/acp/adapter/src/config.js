@@ -58,7 +58,7 @@ export function modelOption(session, availableModels, preferences) {
         category: "model",
         currentValue: session.model ? `${session.model.provider}/${session.model.id}` : "",
         options: availableModels.map((model) => ({ value: `${model.provider}/${model.id}`,
-            name: `${model.name} · ${model.input.includes("image") ? session.settingsManager?.getBlockImages() ? "Images blocked" : "Vision" : "Text only"}` })),
+            name: model.name })),
         ...(preferences ? { _meta: { [MODEL_DISCOVERY_META_KEY]: preferences } } : {}),
     };
 }

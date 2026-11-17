@@ -1,3 +1,4 @@
+import {imageInputAllowed} from './custom-model-policy.ts';
 import {randomUUID} from 'node:crypto';
 import type {AgentSession} from '@earendil-works/pi-coding-agent';
 import type {CallToolResult} from '@modelcontextprotocol/sdk/types.js';
@@ -59,11 +60,11 @@ export function compactComputerObservation(data: RecordValue, includeMenus = fal
 export function computerVision(session: Pick<AgentSession, 'model' | 'settingsManager'> | undefined) {
   const model = session?.model;
   const blocked = session?.settingsManager.getBlockImages() === true;
-  const enabled = !!model?.input.includes('image') && !blocked;
+  const enabled = imageInputAllowed(session, model) && !blocked;
   const modelId = model ? `${model.provider}/${model.id}` : 'No model selected';
   const reason = !model ? 'Select a model before using visual controls.' : blocked
     ? 'Images are blocked in global pi settings.' : enabled
-    ? 'The current pi model accepts images. Inspect the attached screenshots.'
+    ? 'Eido will attempt to send screenshots to the current API. Inspect the attached screenshots.'
     : 'The current pi model is declared text-only. Screenshots cannot reach this model; select a model with image input for visual controls.';
   return {enabled, modelId, reason, signature: `${modelId}:${enabled}`};
 }

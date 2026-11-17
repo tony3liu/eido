@@ -50,3 +50,4 @@ export declare function isRequestError(error: unknown): error is RequestError;
 export declare function isChildCleanupError(error: unknown): error is RequestError;
 export {};
 //# sourceMappingURL=errors.d.ts.map
+export declare function rememberErrorSecrets(owner: object, values: unknown[]): void;
