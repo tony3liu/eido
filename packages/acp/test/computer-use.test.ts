@@ -321,3 +321,54 @@ test('custom default image policy enables screenshots without changing explicit 
     f.blocked(true);assert.equal(computerVision(f.pi).enabled,false);
   }finally{dispose();}
 });
+
+
+test('computer tool schemas reach compatible APIs with typed targets and useful rejection details', {timeout:20000}, async()=>{
+  const {createServer}=await import('node:http');
+  const {AjvJsonSchemaValidator}=await import('@modelcontextprotocol/sdk/validation/ajv');
+  const original=[{"name":"drag","inputSchema":{"type":"object","properties":{"from_x":{"type":"number"},"from_y":{"type":"number"},"target":{"anyOf":[{"oneOf":[{"additionalProperties":true,"properties":{"kind":{"const":"window","type":"string"},"pid":{"minimum":0,"type":"integer"},"window_id":{"minimum":0,"type":"integer"}},"required":["kind","pid","window_id"],"type":"object"},{"additionalProperties":true,"properties":{"display_id":{"type":"string"},"kind":{"const":"desktop","type":"string"}},"required":["kind","display_id"],"type":"object"}]},{"type":"null"}]},"to_x":{"type":"number"},"to_y":{"type":"number"}},"required":["from_x","from_y","to_x","to_y"],"additionalProperties":false}},{"name":"set_config","inputSchema":{"type":"object","properties":{"cursor.motion":{},"key":{"type":"string"},"max_image_dimension":{"type":"integer"},"value":{}},"additionalProperties":false}},{"name":"parse_visual_regions","inputSchema":{"type":"object","properties":{"capture_id":{"minLength":1,"type":"string"},"options":{"additionalProperties":false,"properties":{"kinds":{"anyOf":[{"items":{"enum":["text","icon"]},"maxItems":2,"minItems":1,"type":"array","uniqueItems":true},{"type":"null"}]},"max_regions":{"minimum":1,"type":"integer"},"min_confidence":{"maximum":1,"minimum":0,"type":"number"}},"required":[],"type":"object"}},"required":["capture_id"],"additionalProperties":false}}];
+  const dir=await realpath(await mkdtemp(join(tmpdir(),'eido-schema-protocol-'))), driver=join(dir,'driver.mjs');
+  await writeFile(driver,`#!${process.execPath}
+import {createInterface} from 'node:readline';
+createInterface({input:process.stdin}).on('line',line=>{const m=JSON.parse(line);if(m.id===undefined)return;
+const result=m.method==='initialize'?{protocolVersion:'2025-03-26',capabilities:{tools:{}},serverInfo:{name:'Schema fixture',version:'1'}}:m.method==='tools/list'?{tools:${JSON.stringify(original)}}:{};
+process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:m.id,result})+'\\n');});`,{mode:0o755});
+  const bodies:any[]=[];let reject=false;
+  const http=createServer(async(req,res)=>{
+    const chunks:Buffer[]=[];for await(const chunk of req)chunks.push(Buffer.from(chunk));
+    bodies.push(JSON.parse(Buffer.concat(chunks).toString()));
+    if(reject){res.writeHead(400,{'content-type':'application/json'});res.end(JSON.stringify({error:{message:"Unable to submit request because `mcp__eido_computer__drag` functionDeclaration `target` schema didn't specify the schema type field. secret-schema-fixture"}}));return;}
+    res.writeHead(200,{'content-type':'text/event-stream'});
+    res.write(`data: ${JSON.stringify({id:'local',object:'chat.completion.chunk',created:1,model:'gemini-schema',choices:[{index:0,delta:{role:'assistant',content:'Hello.'},finish_reason:null}]})}\n\n`);
+    res.end(`data: ${JSON.stringify({id:'local',object:'chat.completion.chunk',created:1,model:'gemini-schema',choices:[{index:0,delta:{},finish_reason:'stop'}]})}\n\ndata: [DONE]\n\n`);
+  });
+  await new Promise<void>(resolve=>http.listen(0,'127.0.0.1',resolve));
+  await writeFile(join(dir,'settings.json'),JSON.stringify({defaultProvider:'sr',defaultModel:'gemini-schema',cacheWarming:'off',retry:{enabled:false,provider:{maxRetries:0}},compaction:{enabled:false},eido:{computerUse:{enabled:true,path:driver}}}));
+  await writeFile(join(dir,'models.json'),JSON.stringify({providers:{sr:{baseUrl:`http://127.0.0.1:${(http.address() as import('node:net').AddressInfo).port}/v1`,api:'openai-completions',models:[{id:'gemini-schema'}]}}}));
+  await writeFile(join(dir,'auth.json'),JSON.stringify({sr:{type:'api_key',key:'secret-schema-fixture'}}));
+  const a=new TransformStream(),b=new TransformStream();
+  const server=await startEidoAgent(dir,join(dir,'sessions'),{readable:a.readable,writable:b.writable});
+  const conn=client({name:'schema-protocol-test'}).connect({readable:b.readable,writable:a.writable});
+  try {
+    await conn.agent.request(methods.agent.initialize,{protocolVersion:1,clientCapabilities:{}});
+    const task=await conn.agent.request(methods.agent.session.new,{cwd:dir,mcpServers:[]});
+    const prompt=()=>conn.agent.request(methods.agent.session.prompt,{sessionId:task.sessionId,prompt:[{type:'text',text:'Hello.'}]});
+    assert.equal((await prompt()).stopReason,'end_turn');assert.equal(bodies.length,1);
+    const schemas=bodies[0].tools.filter((t:any)=>t.function.name.startsWith('mcp__eido_computer__'));
+    assert.equal(schemas.length,3,'retain all computer tools, including configuration');
+    const typed=(s:any)=>{assert.ok(s.type || s.anyOf,`missing schema type: ${JSON.stringify(s)}`);if(s.anyOf)assert.deepEqual(Object.keys(s),['anyOf'],'Gemini requires standalone anyOf');for(const v of Object.values(s.properties??{}))typed(v);if(s.items)typed(s.items);for(const v of s.anyOf??[])typed(v);assert.equal(s.oneOf,undefined);};
+    for(const tool of schemas)typed(tool.function.parameters);
+    const drag=schemas.find((t:any)=>t.function.name.endsWith('__drag')).function.parameters;
+    const check=new AjvJsonSchemaValidator().getValidator(drag);
+    const coords={from_x:0,from_y:0,to_x:1,to_y:1};
+    assert.equal(check({...coords,target:{kind:'window',pid:7,window_id:10}}).valid,true);
+    assert.equal(check({...coords,target:{kind:'desktop',display_id:'primary'}}).valid,true);
+    assert.equal(check({...coords,target:{kind:'window',pid:7}}).valid,false,'keep exact-window requirements');
+    assert.equal(check({...coords,target:{kind:'desktop'}}).valid,false,'keep desktop display requirements');
+    const config=schemas.find((t:any)=>t.function.name.endsWith('__set_config')).function.parameters;
+    assert.ok(config.properties.max_image_dimension);assert.deepEqual(config.properties['cursor.motion'].enum,['default']);
+    reject=true;
+    await assert.rejects(prompt(),error=>{const details=JSON.stringify(error);assert.match(details,/HTTP 400.*tool parameter schema.*mcp__eido_computer__drag/);assert.doesNotMatch(details,/secret-schema-fixture/);return true;});
+    assert.equal(bodies.length,2,'no silent retry with disabled tools');
+  } finally {await server.agent.dispose();conn.close();server.connection.close();http.closeAllConnections();http.close();await rm(dir,{recursive:true,force:true});}
+});

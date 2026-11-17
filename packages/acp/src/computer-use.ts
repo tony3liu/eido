@@ -34,6 +34,39 @@ const propertyDescriptions: Record<string,string> = {
   max_depth:'Maximum AX walk depth. A limited walk can omit needed controls.',
 };
 
+// Gemini-compatible gateways require typed alternatives and reject siblings
+// beside anyOf. Expose disjoint target branches directly; optional omissions
+// retain driver defaults. Keep branch requirements for local validation.
+function computerInputSchema(name: string, schema: RecordValue): RecordValue {
+  const properties = {...record(schema.properties)};
+  if (properties.target) {
+    const target = record(properties.target);
+    const variants = target.oneOf ?? record((target.anyOf as unknown[] | undefined)?.[0]).oneOf;
+    if (Array.isArray(variants) && variants.length === 2 && variants.every(v => record(v).type === 'object')
+      && variants.map(v => record(record(record(v).properties).kind).const).sort().join(',') === 'desktop,window') {
+      const branches = variants.map(v => {
+        const branch = record(v), fields = {...record(branch.properties)}, kind = record(fields.kind);
+        if (typeof kind.const === 'string') {const {const: value, ...rest} = kind; fields.kind = {...rest, enum:[value]};}
+        return {...branch, properties: fields};
+      });
+      properties.target = {anyOf:branches};
+    }
+  }
+  if (name === 'set_config') {
+    // The key/value alias is untyped; all driver settings also have named,
+    // typed fields below. Use those fields without losing configuration options.
+    delete properties.key; delete properties.value;
+    if (properties['cursor.motion']) properties['cursor.motion'] = {...record(properties['cursor.motion']),type:'string',enum:['default']};
+  }
+  if (name === 'parse_visual_regions' && properties.options) {
+    const options = record(properties.options), fields = {...record(options.properties)};
+    if (fields.kinds) fields.kinds = {type:'array',items:{type:'string',enum:['text','icon']},minItems:1,maxItems:2,uniqueItems:true,
+      description:record(fields.kinds).description};
+    properties.options = {...options, properties:fields};
+  }
+  return {...schema,properties};
+}
+
 // Preserve every application row and its live handles; omit default menu-bar
 // subtrees, repeated markdown and duplicate screen-space geometry only in the
 // model transcript. Pixel tools address screenshot_frame. Explicit AX
@@ -217,6 +250,7 @@ export function computerUse(handle: McpClientHandle, binding: McpSessionBinding,
   handle.listTools = async (...args) => {
     const listed = await rawList(...args);
     return {...listed, tools: listed.tools.map(tool => {
+      tool = {...tool, inputSchema: computerInputSchema(tool.name, tool.inputSchema) as typeof tool.inputSchema};
       if (tool.inputSchema.properties?.session) supportsSession.add(tool.name);
       if (toolDescriptions[tool.name]) tool = {...tool, description:toolDescriptions[tool.name], inputSchema:{...tool.inputSchema,
         properties:Object.fromEntries(Object.entries(tool.inputSchema.properties ?? {}).map(([key,value])=>[key,

@@ -50,6 +50,15 @@ export function rememberErrorSecrets(owner, values) {
     const secrets = values.filter(value => typeof value === 'string' && value.length > 0);
     if (secrets.length) errorSecrets.set(owner, secrets); else errorSecrets.delete(owner);
 }
+function schemaFailureDetail(message) {
+    const value = String(message ?? '');
+    if (!/(?:functionDeclaration|function declaration|tool|function)[\s\S]{0,400}schema|schema[\s\S]{0,200}(?:type field|invalid|unsupported)/i.test(value)) return undefined;
+    const status = /\b(400|422)\b/.exec(value)?.[1];
+    // Return only a bounded identifier from the diagnostic, never the raw body
+    // (which may echo credentials, request content or private endpoints).
+    const tool = /\bmcp__eido_computer__[a-z_]{1,64}\b/.exec(value)?.[0];
+    return `${status ? `HTTP ${status}: ` : ''}The API rejected a tool parameter schema${tool ? ` (${tool})` : ''}. The request could not start. Check tool-schema compatibility with this provider.`;
+}
 function imageFailureDetail(message) {
     let value = String(message ?? '');
     if (!/(?:image(?:_url)?|vision)[^\n]{0,100}(?:not support|unsupported|not allow|reject|invalid)|(?:not support|unsupported|not allow|reject|invalid)[^\n]{0,100}(?:image(?:_url)?|vision)/i.test(value)) return undefined;
@@ -119,7 +128,7 @@ export function classifyTerminal(message) {
     if (/\b429\b|rate limit|too many requests|overloaded/.test(haystack)) {
         return adapterError("rate_limit");
     }
-    return adapterError("provider_error", { details: imageFailureDetail(message.errorMessage) ?? redactedDiagnostics(diagnostics) });
+    return adapterError("provider_error", { details: schemaFailureDetail(message.errorMessage) ?? imageFailureDetail(message.errorMessage) ?? redactedDiagnostics(diagnostics) });
 }
 export function unexpectedError(error, terminal) {
     console.error("pi-acp internal error:", error);
