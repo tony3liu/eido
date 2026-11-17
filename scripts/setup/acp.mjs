@@ -1,3 +1,4 @@
+import {prepareOneCode} from './one-code.mjs';
 import {spawn} from 'node:child_process';
 import {runtimeRoot as root} from '../../packages/runtime/src/paths.mjs';
 import {withRuntimeInstall} from '../../packages/runtime/src/lifecycle.mjs';
@@ -8,3 +9,5 @@ await withRuntimeInstall(root,()=>new Promise((resolve,reject)=>{
   child.once('error',reject);
   child.once('exit',code=>code===0?resolve():reject(new Error(`Bundled dependency installation failed (${code}).`)));
 }));
+
+await prepareOneCode();

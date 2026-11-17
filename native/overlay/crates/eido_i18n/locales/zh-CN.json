@@ -815,5 +815,13 @@
   "settings.notice.models_large": "模型列表过大，请手工输入模型 ID。",
   "settings.notice.models_timeout": "获取模型列表超时，草稿未更改。",
   "settings.notice.models_network": "无法获取模型列表。不允许重定向，草稿未更改。",
-  "settings.notice.connection_partial": "连接已保存，但 API Key 保存失败。请重新加载并再次输入 Key。"
+  "settings.notice.connection_partial": "连接已保存，但 API Key 保存失败。请重新加载并再次输入 Key。",
+  "extensions.disable": "停用",
+  "extensions.enable": "启用",
+  "extensions.one_code_compatibility": "Eido 兼容子集 · r1",
+  "extensions.one_code_description": "提供提示词、上下文、工具搜索和 Claude 用户技能，使用 Eido 原生工具、权限与模型，随 Eido 更新。",
+  "extensions.builtin_enabled": "内置 · 已配置启用 · 新任务或重新加载时生效",
+  "extensions.builtin_disabled": "内置 · 已停用 · 新任务或重新加载时生效",
+  "extensions.builtin_error": "内置 · 运行包不可用 · 请重新安装 Eido",
+  "extensions.toggle_notice": "已保存。新任务或手动重新加载时生效，正在运行的回合保留当前扩展。"
 }

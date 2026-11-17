@@ -1,0 +1,48 @@
+{
+  "name": "Eido",
+  "idPrefix": "eido-one-code",
+  "bin": "eido",
+  "envPrefix": "EIDO_ONE_CODE",
+  "stateDir": ".eido-one-code",
+  "productFile": "EIDO.md",
+  "theme": "onecode-light/onecode",
+  "homepage": "https://github.com/IsuruMaduranga/one-code",
+  "guideDir": "docs/guide",
+  "subtitle": "One Code compatible enhancements in Eido",
+  "spinnerVerbs": [
+    "Clauding"
+  ],
+  "wordmark": [
+    "Eido"
+  ],
+  "packages": {
+    "app": "@one-ai/one-code",
+    "extension": "one-code-extension",
+    "homebrewFormula": "onecode"
+  },
+  "packageInfo": {
+    "app": {
+      "description": "One Code \u2014 the Claude Code experience on any model, batteries included: ships its own pinned pi harness, keeps all state isolated in ~/.onecode, and coexists with any existing pi install",
+      "keywords": [
+        "claude-code",
+        "coding-agent",
+        "cli",
+        "pi",
+        "mcp",
+        "agent"
+      ]
+    },
+    "extension": {
+      "description": "One Code as a pi package \u2014 the Claude Code experience on your own pi install: ported system prompt, Claude-Code-format permissions, .claude/ compatibility, ToolSearch-style deferred tools, and system-reminder steering. For the bundled app, install `@one-ai/one-code` instead.",
+      "keywords": [
+        "pi",
+        "pi-package",
+        "pi-extension",
+        "claude-code",
+        "coding-agent",
+        "mcp",
+        "agent"
+      ]
+    }
+  }
+}

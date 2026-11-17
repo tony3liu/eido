@@ -1,0 +1,319 @@
+{
+  "upstreamVersion": "0.8.0",
+  "compatibilityRevision": 1,
+  "entries": [
+    {
+      "entry": "extensions/ui/branding/index.ts",
+      "feature": "branding",
+      "mode": "excluded"
+    },
+    {
+      "entry": "extensions/ui/user-message/index.ts",
+      "feature": "user-message",
+      "mode": "upstream"
+    },
+    {
+      "entry": "extensions/commands/resources/index.ts",
+      "feature": "resources",
+      "mode": "upstream"
+    },
+    {
+      "entry": "extensions/request/kept-thinking/index.ts",
+      "feature": "kept-thinking",
+      "mode": "upstream"
+    },
+    {
+      "entry": "extensions/request/ledger/index.ts",
+      "feature": "ledger",
+      "mode": "upstream"
+    },
+    {
+      "entry": "extensions/context/context-budget/index.ts",
+      "feature": "context-budget",
+      "mode": "upstream"
+    },
+    {
+      "entry": "extensions/request/system-reminder/index.ts",
+      "feature": "system-reminder",
+      "mode": "upstream"
+    },
+    {
+      "entry": "extensions/context/instructions/index.ts",
+      "feature": "instructions",
+      "mode": "upstream"
+    },
+    {
+      "entry": "extensions/request/tool-call-corruption/index.ts",
+      "feature": "tool-call-corruption",
+      "mode": "excluded"
+    },
+    {
+      "entry": "extensions/safety/hooks/index.ts",
+      "feature": "hooks",
+      "mode": "excluded"
+    },
+    {
+      "entry": "extensions/request/tool-search/index.ts",
+      "feature": "tool-search",
+      "mode": "upstream"
+    },
+    {
+      "entry": "extensions/tools/search-tools/index.ts",
+      "feature": "search-tools",
+      "mode": "host"
+    },
+    {
+      "entry": "extensions/tools/tool-style/index.ts",
+      "feature": "tool-style",
+      "mode": "host"
+    },
+    {
+      "entry": "extensions/tools/plugins/index.ts",
+      "feature": "plugins",
+      "mode": "host"
+    },
+    {
+      "entry": "extensions/safety/worktree/index.ts",
+      "feature": "worktree",
+      "mode": "host"
+    },
+    {
+      "entry": "extensions/safety/file-tracker/index.ts",
+      "feature": "file-tracker",
+      "mode": "host"
+    },
+    {
+      "entry": "extensions/context/memory/index.ts",
+      "feature": "memory",
+      "mode": "excluded"
+    },
+    {
+      "entry": "extensions/safety/permissions/index.ts",
+      "feature": "permissions",
+      "mode": "host"
+    },
+    {
+      "entry": "extensions/tools/ask-user/index.ts",
+      "feature": "ask-user",
+      "mode": "host"
+    },
+    {
+      "entry": "extensions/tools/skill/index.ts",
+      "feature": "skill",
+      "mode": "upstream"
+    },
+    {
+      "entry": "extensions/tools/background/index.ts",
+      "feature": "background",
+      "mode": "excluded"
+    },
+    {
+      "entry": "extensions/tools/bash/index.ts",
+      "feature": "bash",
+      "mode": "host"
+    },
+    {
+      "entry": "extensions/tools/powershell/index.ts",
+      "feature": "powershell",
+      "mode": "host"
+    },
+    {
+      "entry": "extensions/agents/subagents/index.ts",
+      "feature": "subagents",
+      "mode": "host"
+    },
+    {
+      "entry": "extensions/agents/workflow/index.ts",
+      "feature": "workflow",
+      "mode": "excluded"
+    },
+    {
+      "entry": "extensions/ui/effort/index.ts",
+      "feature": "effort",
+      "mode": "excluded"
+    },
+    {
+      "entry": "extensions/ui/spinner/index.ts",
+      "feature": "spinner",
+      "mode": "excluded"
+    },
+    {
+      "entry": "extensions/ui/model-default/index.ts",
+      "feature": "model-default",
+      "mode": "excluded"
+    },
+    {
+      "entry": "extensions/ui/newer-model/index.ts",
+      "feature": "newer-model",
+      "mode": "excluded"
+    },
+    {
+      "entry": "extensions/ui/footer/index.ts",
+      "feature": "footer",
+      "mode": "excluded"
+    },
+    {
+      "entry": "extensions/ui/turn-duration/index.ts",
+      "feature": "turn-duration",
+      "mode": "excluded"
+    },
+    {
+      "entry": "extensions/ui/interrupted/index.ts",
+      "feature": "interrupted",
+      "mode": "excluded"
+    },
+    {
+      "entry": "extensions/ui/desktop-notify/index.ts",
+      "feature": "desktop-notify",
+      "mode": "excluded"
+    },
+    {
+      "entry": "extensions/ui/send-now/index.ts",
+      "feature": "send-now",
+      "mode": "excluded"
+    },
+    {
+      "entry": "extensions/agents/recap/index.ts",
+      "feature": "recap",
+      "mode": "excluded"
+    },
+    {
+      "entry": "extensions/agents/btw/index.ts",
+      "feature": "btw",
+      "mode": "excluded"
+    },
+    {
+      "entry": "extensions/agents/session-title/index.ts",
+      "feature": "session-title",
+      "mode": "excluded"
+    },
+    {
+      "entry": "extensions/commands/exit/index.ts",
+      "feature": "exit",
+      "mode": "excluded"
+    },
+    {
+      "entry": "extensions/request/run-status/index.ts",
+      "feature": "run-status",
+      "mode": "host"
+    },
+    {
+      "entry": "extensions/commands/init/index.ts",
+      "feature": "init",
+      "mode": "excluded"
+    },
+    {
+      "entry": "extensions/commands/clear/index.ts",
+      "feature": "clear",
+      "mode": "excluded"
+    },
+    {
+      "entry": "extensions/tools/tasks/index.ts",
+      "feature": "tasks",
+      "mode": "excluded"
+    },
+    {
+      "entry": "extensions/safety/plan-mode/index.ts",
+      "feature": "plan-mode",
+      "mode": "excluded"
+    },
+    {
+      "entry": "extensions/tools/notebook/index.ts",
+      "feature": "notebook",
+      "mode": "host"
+    },
+    {
+      "entry": "extensions/tools/artifacts/index.ts",
+      "feature": "artifacts",
+      "mode": "host"
+    },
+    {
+      "entry": "extensions/tools/web/index.ts",
+      "feature": "web",
+      "mode": "host"
+    },
+    {
+      "entry": "extensions/tools/web-fetch/index.ts",
+      "feature": "web-fetch",
+      "mode": "host"
+    },
+    {
+      "entry": "extensions/tools/lsp/index.ts",
+      "feature": "lsp",
+      "mode": "host"
+    },
+    {
+      "entry": "extensions/tools/mcp/index.ts",
+      "feature": "mcp",
+      "mode": "host"
+    },
+    {
+      "entry": "extensions/commands/doctor/index.ts",
+      "feature": "doctor",
+      "mode": "excluded"
+    },
+    {
+      "entry": "extensions/request/context-management/index.ts",
+      "feature": "context-management",
+      "mode": "excluded"
+    },
+    {
+      "entry": "extensions/context/compaction/index.ts",
+      "feature": "compaction",
+      "mode": "excluded"
+    },
+    {
+      "entry": "extensions/context/idle-compact/index.ts",
+      "feature": "idle-compact",
+      "mode": "excluded"
+    },
+    {
+      "entry": "extensions/request/ledger/wire.ts",
+      "feature": "ledger",
+      "mode": "upstream"
+    },
+    {
+      "entry": "extensions/request/cache-marks/index.ts",
+      "feature": "cache-marks",
+      "mode": "upstream"
+    },
+    {
+      "entry": "extensions/request/system-prompt/index.ts",
+      "feature": "system-prompt",
+      "mode": "upstream"
+    },
+    {
+      "entry": "profile/extensions/*/index.ts",
+      "feature": "product-extensions",
+      "mode": "excluded"
+    },
+    {
+      "entry": "extensions/safety/secret-values/index.ts",
+      "feature": "secret-values",
+      "mode": "upstream"
+    }
+  ],
+  "profileExtensions": [],
+  "hashes": {
+    "package.json": "08742d9fe97c824fe167d3319d004de5a9df4a4f3a62ab9815c098d5350326df",
+    "profile/index.ts": "04a8ded66111a81acf6d248da485e2dfc84682c9d82adf2fcbd4161ca8c7113a",
+    "profile/brand.json": "673883416ffb87ac9cd2f114e98ad11c411b77a154c632cca75adcf3ad2c871f",
+    "extensions/lib/profile/features.ts": "59bd54cd46277b07209f516216185cd8cc0d326b3c98a3e551326f200ce4413a",
+    "extensions/ui/user-message/index.ts": "0af92d51943fd68a9eded4d430a907f1191da3671de515a3f3223f8fbce8c2a7",
+    "extensions/commands/resources/index.ts": "99573087ede31c7e70f47248d3e9a1d1cf2e4aaccc3fa861c284d2f51438e4a1",
+    "extensions/request/kept-thinking/index.ts": "4603264071ed00a1006f0b4bf4129acda62e1b48c5f52f0881a42020cf9ef4aa",
+    "extensions/request/ledger/index.ts": "ab323801ea299bd3a4cebf616dcf7e7757acc254f7566d29eb3295650124eb0a",
+    "extensions/context/context-budget/index.ts": "f64e03b505ae4a116acdac66bdb6b507843e4454c8ae62fee96d5bdb5d75582e",
+    "extensions/request/system-reminder/index.ts": "d38cacbf229112662aeb07459137fb1d16da4f0acbf7e4ac39fc6a632b95bdd6",
+    "extensions/context/instructions/index.ts": "0f04077e2db2697d392d944fdd97c7171b2f1bb1780abde9609d6391022913d3",
+    "extensions/request/tool-search/index.ts": "0ae4867b59a97e5a324aa9aa7a6a5660b2876e7be9b472a4a7ff1b57f99cb5a5",
+    "extensions/tools/skill/index.ts": "cd2b84e430ddfe0f4c3fa0d5a54646d4c0fec9535ead78064ea4fba9187e4493",
+    "extensions/request/ledger/wire.ts": "e8ec8e8d1b6168df31d41d9bd0010f7ed0c6dc367bc276fe72452689dad76861",
+    "extensions/request/cache-marks/index.ts": "7414f3c2d73c818c42d9693680a3bbb9bff82fc2bf5d9dfbd4069cba0eaf86b9",
+    "extensions/request/system-prompt/index.ts": "5c2a39c8f734e6e159937691f628b7d10b7d9c5a1ba30df4b3e490ecabb9b451",
+    "extensions/safety/secret-values/index.ts": "a4ba6d1fc7de4db1228d4bc00515b409751bcbb0750ba79af8a866b1e137b18a"
+  },
+  "skills": [
+    "code-review"
+  ]
+}

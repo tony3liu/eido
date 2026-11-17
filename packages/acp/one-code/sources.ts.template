@@ -1,0 +1,17 @@
+import {join} from 'node:path';
+import {claudeUserDir} from '../extensions/sdk/source-provider.ts';
+
+// ACP owns project trust and supplies permitted instructions/resources itself.
+// Borrow only user skills/commands, never Claude settings, hooks or MCP grants.
+export const sources = {
+  open({home}) {
+    return {
+      name: 'Claude Code user resources',
+      configDirs: {user: claudeUserDir(home), project: '.eido-no-project-resources'},
+      settings: () => [],
+      skillDirs: base => [{dir: join(claudeUserDir(home), 'skills'), scope: 'user'}, ...base.filter(item => item.scope === 'user')],
+      mcpFiles: () => [],
+      instructions: {paths: () => [], files: () => [], nested: () => [], externalIncludes: () => [], classifier: () => []},
+    };
+  },
+};

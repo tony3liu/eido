@@ -1,4 +1,5 @@
 // Adapted for Eido from @automatalabs/pi-acp 0.9.4 (Apache-2.0). See ../LICENSE.
+import {oneCodeSettingsView, recordOneCodeLoad} from "../../../runtime/src/pi/bundled-one-code.mjs";
 import { existsSync, statSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
@@ -264,6 +265,7 @@ export class PiAcpAgent {
         let bindingState = prepared?.state;
         const childRegistry = new ChildProcessRegistrySlot(this.deps);
         let releaseEidoOwner;
+        let clearOneCodeStatus;
         try {
             releaseEidoOwner = await this.deps.eidoClaimSession?.(id);
             this.gate(opening);
@@ -274,10 +276,29 @@ export class PiAcpAgent {
             this.gate(opening);
             const agentDir = this.deps.agentDir ?? getAgentDir();
             const settingsManager = SettingsManager.create(cwd, agentDir, { projectTrusted: false });
+            const oneCode = oneCodeSettingsView(settingsManager, agentDir, cwd);
             const instructionFactory = bridge.instructionsExtension;
             const controlExtension = {
                 name: "agentprism-pi-acp-control",
                 factory: async (api) => {
+                    api.events.on("eido:one-code-tool", query => {
+                        const policy = bindingState.pi?.[Symbol.for("eido.pi.tools")];
+                        const disabled = new Set((settingsManager.getDefaultTools() ?? []).filter(name => name.startsWith('-')).map(name => name.slice(1)));
+                        query.allowed &&= !disabled.has(query.name) && (!policy || policy.allows(query.name));
+                    });
+                    api.on("session_start", (_event, ctx) => {
+                        api.events.emit("eido-one-code:workspace-dirs", {dirs: [ctx.cwd]});
+                        const enabled = oneCode().enabled;
+                        const last = ctx.sessionManager.getBranch().findLast(entry => entry.type === "custom" && entry.customType === "eido-one-code:enabled");
+                        // Removing the package records its absent tools in pi's loadout.
+                        // Restore only our two tools when that package is re-enabled.
+                        if (enabled && last?.data?.enabled === false) {
+                            const disabled = new Set((settingsManager.getDefaultTools() ?? []).filter(name => name.startsWith('-')).map(name => name.slice(1)));
+                            const own = api.getAllTools().filter(tool => ['skill', 'tool_search'].includes(tool.name) && tool.sourceInfo.path.startsWith(oneCode().path + '/') && !disabled.has(tool.name));
+                            api.setActiveTools([...new Set([...api.getActiveTools(), ...own.map(tool => tool.name)])]);
+                        }
+                        if (last?.data?.enabled !== enabled) api.appendEntry("eido-one-code:enabled", {enabled});
+                    });
                     if (typeof instructionFactory === "function")
                         await instructionFactory(api);
                     else
@@ -299,6 +320,10 @@ export class PiAcpAgent {
                     { name: "codemode", factory: createCodemodeExtension(), builtin: true, replaceable: true },
                     { name: "tool-search", factory: createToolSearchExtension(), builtin: true, replaceable: true }],
                 extensionsOverride: (base) => {
+                    // Eido has global configuration only. The upstream external-
+                    // includes command configures project scope, which our source
+                    // provider never reads; do not advertise an ineffective control.
+                    base.extensions.find(item => item.path === oneCode().path + '/extensions/context/instructions/index.ts')?.commands.delete('config');
                     const matches = base.extensions.filter(({ path }) => path === "<inline:agentprism-pi-acp-mcp>");
                     const controls = base.extensions.filter(({ path }) => path === "<inline:agentprism-pi-acp-control>");
                     if (matches.length !== 1 || controls.length !== 1)
@@ -332,9 +357,16 @@ export class PiAcpAgent {
                     return result;
                 },
             });
+            const reloadResources = resourceLoader.reload.bind(resourceLoader);
+            resourceLoader.reload = async (...args) => {
+                await reloadResources(...args);
+                clearOneCodeStatus = await recordOneCodeLoad(agentDir, id, oneCode(), resourceLoader.getExtensions().errors.filter(issue => issue.path.startsWith(oneCode().path + '/')));
+            };
             await resourceLoader.reload();
-            if (resourceLoader.getExtensions().errors.length > 0)
+            if (resourceLoader.getExtensions().errors.length > 0) {
+                console.error("Eido extension setup:", resourceLoader.getExtensions().errors);
                 throw adapterError("extension_setup_error");
+            }
             await bridge.initializeRegistrations();
             const created = await this.deps.createAgentSession({
                 cwd,
@@ -362,9 +394,9 @@ export class PiAcpAgent {
             });
             bindingState.wrapper = wrapper;
             pi[Symbol.for("eido.pi.host")]?.attach(wrapper);
-            if (releaseEidoOwner) {
+            if (releaseEidoOwner || clearOneCodeStatus) {
                 const disposeOwnedSession = wrapper.dispose.bind(wrapper);
-                wrapper.dispose = async () => { await disposeOwnedSession(); await releaseEidoOwner(); };
+                wrapper.dispose = async () => { await disposeOwnedSession(); await releaseEidoOwner?.(); await clearOneCodeStatus?.(); };
             }
             await pi.bindExtensions({});
             const availableModels = [...await this.deps.modelRuntime.getAvailable()];
@@ -404,6 +436,7 @@ export class PiAcpAgent {
             return wrapper;
         }
         catch (error) {
+            await clearOneCodeStatus?.();
             let cleanupError;
             if (wrapper) {
                 try {
@@ -419,9 +452,9 @@ export class PiAcpAgent {
             else {
                 if (pi) {
                     const rollback = new FailedOpenCleanup(pi, bridge, childRegistry, lifecycle, this.deps);
-                    if (releaseEidoOwner) {
+                    if (releaseEidoOwner || clearOneCodeStatus) {
                         const disposeFailedSession = rollback.dispose.bind(rollback);
-                        rollback.dispose = async () => { await disposeFailedSession(); await releaseEidoOwner(); };
+                        rollback.dispose = async () => { await disposeFailedSession(); await releaseEidoOwner?.(); await clearOneCodeStatus?.(); };
                     }
                     try {
                         await rollback.dispose();

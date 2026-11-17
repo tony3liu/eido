@@ -252,9 +252,10 @@ impl ExtensionsPage {
                         }
                         if operation == "install" { this.pi.installing = false; }
                         if operation != "status" {
-                            this.pi.notice = if array(&this.pi.data, "pending").is_empty() {
-                                "Updated. New pi tasks use these resource settings."
-                            } else { "Package changes are queued. Restart Eido to apply them." }.into();
+                            this.pi.notice = if operation == "toggle-package" { eido_i18n::tr(cx, "extensions.toggle_notice").to_string() }
+                            else if array(&this.pi.data, "pending").is_empty() {
+                                "Updated. New pi tasks use these resource settings.".into()
+                            } else { "Package changes are queued. Restart Eido to apply them.".into() };
                         }
                     }
                     Err(error) => { this.pi.failed = true; this.pi.notice = error; }
@@ -353,6 +354,7 @@ impl ExtensionsPage {
         let data = &row.data;
         let name = string(data, "name");
         let enabled = data["enabled"] == true;
+        let builtin = data["builtin"] == true && row.kind == ResourceKind::Package;
         let mut actions = [None, None, None];
         let (id, feature, description) = match row.kind {
             ResourceKind::Package => {
@@ -360,12 +362,14 @@ impl ExtensionsPage {
                 let pending = array(&self.pi.data, "pending").iter().any(|p| p["source"] == data["source"]);
                 if !pending {
                     if row.configured {
-                        actions[0] = Some(self.pi_action(format!("toggle-{source}"), if enabled {"Disable"} else {"Enable"}, json!({"operation":"toggle-package","source":source,"enabled":!enabled}), cx));
+                        actions[0] = Some(self.pi_action(format!("toggle-{source}"), &if builtin {eido_i18n::tr(cx, if enabled {"extensions.disable"} else {"extensions.enable"}).to_string()} else {if enabled {"Disable"} else {"Enable"}.into()}, json!({"operation":"toggle-package","source":source,"enabled":!enabled}), cx));
+                        if !builtin {
                         actions[1] = Some(self.pi_action(format!("update-{source}"), "Update", json!({"operation":"update","source":source}), cx));
                         actions[2] = Some(self.pi_action(format!("remove-{source}"), "Uninstall", json!({"operation":"remove","source":source}), cx));
+                        }
                     } else { actions[0] = Some(self.pi_action(format!("install-{source}"), "Install", json!({"operation":"install","source":source}), cx)); }
                 }
-                (source, "pi Plugin", string(data, "description"))
+                (source, "pi Plugin", if builtin { eido_i18n::tr(cx, "extensions.one_code_description").to_string() } else {string(data, "description")})
             }
             ResourceKind::Extension | ResourceKind::Skill => {
                 let path = string(data, "path");
@@ -394,15 +398,19 @@ impl ExtensionsPage {
                 (name.clone(), "MCP", string(data, "detail"))
             }
         };
-        let status = if row.kind == ResourceKind::Mcp { mcp_status(data) }
+        let status = if builtin {
+            eido_i18n::tr(cx, if !data["error"].is_null() {"extensions.builtin_error"}
+                else if enabled {"extensions.builtin_enabled"} else {"extensions.builtin_disabled"}).to_string()
+        } else if row.kind == ResourceKind::Mcp { mcp_status(data) }
         else { (if array(&self.pi.data, "pending").iter().any(|p| p["source"].as_str() == Some(&id)) {
             "Pending · Restart Eido to apply"
-        } else if data["builtin"] == true && data["enabled"] == false { "Built-in · Unavailable" }
+        } else if data["builtin"] == true && data["enabled"] == false { "Built-in · Disabled" }
         else if data["builtin"] == true { "Built-in · Enabled" }
         else if !row.configured { "Available from npm" }
         else if data["signedIn"] == true && enabled { "Enabled · Signed in" }
         else if enabled { "Enabled · Global" } else { "Disabled · Global" }).into() };
-        ExtensionCard::for_pi_resource(id, name, string(data, "version"), description, status, feature, actions)
+        let version = if builtin { format!("{} · {}", string(data, "version"), eido_i18n::tr(cx, "extensions.one_code_compatibility")) } else { string(data, "version") };
+        ExtensionCard::for_pi_resource(id, name, version, description, status, feature, actions)
     }
 
     pub(super) fn render_pi_status(&self, cx: &mut Context<Self>) -> AnyElement {

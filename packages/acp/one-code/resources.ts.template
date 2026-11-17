@@ -1,0 +1,15 @@
+import resources from '../extensions/commands/resources/index.ts';
+import {join} from 'node:path';
+import {homedir} from 'node:os';
+import {claudeUserDir} from '../extensions/sdk/source-provider.ts';
+
+export default function(pi) {
+  resources({...pi, on(event, handler) {
+    pi.on(event, (...args) => {
+      const value = handler(...args);
+      // Upstream's configDirs API always appends a project commands folder.
+      // Only explicitly allowed pi resources and Claude user commands survive.
+      return event === 'resources_discover' ? {...value, promptPaths: value.promptPaths.filter(path => path === join(claudeUserDir(homedir()), 'commands'))} : value;
+    });
+  }});
+}

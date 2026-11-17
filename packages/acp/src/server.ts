@@ -57,6 +57,7 @@ export async function startEidoAgent(agentDir: string, sessionDir: string, strea
   // still installing wrappers. Admit requests only after that setup completes.
   let admitRequests!: () => void;
   const ready = new Promise<void>(resolve => {admitRequests = resolve;});
+  process.env.EIDO_ONE_CODE_STATE_DIR ??= join(agentDir, "one-code");
   const transport = stream ?? ndJsonStream(Writable.toWeb(process.stdout) as Parameters<typeof ndJsonStream>[0],
     Readable.toWeb(process.stdin) as Parameters<typeof ndJsonStream>[1]);
   const incoming = new TransformStream({async transform(message, controller) {
@@ -97,10 +98,10 @@ export async function startEidoAgent(agentDir: string, sessionDir: string, strea
           const getExtensions = options.resourceLoader.getExtensions.bind(options.resourceLoader);
           options.resourceLoader.getExtensions = () => {
             const loaded = getExtensions();
-            return { ...loaded, extensions: [...loaded.extensions, preview.extension, shell.extension, accessPolicy(agentDir,()=>liveSession,name=>browser.track(name),{
+            return { ...loaded, extensions: [preview.extension, shell.extension, accessPolicy(agentDir,()=>liveSession,name=>browser.track(name),{
               engine:browserDecision.EIDO_BROWSER_ENGINE,decisionConfigured:!!browserDecision.TYPESAFE_API_KEY,
               textConfigured:browserDecision.TEXT_MODEL_SOURCE==='pi'||!!browserDecision.TEXT_MODEL_API_KEY,textSource:browserDecision.TEXT_MODEL_SOURCE,
-            })] };
+            }), ...loaded.extensions] };
           };
           const append = options.resourceLoader.getAppendSystemPrompt.bind(options.resourceLoader);
           options.resourceLoader.getAppendSystemPrompt = () => [...append(),

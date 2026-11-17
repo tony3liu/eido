@@ -1,3 +1,4 @@
+import {isOneCodeSearch} from "../../runtime/src/pi/bundled-one-code.mjs";
 import type { AgentSession, ToolInfo, ToolDefinition } from "@earendil-works/pi-coding-agent";
 
 export const agentToolCategories = ["read", "edit", "write", "bash", "preview", "browser", "subagent", "extensions", "mcp", "research"];
@@ -9,7 +10,7 @@ export function validAgentToolSelector(value: string): boolean {
 }
 
 export function availableAgentTools(tools: ToolInfo[]): ToolInfo[] {
-  return tools.filter(tool => discovery.get(tool.name) === tool.sourceInfo.path || (tool.name !== "bash" || tool.sourceInfo.source === 'sdk') && tool.sourceInfo.source !== "builtin"
+  return tools.filter(tool => (discovery.get(tool.name) === tool.sourceInfo.path || tool.name === 'tool_search' && isOneCodeSearch(tool.sourceInfo.path)) || (tool.name !== "bash" || tool.sourceInfo.source === 'sdk') && tool.sourceInfo.source !== "builtin"
     && !tool.sourceInfo.path.startsWith("builtin:") && !tool.sourceInfo.path.startsWith("<builtin:")
     && tool.sourceInfo.path !== "<inline:agentprism-pi-acp-control>");
 }
@@ -71,8 +72,8 @@ export function installAgentToolPolicy(session: AgentSession, selectors: string[
         else exposures.set(tool,tool.exposure);
       }
       const tools=allTools();
-      const researchDisabled=new Set((session.settingsManager.getGlobalSettings().defaultTools??[]).filter(name=>name.startsWith('-mcp__eido_research__')).map(name=>name.slice(1)));
-      allowed=new Set(resolveAgentTools(selectors,tools.filter(tool=>filter(tool)&&!researchDisabled.has(tool.name)),reset));
+      const disabled=new Set((session.settingsManager.getGlobalSettings().defaultTools??[]).filter(name=>name.startsWith('-')).map(name=>name.slice(1)));
+      allowed=new Set(resolveAgentTools(selectors,tools.filter(tool=>filter(tool)&&!disabled.has(tool.name)),reset));
       const automatic=new Set<string>();
       for(const tool of tools.filter(tool=>allowed.has(tool.name))) {
         const config=definition(tool.name);
@@ -81,7 +82,7 @@ export function installAgentToolPolicy(session: AgentSession, selectors: string[
         if(exposure==='deferred')automatic.add('tool_search');
       }
       for(const name of automatic) {
-        if(tools.some(tool=>tool.name===name&&tool.sourceInfo.path===discovery.get(name)))allowed.add(name);
+        if(tools.some(tool=>tool.name===name&&(tool.sourceInfo.path===discovery.get(name)||name==='tool_search'&&isOneCodeSearch(tool.sourceInfo.path))))allowed.add(name);
         else automatic.delete(name);
       }
       const active=new Set(session.getActiveToolNames().filter(name=>allowed.has(name)));

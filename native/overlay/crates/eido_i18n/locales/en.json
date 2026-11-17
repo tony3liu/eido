@@ -815,5 +815,13 @@
   "settings.notice.models_large": "The model list is too large. Enter model IDs manually.",
   "settings.notice.models_timeout": "Model list request timed out. Your draft was not changed.",
   "settings.notice.models_network": "Unable to fetch models. Redirects are not allowed; your draft was not changed.",
-  "settings.notice.connection_partial": "Connection saved, but its API key could not be saved. Reload and enter the key again."
+  "settings.notice.connection_partial": "Connection saved, but its API key could not be saved. Reload and enter the key again.",
+  "extensions.disable": "Disable",
+  "extensions.enable": "Enable",
+  "extensions.one_code_compatibility": "Eido compatible subset · r1",
+  "extensions.one_code_description": "Prompt, context, tool search and Claude user skills. Uses native Eido tools, permissions and models. Updated with Eido.",
+  "extensions.builtin_enabled": "Built-in · Configured on · Applies to new tasks or reload",
+  "extensions.builtin_disabled": "Built-in · Disabled · Applies to new tasks or reload",
+  "extensions.builtin_error": "Built-in · Runtime unavailable · Reinstall Eido",
+  "extensions.toggle_notice": "Saved. Applies to new tasks or explicit reload; running turns keep their current extensions."
 }

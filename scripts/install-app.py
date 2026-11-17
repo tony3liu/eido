@@ -17,6 +17,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--destination', type=Path, default=Path('/Applications/Eido.app'))
     parser.add_argument('--migrate-development', action='store_true')
+    parser.add_argument('--no-backup', action='store_true', help='Replace the audited application without retaining the old app; preserves user data')
     args = parser.parse_args()
     destination = args.destination.expanduser().resolve()
     if destination.name != 'Eido.app':
@@ -42,9 +43,14 @@ def main():
     package.audit(temporary)
     subprocess.run(['codesign', '--verify', '--deep', '--strict', temporary], check=True)
     if destination.exists():
-        backup = ROOT / '.local/installed-backups' / datetime.datetime.now().strftime('%Y%m%d-%H%M%S') / 'Eido.app'
-        backup.parent.mkdir(parents=True, exist_ok=True)
-        shutil.move(destination, backup)
+        if args.no_backup:
+            # Both candidate copies have passed the audit and deep signature check.
+            # Only the identified app is removed; user state lives outside it.
+            shutil.rmtree(destination)
+        else:
+            backup = ROOT / '.local/installed-backups' / datetime.datetime.now().strftime('%Y%m%d-%H%M%S') / 'Eido.app'
+            backup.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(destination, backup)
     temporary.rename(destination)
     if args.migrate_development:
         migrate(destination)

@@ -1,8 +1,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { mkdtemp, mkdir, writeFile, readFile, rm, utimes } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile, readFile, rm, utimes, symlink, realpath } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import {pathToFileURL} from "node:url";
+import {bundledPiEntry, runtimeRoot} from "../../src/paths.mjs";
+import {ONE_CODE_ID, oneCodeDescriptor, oneCodeSettingsView} from "../../src/pi/bundled-one-code.mjs";
+const {SettingsManager, DefaultPackageManager} = await import(bundledPiEntry.href);
 import { createExtensionCenter, configuredMcp } from "../../src/pi/extensions.mjs";
 
 test("pi package lifecycle preserves filters, queues changes while loaded, and manages individual skills", async () => {
@@ -16,7 +20,7 @@ test("pi package lifecycle preserves filters, queues changes while loaded, and m
   const center = createExtensionCenter(agent);
   try {
     let state = await center.execute({operation:"install",source:pkg});
-    assert.equal(state.packages.length, 1); assert.equal(state.packages[0].version, "1.0.0"); assert.equal(state.packages[0].name, "pi-fixture");
+    assert.equal(state.packages.filter(p=>!p.builtin).length, 1); assert.equal(state.packages[0].version, "1.0.0"); assert.equal(state.packages[0].name, "pi-fixture");
     const source = state.packages[0].source;
     const skill = state.skills.find(s => s.name === "fixture-skill"); assert.equal(skill.enabled, true);
     state = await center.execute({operation:"toggle-resource",kind:"skills",path:skill.path,enabled:false});
@@ -27,10 +31,10 @@ test("pi package lifecycle preserves filters, queues changes while loaded, and m
     assert.equal(state.skills.find(s => s.path === skill.path).enabled, false, "restores the user's filters");
     const release = await center.acquireRuntime();
     state = await center.execute({operation:"remove",source:pkg});
-    assert.equal(state.pending.length, 1); assert.equal(state.packages.length,1);
+    assert.equal(state.pending.length, 1); assert.equal(state.packages.filter(p=>!p.builtin).length,1);
     await release();
     const releaseNext = await center.acquireRuntime();
-    state = await center.execute(); assert.equal(state.packages.length, 0); assert.equal(state.pending.length,0);
+    state = await center.execute(); assert.equal(state.packages.filter(p=>!p.builtin).length, 0); assert.equal(state.pending.length,0);
     await releaseNext();
     const config = JSON.parse(await readFile(join(agent,"settings.json"),"utf8"));
     assert.equal(config.eido.fullAccess,false); assert.equal(config.defaultThinkingLevel,"high");
@@ -119,4 +123,102 @@ test('MCP follows pi enabled, env interpolation and validation without resolving
     assert.deepEqual(unresolved.map(server => server[Symbol.for('eido.pi.mcp.options')].unresolved), [true, true]);
     assert.doesNotMatch(JSON.stringify(unresolved), /EIDO_MCP_FIXTURE_SECRET|config-fixture-secret/);
   }finally {delete process.env.EIDO_MCP_FIXTURE_SECRET;await rm(dir,{recursive:true,force:true});}
+});
+
+
+test("built-in One Code toggle persists without touching package filters or other global choices", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "eido-one-code-setting-"));
+  const original = {defaultTools:["read", "-edit"], defaultModel:"custom-model", eido:{fullAccess:true, custom:"preserved"}, packages:[]};
+  await writeFile(join(dir,"settings.json"),JSON.stringify(original));
+  const center = createExtensionCenter(dir);
+  try {
+    const builtin = (await center.execute()).packages.find(p=>p.builtin);
+    assert.equal(builtin.version,"0.8.0");assert.equal(builtin.enabled,true);assert.equal(builtin.loadState,"not-observed");
+    for(const enabled of [false,true,false]) {
+      await center.execute({operation:"toggle-package",source:builtin.source,enabled});
+      const saved=JSON.parse(await readFile(join(dir,"settings.json"),"utf8"));
+      assert.equal(saved.eido.builtinPackages.oneCode.enabled,enabled);
+      delete saved.eido.builtinPackages;assert.deepEqual(saved,original);
+      assert.equal((await createExtensionCenter(dir).execute()).packages.find(p=>p.builtin).enabled,enabled);
+    }
+    await assert.rejects(center.execute({operation:"remove",source:builtin.source}),/bundled/);
+  } finally {await rm(dir,{recursive:true,force:true});}
+});
+
+
+test("legacy One Code disabled choices agree in cards and load views until explicitly overridden", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "eido-one-code-legacy-"));
+  const source = "npm:one-code-extension@0.8.0";
+  const shared = {defaultTools:["read", "-edit"],defaultModel:"retained",eido:{fullAccess:true},packages:[]};
+  const cases = [
+    {...shared,packages:[{source,autoload:false}]},
+    {...shared,packages:[source],eido:{...shared.eido,disabledPackages:{[source]:source}}},
+    {...shared,packages:[{source,autoload:false}],eido:{...shared.eido,disabledPackages:{[source]:source}}},
+  ];
+  try {
+    for (const original of cases) {
+      await writeFile(join(dir,"settings.json"),JSON.stringify(original));
+      const center = createExtensionCenter(dir);
+      const manager = SettingsManager.create(dir,dir,{projectTrusted:false});
+      const describe = oneCodeSettingsView(manager,dir,dir);
+      const verify = expected => {
+        assert.equal(describe().enabled,expected);
+        assert.equal(oneCodeDescriptor(original,runtimeRoot,dir).enabled,false);
+        const view = manager.getGlobalSettings();
+        assert.deepEqual(view.packages,[]);
+        assert.equal(view.extensions.filter(path=>path.startsWith(describe().path + '/')).length,expected?13:0);
+      };
+      verify(false);
+      assert.equal((await center.execute()).packages.find(p=>p.source===ONE_CODE_ID).enabled,false);
+      await manager.reload();verify(false);
+      for(const enabled of [true,false]) {
+        await center.execute({operation:"toggle-package",source:ONE_CODE_ID,enabled});
+        await manager.reload();verify(enabled);
+        const saved=JSON.parse(await readFile(join(dir,"settings.json"),"utf8"));
+        const fresh=SettingsManager.inMemory(saved,{projectTrusted:false});
+        const freshDescriptor=oneCodeSettingsView(fresh,dir,dir);
+        assert.equal(freshDescriptor().enabled,enabled,"new tasks share the same legacy/explicit precedence");
+        assert.equal((await createExtensionCenter(dir).execute()).packages.find(p=>p.source===ONE_CODE_ID).enabled,enabled);
+        delete saved.eido.builtinPackages;assert.deepEqual(saved,original);
+      }
+    }
+  } finally {await rm(dir,{recursive:true,force:true});}
+});
+
+test("One Code local source variants dedupe before package resolution with pi scope bases", async () => {
+  const dir = await mkdtemp(join(tmpdir(),"eido-one-code-paths-"));
+  const agentDir=join(dir,"global"),cwd=join(dir,"workspace"),projectDir=join(cwd,".pi");
+  const upstream=await realpath(join(runtimeRoot,"packages/acp/node_modules/one-code-extension"));
+  const bundled=oneCodeDescriptor().path;
+  await mkdir(agentDir);await mkdir(projectDir,{recursive:true});
+  await symlink(upstream,join(agentDir,"official"));
+  const unrelated=join(projectDir,"official");await mkdir(unrelated);
+  await writeFile(join(unrelated,"package.json"),JSON.stringify({name:"unrelated-fixture",version:"1",pi:{extensions:["index.js"]}}));
+  await writeFile(join(unrelated,"index.js"),"throw Error('Resolver tests must never execute a factory');");
+  await symlink(upstream,join(projectDir,"project-official"));
+  const resources = manager => new DefaultPackageManager({cwd,agentDir,settingsManager:manager}).resolve(async()=>"skip");
+  const executable = result => result.extensions.filter(item=>item.enabled);
+  const fromUpstream = async result => (await Promise.all(executable(result).map(item=>realpath(item.path)))).filter(path=>path.startsWith(upstream + '/'));
+  try {
+    const baseline=await resources(SettingsManager.inMemory({packages:["official"]},{projectTrusted:false}));
+    assert.equal((await fromUpstream(baseline)).length,57,"read-only reproduction of the original factory set");
+    for (const source of ["official","./official",join(agentDir,"official"),pathToFileURL(join(agentDir,"official")).href," official "]) {
+      const config={packages:[source],extensions:["official/extensions/ui/user-message/index.ts"],defaultTools:["read","-edit"]};
+      const manager=SettingsManager.inMemory(config,{projectTrusted:true});
+      manager.setProjectPackages(["official","project-official"]);
+      await manager.flush();
+      const before=manager.getProjectSettings();
+      oneCodeSettingsView(manager,agentDir,cwd);
+      assert.deepEqual(manager.getProjectSettings().packages,["official"],"same spelling resolves from the project base, not agentDir");
+      const resolved=await resources(manager);
+      assert.equal((await fromUpstream(resolved)).length,0,source);
+      assert.equal(executable(resolved).filter(item=>item.path.startsWith(bundled + '/')).length,13,source);
+      assert.ok(executable(resolved).some(item=>item.path===join(unrelated,"index.js")),"unrelated project package stays enabled");
+      assert.deepEqual(config.defaultTools,["read","-edit"]);
+      assert.deepEqual(before.packages,["official","project-official"]);
+    }
+    const localDisabled={packages:[{source:"official",autoload:false}]};
+    assert.equal(oneCodeDescriptor(localDisabled,runtimeRoot,agentDir).enabled,false,"legacy local disable uses agentDir too");
+    assert.equal(oneCodeDescriptor(localDisabled,runtimeRoot,projectDir).enabled,true,"unrelated same-spelled package cannot disable the built-in");
+  } finally {await rm(dir,{recursive:true,force:true});}
 });

@@ -1,3 +1,4 @@
+import {ONE_CODE_ID, oneCodeDescriptor, isOneCodeSource, oneCodeLoads} from './bundled-one-code.mjs';
 import {piDirectory, runtimeRoot as root, bundledPiEntry} from '../paths.mjs';
 import {validateMcp, credentials, usesOAuth} from '../mcp/config.mjs';
 import {readMcpStatus, mcpRevision} from '../mcp/status.mjs';
@@ -65,13 +66,15 @@ export function createExtensionCenter(directory = piDirectory(root), fetcher = f
     // Inspection never installs missing packages or contacts git remotes.
     const paths = await pm.resolve(async () => "skip");
     const disabled = config.eido?.disabledPackages ?? {};
-    const packages = s.getPackages().map(pkg => {
+    const packages = s.getPackages().filter(pkg => !isOneCodeSource(pkg, directory)).map(pkg => {
       const source = sourceOf(pkg), installedPath = pm.getInstalledPath(source, "user");
       return {source, name: source.replace(/^npm:/, ""), enabled: !(source in disabled), installed: !!installedPath, path: installedPath ?? ""};
     });
     for (const pkg of packages) {
       if (pkg.path) {const manifest = await readJson(join(pkg.path, "package.json"), {}); pkg.name = manifest.name ?? pkg.name; pkg.version = manifest.version ?? "local"; pkg.description = manifest.description ?? "";}
     }
+    const loads = await oneCodeLoads(directory);
+    packages.push({...oneCodeDescriptor(config, root, directory), ...(loads.some(item=>item.error)?{error:'One Code extension loading failed'}:{}), loads, loadState: loads.some(item=>item.error) ? 'failed' : loads.some(item=>item.loaded) ? 'loaded' : loads.length ? 'disabled' : 'not-observed'});
     const resources = async kind => Promise.all(paths[kind].filter(p => p.metadata.scope === "user").map(async p => {
       let name = basename(p.path), description = "";
       if (kind === "skills") {try {const {frontmatter} = parseFrontmatter(await readFile(p.path, "utf8")); name = frontmatter.name || basename(dirname(p.path)); description = frontmatter.description || "";} catch {description = "Unable to read skill metadata.";}}
@@ -132,6 +135,7 @@ export function createExtensionCenter(directory = piDirectory(root), fetcher = f
     }
     return locked(async () => {
       if (["install", "update", "remove"].includes(operation)) {
+        if (request.source === ONE_CODE_ID || isOneCodeSource(request.source, directory)) throw new Error("One Code is bundled with Eido. Use its built-in toggle; updates ship with Eido.");
         let source = request.source;
         if (typeof source !== "string" || source.length > 4096) throw new Error("Choose a package source.");
         if (operation !== "install") {
@@ -154,6 +158,11 @@ export function createExtensionCenter(directory = piDirectory(root), fetcher = f
       } else if (operation === "toggle-package") {
         if (typeof request.enabled !== "boolean") throw new Error("Choose enabled or disabled.");
         mutateSettings(c => {
+          if (request.source === ONE_CODE_ID) {
+            c.eido ??= {}; c.eido.builtinPackages ??= {}; c.eido.builtinPackages.oneCode ??= {};
+            c.eido.builtinPackages.oneCode.enabled = request.enabled;
+            return c;
+          }
           const i = (c.packages ?? []).findIndex(p => sourceOf(p) === request.source);
           if (i < 0) throw new Error("This package is not configured.");
           c.eido ??= {}; c.eido.disabledPackages ??= {};
@@ -173,7 +182,12 @@ export function createExtensionCenter(directory = piDirectory(root), fetcher = f
         if (!resource) throw new Error("This resource is no longer installed.");
         mutateSettings(c => {
           if (resource.metadata.origin === "package") {
-            const i = (c.packages ?? []).findIndex(p => sourceOf(p) === resource.metadata.source);
+            if (request.source === ONE_CODE_ID) {
+            c.eido ??= {}; c.eido.builtinPackages ??= {}; c.eido.builtinPackages.oneCode ??= {};
+            c.eido.builtinPackages.oneCode.enabled = request.enabled;
+            return c;
+          }
+          const i = (c.packages ?? []).findIndex(p => sourceOf(p) === resource.metadata.source);
             if (i < 0 || c.eido?.disabledPackages?.[resource.metadata.source]) throw new Error("Enable the owning package first.");
             const p = typeof c.packages[i] === "string" ? {source: c.packages[i]} : c.packages[i];
             const file = relative(resource.metadata.packageRoot, resource.path).split("\\").join("/");

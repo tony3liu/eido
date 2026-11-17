@@ -1,0 +1,30 @@
+import search from '../extensions/request/tool-search/index.ts';
+import {DEFER_CHANNEL, WITHHOLD_CHANNEL} from '../extensions/lib/request/deferred.ts';
+
+export default function(pi) {
+  const permitted = tool => {
+    const query = {name: tool.name, allowed: tool.exposure !== 'hidden' && tool.exposure !== 'codemode'};
+    pi.events.emit('eido:one-code-tool', query);
+    return query.allowed;
+  };
+  const catalog = () => pi.getAllTools().filter(permitted);
+  const all = () => {sync(); return catalog();};
+  const allowed = name => all().some(tool => tool.name === name);
+  const view = {...pi, getAllTools: all, getActiveTools: () => pi.getActiveTools().filter(allowed),
+    setActiveTools: names => pi.setActiveTools([...new Set([...pi.getActiveTools().filter(name => !allowed(name)), ...names.filter(allowed)])])};
+  let deferred = new Set(), syncing = false;
+  const sync = () => {
+    if (syncing) return;
+    syncing = true;
+    try {
+      const next = new Set(catalog().filter(tool => tool.exposure === 'deferred').map(tool => tool.name));
+      const previous = deferred; deferred = next;
+      for (const name of previous) if (!next.has(name)) pi.events.emit(WITHHOLD_CHANNEL, {name});
+      for (const name of next) if (!previous.has(name)) pi.events.emit(DEFER_CHANNEL, {name});
+    } finally {syncing = false;}
+  };
+  search(view);
+  pi.on('session_start', sync);
+  pi.on('turn_start', sync);
+  pi.events.on('eido:one-code-tools-changed', sync);
+}

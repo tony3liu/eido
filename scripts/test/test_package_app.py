@@ -13,6 +13,23 @@ spec.loader.exec_module(package)
 
 
 class ProductionPackageTests(unittest.TestCase):
+    def test_one_code_runtime_allows_only_the_canonical_production_tree(self):
+        for name in ('extensions/request/ledger/wire.ts', 'profile/index.ts', 'profile/skills/code-review/SKILL.md', 'eido-manifest.json', 'LICENSE', 'docs/guide/README.md'):
+            relative = Path(package.ONE_CODE_RUNTIME) / name
+            self.assertTrue(package.dependency_filter(relative), name)
+            with tempfile.TemporaryDirectory() as directory:
+                bundle = Path(directory) / 'Eido.app'
+                file = bundle / 'Contents/Resources/runtime' / relative
+                file.parent.mkdir(parents=True)
+                file.write_text('production asset')
+                self.assertEqual(len(package.audit(bundle)), 1)
+        for name in ('extensions/tests/a.ts', 'profile/test/a.ts', 'extensions/index.ts.map', 'local-docs/notes.md'):
+            self.assertFalse(package.dependency_filter(Path(package.ONE_CODE_RUNTIME) / name), name)
+        self.assertFalse(package.dependency_filter(Path('node_modules/one-code-extension/extensions/request/ledger/wire.ts')))
+        self.assertFalse(package.dependency_filter(Path('node_modules/one-code-extension/extensions/lib/notify/notices.ts')))
+        self.assertTrue(package.dependency_filter(Path('node_modules/one-code-extension/LICENSE')))
+        self.assertFalse(package.is_one_code_runtime(Path('other/packages/acp/bundled/one-code/profile/index.ts')))
+
     def test_native_repack_rejects_changed_sources_binary_and_test_builds(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

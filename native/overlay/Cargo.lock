@@ -6282,6 +6282,7 @@ dependencies = [
  "component",
  "db",
  "editor",
+ "eido_i18n",
  "extension",
  "extension_host",
  "fs",

@@ -34,7 +34,7 @@ RUNTIME_FILES = (
     'packages/runtime/src/browser/ultrafast/static/index.html', 'packages/runtime/src/browser/ultrafast/static/app.js', 'packages/runtime/src/browser/ultrafast/static/style.css', 'packages/runtime/src/browser/ultrafast/static/scenarios.html',
     'packages/runtime/src/pi/settings.mjs', 'packages/runtime/src/pi/custom-models.mjs', 'packages/runtime/src/pi/extensions.mjs',
     'packages/runtime/src/pi/http-settings.mjs', 'packages/runtime/src/pi/runtime-settings.mjs',
-    'packages/runtime/src/pi/model-catalog.mjs',
+    'packages/runtime/src/pi/model-catalog.mjs', 'packages/runtime/src/pi/bundled-one-code.mjs',
     'packages/runtime/src/mcp/config.mjs', 'packages/runtime/src/mcp/status.mjs',
     'packages/runtime/src/mcp/poki.mjs',
     'packages/runtime/bin/pi-settings.mjs', 'packages/runtime/bin/pi-extensions.mjs',
@@ -92,7 +92,32 @@ def digest(file):
     return value.hexdigest()
 
 
+ONE_CODE_RUNTIME = 'packages/acp/bundled/one-code/'
+
+
+def is_one_code_runtime(path):
+    name = path.as_posix()
+    marker = ONE_CODE_RUNTIME
+    if marker not in name:
+        return False
+    prefix, relative = name.split(marker, 1)
+    if prefix not in ('', 'Contents/Resources/runtime/'):
+        return False
+    local = Path(relative)
+    if has_excluded_part(local) or is_test_payload(local) or local.suffix in {'.map', '.py', '.rs'}:
+        return False
+    if relative in {'package.json', 'LICENSE', 'eido-manifest.json'}:
+        return True
+    return (relative.startswith(('extensions/', 'eido/')) and local.suffix in {'.ts', '.mjs', '.js', '.json', '.wasm'}
+            or relative.startswith(('profile/', 'docs/guide/')) and local.suffix in {'.ts', '.mjs', '.js', '.json', '.md', '.png', '.svg', '.txt', '.css', '.html', '.wasm'})
+
+
 def dependency_filter(path):
+    if is_one_code_runtime(path):
+        return True
+    # The canonical executable copy is bundled/one-code, never npm autoload.
+    if 'one-code-extension' in path.parts:
+        return path.parts[path.parts.index('one-code-extension') + 1:] in {('package.json',), ('LICENSE',)}
     if has_excluded_part(path) or is_test_payload(path):
         return False
     if LEGAL.match(path.name):
@@ -182,14 +207,14 @@ def audit(bundle):
             if not file.resolve().is_relative_to(bundle.resolve()) or not file.exists():
                 raise RuntimeError(f'Invalid application symlink: {local}')
             continue
-        if file.suffix in {'.ts', '.mts', '.cts', '.map', '.py', '.rs'}:
+        if file.suffix in {'.ts', '.mts', '.cts', '.map', '.py', '.rs'} and not is_one_code_runtime(local):
             raise RuntimeError(f'Development source in application: {local}')
         if file.is_relative_to(runtime / 'scripts'):
             raise RuntimeError(f'Development script in application: {local}')
         if any(file.is_relative_to(runtime / root) for root in RUNTIME_MODULE_ROOTS):
             if str(file.relative_to(runtime)) not in RUNTIME_FILES:
                 raise RuntimeError(f'Unlisted runtime module: {local}')
-        if file.is_relative_to(runtime) and file.suffix in {'.js', '.mjs', '.cjs'}:
+        if file.is_relative_to(runtime) and file.suffix in {'.js', '.mjs', '.cjs', '.ts'}:
             text = file.read_text(errors='replace')
             if str(ROOT) in text:
                 raise RuntimeError(f'Checkout path in runtime: {local}')
@@ -266,6 +291,11 @@ def build_payload(native, record, executable):
             module = runtime / name
             module.write_text(re.sub(r"(ultrafast/[a-z]+)\.ts", r"\1.js", module.read_text()))
     count = copy_dependencies(ROOT, runtime) + copy_dependencies(ROOT / 'packages/acp', runtime / 'packages/acp')
+    with tempfile.TemporaryDirectory(prefix='eido-one-code-package-') as directory:
+        generated = Path(directory) / 'one-code'
+        run([node, ROOT / 'scripts/setup/one-code.mjs', generated, '--production'], cwd=ROOT)
+        one_code = json.loads((generated / 'eido-manifest.json').read_text())
+        copy_tree(generated, runtime / 'packages/acp/bundled/one-code', dependency_filter, Path('packages/acp/bundled/one-code'))
     copy_file(ROOT / 'native/appearance.json', runtime / 'native/appearance.json')
     copy_file(node, contents / 'Helpers/node')
     npm = Path(shutil.which('npm')).resolve().parent.parent
@@ -310,6 +340,7 @@ def build_payload(native, record, executable):
             copy_file(file, resources / 'licenses/zed' / file.name)
     version = json.loads((ROOT / 'package.json').read_text())['version']
     (runtime / 'eido-runtime.json').write_text(json.dumps({'version': 1, 'pi': '1.5.2', 'acp': '0.9.4',
+        'oneCode': {'upstreamVersion': one_code['upstreamVersion'], 'compatibilityRevision': one_code['compatibilityRevision'], 'integrity': one_code['integrity']},
         'productVersion': version, 'nativeProfile': 'dev', 'testFeatures': False,
         'productionPackages': count, 'sourceFingerprint': record['sourceFingerprint'],
         'computerDriver': json.loads(cua.RECORD.read_text())}))
