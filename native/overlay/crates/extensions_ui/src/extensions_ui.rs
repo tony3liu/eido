@@ -121,6 +121,13 @@ pub fn init(cx: &mut App) {
         workspace
             .register_action(
                 move |workspace, action: &zed_actions::Extensions, window, cx| {
+                    if workspace.eido_enabled() {
+                        let layout = match workspace.eido_layout() {
+                            workspace::EidoLayout::Workbench => workspace::EidoLayout::Split,
+                            layout => layout,
+                        };
+                        workspace.set_eido_layout(layout, cx);
+                    }
                     let requested_source = if matches!(action.category_filter, Some(ExtensionCategoryFilter::ContextServers)) { ExtensionSource::Mcp } else { ExtensionSource::Editor };
                     let provides_filter = action.category_filter.filter(|_| requested_source == ExtensionSource::Editor).map(|category| match category {
                         ExtensionCategoryFilter::Themes => ExtensionProvides::Themes,
@@ -1497,4 +1504,61 @@ fn editor_extension_provides(provides: ExtensionProvides) -> bool {
     matches!(provides, ExtensionProvides::Themes | ExtensionProvides::IconThemes |
         ExtensionProvides::Languages | ExtensionProvides::Grammars | ExtensionProvides::LanguageServers |
         ExtensionProvides::Snippets | ExtensionProvides::DebugAdapters)
+}
+
+#[cfg(test)]
+mod workbench_refresh_tests {
+    use super::*;
+    use gpui::TestAppContext;
+    use workspace::{AppState, EidoLayout};
+
+    #[gpui::test]
+    async fn test_eido_workbench_refresh_extensions_action_reveals_page_and_preserves_composer(cx: &mut TestAppContext) {
+        let app_state = cx.update(|cx| {
+            let state = AppState::test(cx);
+            AppState::set_global(state.clone(), cx);
+            cx.set_global(db::AppDatabase::test_new());
+            release_channel::init(semver::Version::new(0, 0, 0), cx);
+            extension::init(cx);
+            extension_host::init(Arc::new(extension::ExtensionHostProxy::new()), state.fs.clone(),
+                state.client.clone(), state.node_runtime.clone(), cx);
+            editor::init(cx);
+            super::init(cx);
+            state
+        });
+        let project = project::Project::test(app_state.fs.as_fake(), [], cx).await;
+        let (multi, cx) = cx.add_window_view(|window, cx| workspace::MultiWorkspace::test_new(project, window, cx));
+        let workspace = multi.read_with(cx, |multi, _| multi.workspace().clone());
+        let (workbench, composer) = workspace.update_in(cx, |workspace, window, cx| {
+            let workbench = cx.new(|cx| Editor::single_line(window, cx));
+            let composer = cx.new(|cx| { let mut editor = Editor::single_line(window, cx); editor.set_text("keep draft", window, cx); editor });
+            let navigation = cx.new(|cx| Editor::single_line(window, cx));
+            let terminal = cx.new(|cx| Editor::single_line(window, cx));
+            let toolbar = cx.new(|cx| Editor::single_line(window, cx));
+            workspace.set_eido_views(vec![], navigation.into(), workbench.clone().into(), composer.clone().into(), terminal.into(), toolbar.into(), cx);
+            workspace.set_eido_layout(EidoLayout::Workbench, cx);
+            composer.focus_handle(cx).focus(window, cx);
+            (workbench, composer)
+        });
+        cx.run_until_parked();
+        cx.dispatch_action(zed_actions::Extensions::default());
+        cx.run_until_parked();
+        let first = workspace.read_with(cx, |workspace, cx| {
+            let page = workspace.item_of_type::<ExtensionsPage>(cx).expect("native action opens the existing page");
+            assert!(workspace.eido_layout() == EidoLayout::Split, "Extensions must reveal the editor from Workbench");
+            assert!(!workspace.eido_terminal_expanded());
+            page
+        });
+        for layout in [EidoLayout::Workbench, EidoLayout::Files, EidoLayout::Split] {
+            workspace.update_in(cx, |workspace, window, cx| { workspace.set_eido_layout(layout, cx); composer.focus_handle(cx).focus(window, cx); });
+            cx.dispatch_action(zed_actions::Extensions::default());
+            cx.run_until_parked();
+            workspace.read_with(cx, |workspace, cx| {
+                assert_eq!(workspace.item_of_type::<ExtensionsPage>(cx), Some(first.clone()), "reuse the page");
+                assert!(workspace.eido_layout() == if layout == EidoLayout::Workbench { EidoLayout::Split } else { layout });
+            });
+        }
+        composer.read_with(cx, |editor, cx| assert_eq!(editor.text(cx), "keep draft"));
+        workbench.read_with(cx, |editor, cx| assert_eq!(editor.text(cx), ""));
+    }
 }

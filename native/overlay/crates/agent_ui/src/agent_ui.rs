@@ -8,6 +8,7 @@ mod diagnostics;
 mod eido_access;
 mod eido_reference;
 mod eido_document;
+mod eido_result;
 mod eido_research;
 mod eido_pi_ui;
 mod eido_verification;

@@ -645,6 +645,9 @@ pub struct ConversationView {
     pub(crate) thread_id: ThreadId,
     pub(crate) root_session_id: Option<acp::SessionId>,
     server_state: ServerState,
+    retained_thread: Option<Entity<ThreadView>>,
+    recovery_editor: Option<Entity<MessageEditor>>,
+    connection_generation: u64,
     focus_handle: FocusHandle,
     notifications: Vec<WindowHandle<AgentNotification>>,
     notification_subscriptions: HashMap<WindowHandle<AgentNotification>, Vec<Subscription>>,
@@ -688,7 +691,7 @@ impl ConversationView {
     pub fn active_thread(&self) -> Option<&Entity<ThreadView>> {
         match &self.server_state {
             ServerState::Connected(connected) => connected.active_view(),
-            _ => None,
+            _ => self.retained_thread.as_ref(),
         }
     }
 
@@ -729,8 +732,8 @@ impl ConversationView {
     }
 
     pub fn thread_view(&self, session_id: &acp::SessionId) -> Option<Entity<ThreadView>> {
-        let connected = self.as_connected()?;
-        connected.threads.get(session_id).cloned()
+        self.as_connected().and_then(|connected| connected.threads.get(session_id).cloned())
+            .or_else(|| self.retained_thread.as_ref().filter(|_| self.root_session_id.as_ref() == Some(session_id)).cloned())
     }
 
     pub fn as_connected(&self) -> Option<&ConnectedServerState> {
@@ -925,9 +928,13 @@ impl ConversationView {
             thread_store,
             thread_id,
             root_session_id: resume_session_id.clone(),
+            retained_thread: None,
+            recovery_editor: None,
+            connection_generation: 0,
             initial_title: title.clone(),
             initialized_at: std::time::Instant::now(),
             server_state: Self::initial_state(
+                0,
                 agent.clone(),
                 connection_store,
                 connection_key,
@@ -960,11 +967,28 @@ impl ConversationView {
             log::info!(target: "eido::startup", "agent_surface_resolved elapsed_ms={} connected={}",
                 self.initialized_at.elapsed().as_millis(), matches!(state, ServerState::Connected(_)));
         }
+        if self.agent.agent_id().as_ref() == "eido-pi"
+            && !matches!(state, ServerState::Connected(_))
+            && let Some(view) = self.as_connected().and_then(|state| self.root_session_id.as_ref().and_then(|id| state.threads.get(id))).cloned()
+        {
+            // Every view belongs to the failed connection, including a child
+            // retained by an in-flight directed send.
+            let views: Vec<_> = self.as_connected().unwrap().threads.values().cloned().collect();
+            for connected_view in views {
+                connected_view.update(cx, |view, cx| {
+                    view.eido_connection_lost = true;
+                    cx.notify();
+                });
+            }
+            self.retained_thread = Some(view);
+        }
         let previous_request_elicitation_connection = self.request_elicitation_connection();
         let next_request_elicitation_connection =
             Self::request_elicitation_connection_for_state(&state);
 
-        if let Some(connected) = self.as_connected() {
+        if let Some(connected) = self.as_connected()
+            && !(self.agent.agent_id().as_ref() == "eido-pi" && self.retained_thread.is_some())
+        {
             connected.close_all_sessions(cx).detach();
         }
 
@@ -977,6 +1001,10 @@ impl ConversationView {
         }
 
         self.server_state = state;
+        if self.as_connected().is_some_and(|state| state.active_view().is_some()) {
+            self.retained_thread = None;
+            self.recovery_editor = None;
+        }
         cx.emit(StateChange);
         cx.emit(AcpServerViewEvent::ActiveThreadChanged);
         if matches!(&self.server_state, ServerState::Connected(_)) {
@@ -1034,6 +1062,7 @@ impl ConversationView {
 
     /// Retry task loading, preserving an existing healthy shared connection.
     pub(crate) fn retry_connection(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if matches!(self.server_state, ServerState::Loading { .. }) { return; }
         // Reuse a healthy shared ACP process. Restore only this task's history;
         // restarting it here would also interrupt unrelated conversations.
         if self.connection_store.read(cx).connection_status(&self.connection_key, cx)
@@ -1080,7 +1109,9 @@ impl ConversationView {
         self.clear_resolved_request_elicitations(cx);
         self.loading_status = None;
 
+        self.connection_generation += 1;
         let state = Self::initial_state(
+            self.connection_generation,
             self.agent.clone(),
             self.connection_store.clone(),
             self.connection_key.clone(),
@@ -1106,6 +1137,7 @@ impl ConversationView {
     }
 
     fn initial_state(
+        generation: u64,
         agent: Rc<dyn AgentServer>,
         connection_store: Entity<AgentConnectionStore>,
         connection_key: Agent,
@@ -1159,6 +1191,7 @@ impl ConversationView {
                 Ok(AgentConnectedState { connection, .. }) => connection,
                 Err(err) => {
                     this.update_in(cx, |this, window, cx| {
+                        if this.connection_generation != generation { return; }
                         this.handle_load_error(err, window, cx);
                         cx.notify();
                     })
@@ -1168,6 +1201,7 @@ impl ConversationView {
             };
 
             this.update_in(cx, |this, _window, cx| {
+                if this.connection_generation != generation { return; }
                 let request_elicitation_subscription =
                     Self::request_elicitation_subscription(&connection, cx);
                 if let ServerState::Loading {
@@ -1235,7 +1269,9 @@ impl ConversationView {
                 Err(e) => match e.downcast::<acp_thread::AuthRequired>() {
                     Ok(err) => {
                         cx.update(|window, cx| {
-                            Self::handle_auth_required(this, err, connection, window, cx)
+                            if this.read_with(cx, |view, _| view.connection_generation == generation).unwrap_or(false) {
+                                Self::handle_auth_required(this, err, connection, window, cx);
+                            }
                         })
                         .log_err();
                         return;
@@ -1246,6 +1282,7 @@ impl ConversationView {
             };
 
             this.update_in(cx, |this, window, cx| {
+                if this.connection_generation != generation { return; }
                 match result {
                     Ok(thread) => {
                         this.clear_resolved_request_elicitations_for_connection(&connection, cx);
@@ -1266,6 +1303,25 @@ impl ConversationView {
                             cx,
                         );
 
+                        // Read the latest draft only after loading settles: typing can continue
+                        // throughout recovery. Copy presentation state, never old permissions.
+                        if let Some(previous) = this.retained_thread.as_ref() {
+                            current.update(cx, |current, cx| {
+                                let (state, position, expanded) = {
+                                    let previous = previous.read(cx);
+                                    (previous.entry_view_state.clone(), previous.list_state.logical_scroll_top(), previous.editor_expanded)
+                                };
+                                current.entry_view_state.update(cx, |current, cx| current.restore_disclosures(state.read(cx)));
+                                current.list_state.scroll_to(position);
+                                current.editor_expanded = expanded;
+                            });
+                        }
+                        let recovery_editor = this.retained_thread.as_ref().map(|view| view.read(cx).message_editor.clone())
+                            .or_else(|| this.recovery_editor.clone());
+                        if let Some(editor) = recovery_editor {
+                            let draft = editor.read(cx).draft_content_blocks_snapshot(cx);
+                            current.read(cx).message_editor.clone().update(cx, |editor, cx| editor.set_message(draft, window, cx));
+                        }
                         if this.focus_handle.contains_focused(window, cx) {
                             current
                                 .read(cx)
@@ -1814,7 +1870,7 @@ impl ConversationView {
         let session_id = thread.read(cx).session_id().clone();
         let has_thread = self
             .as_connected()
-            .is_some_and(|connected| connected.threads.contains_key(&session_id));
+            .is_some_and(|connected| connected.threads.get(&session_id).is_some_and(|view| view.read(cx).thread == *thread));
         if !has_thread {
             return;
         };
@@ -2029,23 +2085,9 @@ impl ConversationView {
                 }
             }
             AcpThreadEvent::LoadError(error) => {
-                if let Some(view) = self.root_thread_view() {
-                    if view
-                        .read(cx)
-                        .message_editor
-                        .focus_handle(cx)
-                        .is_focused(window)
-                    {
-                        self.focus_handle.focus(window, cx)
-                    }
-                }
-                self.set_server_state(
-                    ServerState::LoadError {
-                        error: error.clone(),
-                    },
-                    cx,
-                );
+                self.handle_load_error(error.clone(), window, cx);
             }
+
             AcpThreadEvent::TitleUpdated => {
                 let override_title = ThreadMetadataStore::try_global(cx).and_then(|store| {
                     store
@@ -3004,9 +3046,9 @@ impl ConversationView {
         if restoring_eido {
             let saved = crate::eido_task::read(&self.root_session_id.as_ref().unwrap().to_string(), cx);
             let mut recovery = if saved.restored_status() == acp_thread::EidoTurnStatus::Interrupted {
-                "Outcome unknown. Restore the task and check its history before sending again.".to_string()
+                eido_i18n::tr(cx, "task.connection_unknown").to_string()
             } else {
-                "Restore the task to reconnect to its saved history.".to_string()
+                eido_i18n::tr(cx, "task.connection_preserved").to_string()
             };
             if saved.pending_review > 0 {
                 recovery.push_str(&format!(" Awaiting review: {} {}.", saved.pending_review, if saved.pending_review == 1 { "file" } else { "files" }));
@@ -3017,8 +3059,8 @@ impl ConversationView {
         let action_slot = h_flex()
             .gap_1()
             .child(
-                Button::new("retry-agent-launch", if restoring_eido { "Restore task" } else { "Retry" })
-                    .tooltip(Tooltip::text(if restoring_eido { "Reconnect and load history without resending the last message" } else { "Try to restart the agent" }))
+                Button::new("retry-agent-launch", eido_i18n::tr(cx, "task.reconnect"))
+                    .tooltip(Tooltip::text(eido_i18n::tr(cx, "task.reconnect_tip")))
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.retry_connection(window, cx);
                     })),
@@ -3029,7 +3071,7 @@ impl ConversationView {
         Callout::new()
             .severity(Severity::Error)
             .icon(IconName::XCircleFilled)
-            .title(title)
+            .title(if restoring_eido { eido_i18n::tr(cx, "task.connection_lost") } else { title.into() })
             .description(message)
             .actions_slot(action_slot)
             .into_any_element()
@@ -3690,7 +3732,23 @@ impl Render for ConversationView {
         let request_elicitation_connection = self.request_elicitation_connection();
         let active_thread_renders_request_elicitations =
             self.active_thread_renders_request_elicitations();
+        if eido && matches!(self.server_state, ServerState::LoadError { .. })
+            && self.retained_thread.is_none() && self.recovery_editor.is_none()
+        {
+            self.recovery_editor = Some(cx.new(|cx| MessageEditor::new(
+                self.workspace.clone(), self.project.downgrade(), self.thread_store.clone(),
+                Arc::new(RwLock::new(SessionCapabilities::new(acp::PromptCapabilities::default(), vec![], vec![]))),
+                self.agent.agent_id(), &eido_i18n::tr(cx, "composer.placeholder"),
+                EditorMode::AutoHeight { min_lines: 3, max_lines: Some(10) }, window, cx,
+            )));
+        }
         let content = match &self.server_state {
+            ServerState::Loading { .. } if self.retained_thread.is_some() => v_flex().size_full().min_h_0()
+                .child(Label::new(eido_i18n::tr(cx, "task.reconnecting")).color(Color::Muted))
+                .child(self.retained_thread.clone().unwrap()).into_any_element(),
+            ServerState::Loading { .. } if self.recovery_editor.is_some() => v_flex().size_full().justify_end().p_4()
+                .child(Label::new(eido_i18n::tr(cx, "task.reconnecting")).color(Color::Muted))
+                .child(self.recovery_editor.clone().unwrap()).into_any_element(),
             ServerState::Loading { .. } if eido => {
                 let restoring = self.root_session_id.is_some();
                 v_flex()
@@ -3744,12 +3802,16 @@ impl Render for ConversationView {
                     )
                     .into_any()
             }
+            ServerState::LoadError { error: e, .. } if self.retained_thread.is_some() => v_flex().size_full().min_h_0()
+                .child(self.render_load_error(e, window, cx))
+                .child(self.retained_thread.clone().unwrap()).into_any_element(),
             ServerState::LoadError { error: e, .. } => v_flex()
                 .flex_1()
                 .size_full()
                 .items_center()
                 .justify_end()
                 .child(self.render_load_error(e, window, cx))
+                .children(self.recovery_editor.clone())
                 .into_any(),
             ServerState::Connected(ConnectedServerState {
                 connection,
@@ -4116,7 +4178,16 @@ pub(crate) mod tests {
             assert!(!state.is_tool_call_expanded(&acp::ToolCallId::new("read-fixture")));
             let (_, _, steps, preview) = view.eido_activity(1, cx).unwrap();
             assert_eq!(steps, 3);
-            assert_eq!(preview, "Thinking · Latest thought");
+            assert_eq!(preview, "Read fixture.txt");
+        });
+        let id = view.read_with(cx, |view, _| view.session_id.clone());
+        cx.update(|_, cx| connection.send_update(id, serde_json::from_value(json!({
+            "sessionUpdate":"tool_call_update", "toolCallId":"read-fixture", "status":"failed"
+        })).unwrap(), cx));
+        cx.run_until_parked();
+        view.read_with(cx, |view, cx| {
+            let (_, _, _, preview) = view.eido_activity(1, cx).unwrap();
+            assert_eq!(preview, format!("{} · Read fixture.txt", eido_i18n::tr(cx, "task.activity_failed")));
         });
     }
 
@@ -5007,7 +5078,7 @@ pub(crate) mod tests {
             assert_eq!(view.message_queue.first().unwrap().content, vec![acp::ContentBlock::from("/session")]);
             assert!(!view.message_queue.first().unwrap().boundary);
             assert!(view.message_editor.read(cx).is_empty(cx));
-            assert!(view.eido_delivery_status.as_ref().unwrap().contains("Command queued first"));
+            assert!(view.eido_delivery_status.as_ref().unwrap().render(cx).contains("Command queued first"));
         });
         cx.update(|_, _| connection.end_turn(session_id.clone(), acp::StopReason::EndTurn));
         cx.run_until_parked();
@@ -5856,6 +5927,187 @@ pub(crate) mod tests {
                 ),
             }
         });
+    }
+
+    #[derive(Clone, Default)]
+    struct WorkbenchRecoveryConnection {
+        prompts: Arc<Mutex<usize>>,
+        injections: Arc<Mutex<usize>>,
+        injection_gate: Arc<Mutex<Option<futures::channel::oneshot::Receiver<()>>>>,
+        loads: Arc<Mutex<Vec<acp::SessionId>>>,
+        load_gate: Arc<Mutex<Option<futures::channel::oneshot::Sender<()>>>>,
+    }
+
+    impl WorkbenchRecoveryConnection {
+        fn thread(self: Rc<Self>, id: acp::SessionId, project: Entity<Project>, work_dirs: PathList, cx: &mut App) -> Entity<AcpThread> {
+            cx.new(|cx| {
+                let log = cx.new(|_| ActionLog::new(project.clone()));
+                let mut thread = AcpThread::new(None, None, Some(work_dirs), self, project, log, id,
+                    watch::Receiver::constant(acp::PromptCapabilities::new().image(true).embedded_context(true)), cx);
+                thread.handle_session_update(acp::SessionUpdate::UserMessageChunk(acp::ContentChunk::new("Retained history".into())), cx).unwrap();
+                thread
+            })
+        }
+    }
+
+    impl AgentConnection for WorkbenchRecoveryConnection {
+        fn agent_id(&self) -> AgentId { AgentId::new("eido-pi") }
+        fn telemetry_id(&self) -> SharedString { "workbench-fixture".into() }
+        fn new_session(self: Rc<Self>, project: Entity<Project>, work_dirs: PathList, cx: &mut App) -> Task<Result<Entity<AcpThread>>> {
+            Task::ready(Ok(self.thread(acp::SessionId::new("workbench-session"), project, work_dirs, cx)))
+        }
+        fn supports_load_session(&self) -> bool { true }
+        fn load_session(self: Rc<Self>, id: acp::SessionId, project: Entity<Project>, work_dirs: PathList, _: Option<SharedString>, cx: &mut App) -> Task<Result<Entity<AcpThread>>> {
+            self.loads.lock().push(id.clone());
+            let (tx, rx) = futures::channel::oneshot::channel();
+            *self.load_gate.lock() = Some(tx);
+            let thread = self.thread(id, project, work_dirs, cx);
+            cx.spawn(async move |_| { rx.await?; Ok(thread) })
+        }
+        fn auth_methods(&self) -> &[acp::AuthMethod] { &[] }
+        fn authenticate(&self, _: acp::AuthMethodId, _: &mut App) -> Task<Result<()>> { Task::ready(Ok(())) }
+        fn prompt(&self, _: acp::PromptRequest, _: &mut App) -> Task<Result<acp::PromptResponse>> {
+            *self.prompts.lock() += 1;
+            Task::ready(Err(anyhow!("Fixture provider rejected request")))
+        }
+        fn eido_send_next(&self, _: acp::PromptRequest, cx: &mut App) -> Task<Result<bool>> {
+            *self.injections.lock() += 1;
+            let gate = self.injection_gate.lock().take();
+            cx.spawn(async move |_| { if let Some(gate) = gate { gate.await?; } Ok(false) })
+        }
+        fn cancel(&self, _: &acp::SessionId, _: &mut App) {}
+        fn into_any(self: Rc<Self>) -> Rc<dyn std::any::Any> { self }
+    }
+
+    #[gpui::test]
+    async fn test_eido_workbench_refresh_reconnect_preserves_latest_draft_without_prompt(cx: &mut TestAppContext) {
+        init_test(cx);
+        let connection = WorkbenchRecoveryConnection::default();
+        let (conversation, cx) = setup_conversation_view(StubAgentServer::new(connection.clone()), cx).await;
+        let original = active_thread(&conversation, cx);
+        let old_thread = original.read_with(cx, |view, _| view.thread.clone());
+        original.update_in(cx, |view, window, cx| {
+            view.message_editor.update(cx, |editor, cx| editor.set_text("draft before disconnect", window, cx));
+            view.entry_view_state.update(cx, |state, _| { state.expanded_activity.insert(1); });
+        });
+        conversation.update_in(cx, |view, window, cx| view.handle_thread_event(&old_thread,
+            &AcpThreadEvent::LoadError(LoadError::Other("Fixture disconnected".into())), window, cx));
+        conversation.read_with(cx, |view, cx| {
+            assert!(view.as_connected().is_none());
+            assert_eq!(view.active_thread(), Some(&original));
+            assert!(old_thread.read(cx).to_markdown(cx).contains("Retained history"));
+        });
+        original.update_in(cx, |view, window, cx| view.send(window, cx));
+        assert_eq!(*connection.prompts.lock(), 0);
+        conversation.update_in(cx, |view, window, cx| view.retry_connection(window, cx));
+        cx.run_until_parked();
+        conversation.update_in(cx, |view, window, cx| view.retry_connection(window, cx));
+        original.update_in(cx, |view, window, cx| {
+            view.message_editor.update(cx, |editor, cx| editor.set_text("latest draft during reconnect", window, cx));
+        });
+        assert_eq!(connection.loads.lock().as_slice(), &[acp::SessionId::new("workbench-session")]);
+        assert_eq!(*connection.prompts.lock(), 0);
+        connection.load_gate.lock().take().unwrap().send(()).unwrap();
+        cx.run_until_parked();
+        let restored = active_thread(&conversation, cx);
+        assert_ne!(restored, original);
+        restored.read_with(cx, |view, cx| {
+            assert_eq!(view.message_editor.read(cx).text(cx), "latest draft during reconnect");
+            assert!(view.entry_view_state.read(cx).expanded_activity.contains(&1));
+        });
+        conversation.update_in(cx, |view, window, cx| view.handle_thread_event(&old_thread,
+            &AcpThreadEvent::LoadError(LoadError::Other("late old connection error".into())), window, cx));
+        assert!(conversation.read_with(cx, |view, _| view.as_connected().is_some()));
+        assert_eq!(*connection.prompts.lock(), 0, "restoring history cannot send a request");
+        restored.update_in(cx, |view, window, cx| view.send(window, cx));
+        cx.run_until_parked();
+        assert_eq!(*connection.prompts.lock(), 1);
+        restored.read_with(cx, |view, cx| {
+            assert!(!view.thread.read(cx).can_retry(cx), "the fixture matches real ACP's absent retry capability");
+            assert!(view.can_retry_request(cx), "Eido exposes explicit retry for its retained failed request");
+        });
+        restored.update_in(cx, |view, window, cx| {
+            view.message_editor.update(cx, |editor, cx| editor.set_text("draft kept across explicit retry", window, cx));
+            view.retry_generation(cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(*connection.prompts.lock(), 2, "only explicit retry sends again");
+        restored.read_with(cx, |view, cx| assert_eq!(view.message_editor.read(cx).text(cx), "draft kept across explicit retry"));
+    }
+
+    #[gpui::test]
+    async fn test_eido_workbench_refresh_repair_async_send_boundaries(test_cx: &mut TestAppContext) {
+        init_test(test_cx);
+        for case in ["command", "directed-source", "directed-target", "directed-changed", "directed-valid", "next-content", "next-persist", "next-target-persist", "next-fallback"] {
+            let connection = WorkbenchRecoveryConnection::default();
+            let target_connection = WorkbenchRecoveryConnection::default();
+            let (conversation, cx) = setup_conversation_view(StubAgentServer::new(connection.clone()), test_cx).await;
+            let view = active_thread(&conversation, cx);
+            let target_conversation = cx.update(|window, cx| {
+                let original = conversation.read(cx);
+                let (workspace, project) = (original.workspace.clone(), original.project.clone());
+                let store = cx.new(|cx| AgentConnectionStore::new(project.clone(), cx));
+                cx.new(|cx| ConversationView::new(Rc::new(StubAgentServer::new(target_connection.clone())), store,
+                    Agent::Custom { id: "repair-target".into() }, None, None, None, None, None,
+                    workspace, project, None, AgentThreadSource::AgentPanel, window, cx))
+            });
+            cx.run_until_parked();
+            let target = active_thread(&target_conversation, cx);
+            let directed = case.starts_with("directed") || case == "next-target-persist";
+            let (release, gate) = futures::channel::oneshot::channel();
+            let initial = if case == "command" { "/compact keep this draft" } else { "original delayed request" };
+            view.update_in(cx, |view, window, cx| {
+                view.session_capabilities.write().set_available_commands(vec![
+                    acp::AvailableCommand::new("compact", "Compact").meta(acp_thread::meta_with_command_category(acp_thread::CommandCategory::Native))
+                ]);
+                view.message_editor.update(cx, |editor, cx| editor.set_text(initial, window, cx));
+                if directed { view.eido_set_recipient(Some(target.clone()), cx); }
+                if case.ends_with("persist") {
+                    view.test_delivery_persist_gate = Some(gate);
+                } else if case == "next-fallback" {
+                    *connection.injection_gate.lock() = Some(gate);
+                } else {
+                    *view.test_content_gate.borrow_mut() = Some(gate);
+                }
+                if case.starts_with("next") { view.eido_send_next(window, cx); }
+                else { view.send(window, cx); }
+            });
+            cx.run_until_parked();
+            assert_eq!(*connection.prompts.lock(), 0, "before release: {case}");
+            assert_eq!(*target_connection.prompts.lock(), 0, "before release target: {case}");
+            assert_eq!(*connection.injections.lock(), usize::from(case == "next-fallback"), "before release injection: {case}");
+            assert_eq!(*target_connection.injections.lock(), 0, "before release target injection: {case}");
+            if case == "directed-changed" {
+                view.update(cx, |view, cx| view.eido_set_recipient(None, cx));
+            } else if case != "directed-valid" {
+                let interrupted = if case.contains("target") { &target_conversation } else { &conversation };
+                let thread = active_thread(interrupted, cx).read_with(cx, |view, _| view.thread.clone());
+                interrupted.update_in(cx, |view, window, cx| view.handle_thread_event(&thread,
+                    &AcpThreadEvent::LoadError(LoadError::Other("delayed fixture disconnect".into())), window, cx));
+            }
+            let latest = format!("Latest draft after {case}");
+            if case != "directed-valid" {
+                view.update_in(cx, |view, window, cx| view.message_editor.update(cx, |editor, cx| editor.set_text(&latest, window, cx)));
+            }
+            release.send(()).unwrap();
+            cx.run_until_parked();
+            assert_eq!(*connection.prompts.lock(), 0, "no stale source prompt: {case}");
+            assert_eq!(*target_connection.prompts.lock(), usize::from(case == "directed-valid"), "no stale target prompt: {case}");
+            assert_eq!(*connection.injections.lock(), usize::from(case == "next-fallback"), "no new stale injection: {case}");
+            assert_eq!(*target_connection.injections.lock(), 0, "no stale target injection: {case}");
+            view.read_with(cx, |view, cx| {
+                if case == "directed-valid" {
+                    assert!(view.message_editor.read(cx).is_empty(cx), "a valid selected target still receives the request");
+                } else {
+                    assert_eq!(view.message_editor.read(cx).text(cx), latest, "preserve draft: {case}");
+                    assert!(!view.eido_delivery_status.as_ref().is_some_and(|message| message.render(cx).contains("Delivered")), "no false delivery: {case}");
+                }
+                if !case.starts_with("next") { assert!(view.message_queue.is_empty(), "no stale command remainder: {case}"); }
+            });
+            if case.starts_with("directed") && case != "directed-valid" {
+                target.read_with(cx, |view, _| assert!(view.message_queue.is_empty(), "no stale targeted queue: {case}"));
+            }
+        }
     }
 
     #[gpui::test]

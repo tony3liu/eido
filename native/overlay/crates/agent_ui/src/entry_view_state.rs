@@ -79,6 +79,16 @@ impl EntryViewState {
         }
     }
 
+    pub(crate) fn restore_disclosures(&mut self, previous: &Self) {
+        self.expanded_activity = previous.expanded_activity.clone();
+        self.expanded_thinking_blocks = previous.expanded_thinking_blocks.clone();
+        self.user_toggled_thinking_blocks = previous.user_toggled_thinking_blocks.clone();
+        self.expanded_compactions = previous.expanded_compactions.clone();
+        self.expanded_tool_calls = previous.expanded_tool_calls.clone();
+        self.collapsed_tool_calls = previous.collapsed_tool_calls.clone();
+        self.all_tools_expanded = previous.all_tools_expanded;
+    }
+
     pub(crate) fn is_tool_call_expanded(&self, tool_call_id: &acp::ToolCallId) -> bool {
         self.expanded_tool_calls.contains(tool_call_id) || (self.all_tools_expanded && !self.collapsed_tool_calls.contains(tool_call_id))
     }
