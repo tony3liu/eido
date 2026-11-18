@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="native/branding/eido-readme.svg" alt="Eido — AI 工作空间，0.0.2" width="100%">
+  <img src="native/branding/eido-readme.svg" alt="Eido — AI 工作空间，0.0.3" width="100%">
 </p>
 
 <h1 align="center">和 AI 一起，把事情做完。</h1>
@@ -15,7 +15,7 @@
 
 <p align="center">
   <a href="https://cairno.cn/eido/">官网</a> ·
-  <a href="#002-更新">新版变化</a> ·
+  <a href="#003-更新">新版变化</a> ·
   <a href="#下载与安装">下载</a> ·
   <a href="#开始使用">开始使用</a> ·
   <a href="#当前范围">当前范围</a> ·
@@ -26,21 +26,23 @@
 
 Eido 是基于 [Zed](https://github.com/zed-industries/zed) 和官方未修改的 [pi](https://github.com/earendil-works/pi) 构建的原生 AI 工作空间。从一个希望完成的目标开始，带入相关资料，与 AI 一起推进结果。对话是工作入口，需要时可以随时使用原生文件浏览、代码编辑与改动审阅。
 
-**Eido 0.0.2 现已面向 macOS 13 及以上的 Apple Silicon Mac 发布。** 内置 **pi 1.5.2**。
+**Eido 0.0.3 现已面向 macOS 13 及以上的 Apple Silicon Mac 发布。** 内置 **pi 1.5.2**。
 
 <p>
-  <a href="https://github.com/tony3liu/eido/releases/download/v0.0.2/Eido-0.0.2-macos-arm64.dmg"><strong>下载 Mac 版 · Apple Silicon</strong></a> ·
-  <a href="https://github.com/tony3liu/eido/releases/tag/v0.0.2">版本说明与校验文件</a>
+  <a href="https://github.com/tony3liu/eido/releases/download/v0.0.3/Eido-0.0.3-macos-arm64.dmg"><strong>下载 Mac 版 · Apple Silicon</strong></a> ·
+  <a href="https://github.com/tony3liu/eido/releases/tag/v0.0.3">版本说明与校验文件</a>
 </p>
 
-## 0.0.2 更新
+## 0.0.3 更新
 
-- **更清晰的 Workbench。** 新任务输入区居中，提供任务导航和按需展开的文件视图；模型与 Agent Access 放在一起。切换视图时保留对话和草稿。
-- **中英文界面。** 在设置顶部选择“跟随系统”、English 或简体中文。常用 Eido 控件和菜单已接入 i18n，用户内容、代码、模型回复和工具标识保持原文。
-- **更舒适的阅读。** 界面与对话正文默认 16px；普通完成的任务不再显示孤立的“运行已结束”，重要状态提示与输入区对齐。已有自定义字号偏好会保留。
-- **恢复窗口拖动。** macOS 非全屏时，可以按住顶部工具栏的空白处拖动窗口。
-- **适配 pi 1.5.2。** 更新内置运行时，继续使用 pi 的公开配置与认证接口。
-- **Research & Documents 预览。** 搜索和抓取来源、查看保存的原文依据、提取 PDF/图片文字，将需求关联到提议的改动与检查。该功能处于实验阶段，默认关闭，需要单独配置 DeepSeek 服务。
+- **按文件查看执行结果。** read、grep 合并为简洁的“文件”入口，点击后在文件区按路径查看源码摘录和搜索命中，再进一步打开完整文件。修改、新增与删除代码进入原生 diff，显示红绿增删；审批和报错仍单独显示。
+- **更好用的模型连接。** 自定义 API 连接可直接编辑；同一连接支持批量填写模型 ID，或从服务端获取列表后勾选。保存后可以在 Workbench 重新选择模型，使用更新后的配置。
+- **直接发送图片。** 自定义模型无需手工声明视觉能力；Eido 尝试把图片交给接口，由服务端决定是否支持，并显示实际错误。
+- **生图与结果卡片。** 支持已适配的 GPT Image 模型，生成的图片可以打开或另存为。主对话模型也可以通过 `generate_image` 调用已配置的生图模型，然后继续任务。
+- **默认内置 One Code。** 集成 [One Code](https://github.com/IsuruMaduranga/one-code) 0.8.0 的 Eido 兼容子集，增强提示词、上下文、工具发现和技能；在扩展中心可以停用。模型、权限和原生文件操作继续由 Eido 统一管理。
+- **任务恢复改进。** 改进报错后切换模型、重新连接与重试的处理，保留历史和当前草稿，避免卡在无法继续的界面。
+
+继续提供中英文界面、任务／文件／分栏视图、16px 默认字号，以及官方未修改的 pi 1.5.2。Research & Documents 仍是默认关闭的实验预览。
 
 ## 在同一个空间工作
 
@@ -58,7 +60,7 @@ Browser Use 和 Computer Use 将任务延伸到网页与桌面应用，应用内
 
 ## 下载与安装
 
-1. 下载 [Eido-0.0.2-macos-arm64.dmg](https://github.com/tony3liu/eido/releases/download/v0.0.2/Eido-0.0.2-macos-arm64.dmg)。
+1. 下载 [Eido-0.0.3-macos-arm64.dmg](https://github.com/tony3liu/eido/releases/download/v0.0.3/Eido-0.0.3-macos-arm64.dmg)。
 2. 退出旧版 Eido，打开磁盘映像，将 **Eido** 拖入 **Applications**。
 3. 启动 Eido，在全局设置中配置模型和认证信息。
 
@@ -75,10 +77,16 @@ Browser Use 和 Computer Use 将任务延伸到网页与桌面应用，应用内
 ## 开始使用
 
 1. **选择界面语言。** 打开设置，在顶部选择语言，对所有任务全局生效。
-2. **配置模型。** 在全局设置的 **AI → pi Models & Credentials** 中配置认证；输入框旁可以选择模型和思考级别。
+2. **配置模型。** 在全局设置的 **AI → 模型与工具 → 模型与连接** 中选择服务商或“添加自定义 API”，保存地址、凭据与模型 ID；已有连接使用“编辑连接”修改。输入框旁可以选择模型和思考级别。
 3. **选择 Agent Access。** 可以从“操作前询问”开始；选择“完全访问”后，pi 会自行决定如何使用已启用工具，不再逐项请求批准。授权模式全局生效。
 4. **描述希望得到的结果。** 例如：“解释这个项目，提出一个尽量小的修复”，或“根据这些资料比较几个方案，并给出原文依据”。
 5. **审阅结果。** 查看来源引用、检查提议的改动，再决定保留哪些内容。
+
+### 图片生成与内置扩展
+
+在同一个自定义 API 连接中加入服务支持的生图模型。目前适配 `gpt-image-1`、`gpt-image-1-mini`、`gpt-image-1.5` 和 `gpt-image-2.5-sunburst`，服务端还需实现兼容的图片生成接口。可以直接选择生图模型发送描述，或让主模型在任务中调用生图工具。图片会保存到本地并显示结果卡片；取消或失败后不会自动重复生成。能获取到模型 ID 不代表服务支持对应接口。
+
+One Code 随应用内置并默认启用，无需另外安装。在 **扩展** 中找到 One Code 卡片即可停用或重新启用，新任务或手动重新加载后生效。Eido 使用的是适配后的兼容子集，并非完整 One Code 独立客户端。
 
 ### 技术研究与文档提取
 
@@ -97,7 +105,7 @@ Eido 保留原生编辑与审阅能力，同时扩展到编程之外的任务。
 
 ## 反馈建议
 
-欢迎[提交 Issue](https://github.com/tony3liu/eido/issues)，说明目标、预期与实际表现、简短复现步骤，以及 **Eido 0.0.2** 和 macOS 版本。分享截图或日志前，请移除凭据和不适合公开的项目内容。
+欢迎[提交 Issue](https://github.com/tony3liu/eido/issues)，说明目标、预期与实际表现、简短复现步骤，以及 **Eido 0.0.3** 和 macOS 版本。分享截图或日志前，请移除凭据和不适合公开的项目内容。
 
 ## 致谢与开源协议
 
@@ -105,12 +113,17 @@ Eido 建立在 **[Zed](https://github.com/zed-industries/zed)** 与 **[pi](https
 
 同时感谢 **[browser-use/jev-ultrafast](https://github.com/browser-use/jev-ultrafast)** 的作者与贡献者开源其浏览器 Agent 方案。Eido 借鉴该项目的思路，使用 TypeScript 重新实现相关 Agent 逻辑，并适配到 Eido 现有的 pi/ACP 浏览器链路。借用和适配的上游代码保留其 MIT 许可证与署名。
 
+感谢 **[Poki](https://github.com/JosssphZhou/poki)** 的作者与贡献者提供 iPhone 自动化与 MCP 能力。Eido 可以连接用户单独安装的 Poki MCP；Poki 的安装、真机准备及上游 AGPL-3.0 许可适用范围由该项目说明，Eido 安装包不内置 Poki 服务。
+
+感谢 **[One Code](https://github.com/IsuruMaduranga/one-code)** 的作者与贡献者提供 pi 扩展方案。Eido 内置 `one-code-extension` 0.8.0 的兼容子集，保留上游 MIT 许可证和版权声明；Eido 的适配层使用自己的开源许可。
+
 Eido 尊重并保留这些项目的许可证与署名。**Eido 自有代码采用 GPL-3.0-or-later**，与 Zed 编辑器代码的许可证一致。
 
 | 代码范围 | 开源协议 |
 | :--- | :--- |
 | Eido 自有代码与 Zed 编辑器代码 | [GPL-3.0-or-later](LICENSE) |
 | Zed 中标明 Apache-2.0 的组件，包括 GPUI | [Apache-2.0](native/LICENSE-APACHE) |
+| One Code 内置扩展 | [MIT](https://github.com/IsuruMaduranga/one-code/blob/master/LICENSE) |
 | pi | [MIT](https://github.com/earendil-works/pi/blob/main/LICENSE) |
 | Cua Driver 桌面运行时 | [MIT](native/cua/LICENSE-MIT) |
 | jev-ultrafast 浏览器 Agent 与工具 | [MIT](packages/runtime/src/browser/ultrafast/LICENSE) |
@@ -121,5 +134,5 @@ Eido 尊重并保留这些项目的许可证与署名。**Eido 自有代码采�
 
 <p align="center">
   <strong>理解。创造。演进。</strong><br>
-  <sub>Eido · 0.0.2 · macOS</sub>
+  <sub>Eido · 0.0.3 · macOS</sub>
 </p>

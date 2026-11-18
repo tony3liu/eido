@@ -27,7 +27,7 @@ Unmodified upstream license texts are preserved in native/LICENSE-GPL and
 native/LICENSE-APACHE. Asset licenses remain in their respective directories.
 
 Eido's editor is a modified version of Zed. Eido modifications through
-2026-10-08 are maintained in native/overlay and the preparation/build scripts;
+2026-11-18 are maintained in native/overlay and the preparation/build scripts;
 native/removed-paths.json records files removed from the upstream source.
 These changes add Eido branding, the agent workbench, pi integration, global
 configuration, and editing, review, and recovery interactions. The resulting
@@ -36,7 +36,7 @@ and Apache-2.0 component terms preserved.
 
 pi
 https://github.com/earendil-works/pi
-Integrated @earendil-works/pi package version: 1.3.0
+Integrated @earendil-works/pi package version: 1.5.2
 License: MIT, as declared in the upstream package manifests.
 
 Thanks to Mario Zechner, the pi authors, contributors, and community for
@@ -84,3 +84,24 @@ code adapted from browser-use/jev-ultrafast,
 commit 1231850a0bf1a0c0341fe408ef1668dbbfdfac46 (Copyright 2026 Browser Use),
 licensed under the MIT License. See packages/runtime/src/browser/ultrafast/LICENSE.
 Upstream: https://github.com/browser-use/jev-ultrafast
+
+Poki
+https://github.com/JosssphZhou/poki
+
+Thanks to the Poki authors, contributors, and community for iPhone automation
+and MCP integration. Eido connects to a user-installed Poki MCP service;
+Poki itself is not bundled in this application. The separate upstream project
+provides its own GNU Affero General Public License v3 and setup instructions:
+https://github.com/JosssphZhou/poki/blob/main/LICENSE
+
+One Code
+https://github.com/IsuruMaduranga/one-code
+Integrated one-code-extension version: 0.8.0 (Eido compatibility subset r1)
+Copyright (c) 2026 Isuru Wijesiri.
+License for upstream code: MIT, preserved with the bundled extension.
+
+Thanks to the One Code authors and contributors for the pi extension framework,
+prompt, context, discovery, and skill capabilities. Eido selects compatible
+features and maintains its adaptation sources in packages/acp/one-code and
+scripts/setup/one-code.mjs. Eido-authored adaptations use GPL-3.0-or-later;
+upstream code retains its MIT copyright and permission notices.
