@@ -5980,6 +5980,112 @@ pub(crate) mod tests {
     }
 
     #[gpui::test]
+    async fn test_eido_file_navigation_grouped_sources_and_review(cx: &mut TestAppContext) {
+        init_test(cx);
+        let (conversation, cx) = setup_conversation_view(StubAgentServer::new(WorkbenchRecoveryConnection::default()), cx).await;
+        add_to_workspace_with_size(conversation.clone(), true, cx);
+        let view = active_thread(&conversation, cx);
+        let (thread, project, workspace) = view.read_with(cx, |view, _| (
+            view.thread.clone(), view.project.upgrade().unwrap(), view.workspace.upgrade().unwrap(),
+        ));
+        let fs = project.read_with(cx, |project, _| project.fs().clone());
+        fs.as_fake().insert_tree("/Users/zed", json!({"sample.rs": "first line\nselected line\nlast line\n"})).await;
+        project.update(cx, |project, cx| project.find_or_create_worktree(Path::new("/Users/zed"), true, cx)).await.unwrap();
+        let id = acp::ToolCallId::new("read-source");
+        thread.update(cx, |thread, cx| thread.handle_session_update(acp::SessionUpdate::ToolCall(
+            acp::ToolCall::new(id.clone(), "read")
+                .kind(acp::ToolKind::Read).status(acp::ToolCallStatus::Completed)
+                .locations(vec![acp::ToolCallLocation::new(PathBuf::from("/Users/zed/sample.rs"))])
+                .raw_input(json!({"path":"/Users/zed/sample.rs", "offset":2}))
+                .content(vec![acp::ContentBlock::from("selected line").into()]),
+        ), cx).unwrap());
+        view.update_in(cx, |view, window, cx| {
+            view.message_editor.update(cx, |editor, cx| editor.set_text("keep my draft", window, cx));
+            view.entry_view_state.update(cx, |state, _| {
+                state.toggle_tool_call_expansion(&id);
+                state.expanded_activity.insert(1);
+            });
+        });
+        workspace.update(cx, |workspace, cx| workspace.set_eido_layout(workspace::EidoLayout::Workbench, cx));
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("tool-call-output-1-0").is_none(), "old expansion state must not render source inside the conversation");
+        assert!(cx.debug_bounds("tool-call-header-1").is_none(), "read logs are summarized");
+        let header = cx.debug_bounds("file-activity-open-1").expect("file summary is visible");
+        cx.simulate_click(header.center(), gpui::Modifiers::default());
+        cx.run_until_parked();
+        workspace.read_with(cx, |workspace, cx| {
+            assert!(workspace.eido_layout() == workspace::EidoLayout::Split);
+            let editor = workspace.active_item(cx).unwrap().downcast::<Editor>().unwrap();
+            assert!(!editor.read(cx).buffer().read(cx).is_singleton(), "summary opens grouped file excerpts");
+        });
+        cx.dispatch_action(editor::actions::OpenExcerpts);
+        cx.run_until_parked();
+        workspace.read_with(cx, |workspace, cx| {
+            let editor = workspace.active_item(cx).unwrap().downcast::<Editor>().expect("read opens the native editor");
+            let editor = editor.read(cx);
+            assert_eq!(editor.text(cx), "first line\nselected line\nlast line\n");
+            let snapshot = editor.buffer().read(cx).snapshot(cx);
+            let head = editor.selections.newest_anchor().head();
+            assert_eq!(multi_buffer::ToPoint::to_point(&head, &snapshot), Point::new(1, 0));
+        });
+        view.read_with(cx, |view, cx| assert_eq!(view.message_editor.read(cx).text(cx), "keep my draft"));
+
+        // Grep opens real file excerpts, retaining a native path back to source.
+        thread.update(cx, |thread, cx| thread.handle_session_update(acp::SessionUpdate::ToolCall(
+            acp::ToolCall::new("grep-source", "grep")
+                .kind(acp::ToolKind::Search).status(acp::ToolCallStatus::Completed)
+                .locations(vec![acp::ToolCallLocation::new(PathBuf::from("/Users/zed"))])
+                .raw_input(json!({"path":"/Users/zed", "pattern":"selected"}))
+                .content(vec![acp::ContentBlock::from("sample.rs:2: selected line").into()]),
+        ), cx).unwrap());
+        view.update(cx, |view, cx| view.entry_view_state.update(cx, |state, _| {state.expanded_activity.insert(1);}));
+        add_to_workspace_with_size(conversation.clone(), true, cx);
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("tool-call-header-2").is_none(), "grep logs are summarized");
+        let header = cx.debug_bounds("file-activity-open-1").expect("file summary remains visible");
+        cx.simulate_click(header.center(), gpui::Modifiers::default());
+        cx.run_until_parked();
+        workspace.read_with(cx, |workspace, cx| {
+            let editor = workspace.active_item(cx).unwrap().downcast::<Editor>().expect("grep opens native excerpts");
+            let editor = editor.read(cx);
+            assert!(editor.read_only(cx));
+            assert!(!editor.buffer().read(cx).is_singleton(), "search results must retain file excerpts");
+            assert!(editor.text(cx).contains("selected line"));
+        });
+
+        // Native edits (including new files and removal of code) retain real before/after data.
+        thread.update(cx, |thread, cx| thread.read_text_file("/Users/zed/sample.rs".into(), None, None, false, cx)).await.unwrap();
+        thread.update(cx, |thread, cx| thread.eido_test_write_text_file("/Users/zed/sample.rs".into(), "updated line\n".into(), cx)).await.unwrap();
+        thread.update(cx, |thread, cx| thread.create_text_file("/Users/zed/added.rs".into(), "new code\n".into(), cx)).await.unwrap();
+        fs.as_fake().insert_tree("/Users/zed", json!({"removed.rs":"removed code\n"})).await;
+        thread.update(cx, |thread, cx| thread.read_text_file("/Users/zed/removed.rs".into(), None, None, false, cx)).await.unwrap();
+        thread.update(cx, |thread, cx| thread.eido_test_write_text_file("/Users/zed/removed.rs".into(), "".into(), cx)).await.unwrap();
+        // Edits use the existing native review pane rather than inline diffs.
+        thread.update(cx, |thread, cx| thread.handle_session_update(acp::SessionUpdate::ToolCall(
+            acp::ToolCall::new("edit-source", "edit")
+                .kind(acp::ToolKind::Edit).status(acp::ToolCallStatus::Completed)
+                .locations(vec![acp::ToolCallLocation::new(PathBuf::from("/Users/zed/sample.rs"))])
+                .content(vec![acp::ToolCallContent::Diff(acp::Diff::new("/Users/zed/sample.rs", "updated line\n")
+                    .old_text("first line\nselected line\nlast line\n"))]),
+        ), cx).unwrap());
+        add_to_workspace_with_size(conversation.clone(), true, cx);
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("tool-call-header-3").is_none(), "edit logs are summarized");
+        let header = cx.debug_bounds("file-activity-review-1").expect("review summary is visible");
+        cx.simulate_click(header.center(), gpui::Modifiers::default());
+        cx.run_until_parked();
+        workspace.read_with(cx, |workspace, cx| {
+            let active = workspace.active_item(cx).unwrap();
+            assert!(active.downcast::<AgentDiffPane>().is_some(), "edit opens native diff review");
+            let editor = active.act_as::<Editor>(cx).expect("diff pane exposes its native editor");
+            assert!(!editor.read(cx).buffer().read(cx).all_buffers().is_empty(), "review contains actual file diffs");
+            let stats = thread.read(cx).action_log().read(cx).diff_stats(cx);
+            assert_eq!((stats.lines_added, stats.lines_removed), (2, 4));
+        });
+        view.read_with(cx, |view, cx| assert_eq!(view.message_editor.read(cx).text(cx), "keep my draft"));
+    }
+
+    #[gpui::test]
     async fn test_eido_workbench_refresh_reconnect_preserves_latest_draft_without_prompt(cx: &mut TestAppContext) {
         init_test(cx);
         let connection = WorkbenchRecoveryConnection::default();

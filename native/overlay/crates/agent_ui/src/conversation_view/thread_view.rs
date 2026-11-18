@@ -53,6 +53,8 @@ use super::elicitation::{
 };
 use super::*;
 
+mod file_navigation;
+
 fn eido_tool_duration_label(duration: std::time::Duration) -> String {
     if duration.as_secs() == 0 {
         if duration.as_millis() == 0 { "Took <1ms".into() }
@@ -6895,6 +6897,51 @@ impl ThreadView {
         first.map(|first| (first, end, count, preview.split_whitespace().collect::<Vec<_>>().join(" ")))
     }
 
+    fn render_file_activity(&self, first: usize, end: usize, cx: &Context<Self>) -> AnyElement {
+        let entries = self.thread.read(cx).entries();
+        let mut reads = 0;
+        let mut searches = 0;
+        let mut review_entry = None;
+        for (index, entry) in entries[first..end].iter().enumerate() {
+            let AgentThreadEntry::ToolCall(tool) = entry else { continue; };
+            if !self.eido_file_tool(tool, cx) || !matches!(tool.status, ToolCallStatus::Completed) { continue; }
+            match tool.tool_name.as_deref().unwrap_or_else(|| tool.label.read(cx).source().trim()) {
+                "read" => reads += 1,
+                "grep" => searches += 1,
+                _ => { review_entry.get_or_insert(first + index); }
+            }
+        }
+        if reads + searches == 0 && review_entry.is_none() { return Empty.into_any(); }
+        let stats = self.thread.read(cx).action_log().read(cx).diff_stats(cx);
+        h_flex().mx_5().mb_2().gap_2().flex_wrap()
+            .when(reads + searches > 0, |row| row.child(
+                div().id(("file-activity-target", first)).debug_selector(move || format!("file-activity-open-{first}"))
+                    .child(Button::new(("file-activity", first), format!("{} · read {reads} · grep {searches}", eido_i18n::tr(cx, "workbench.files")))
+                        .label_size(LabelSize::Small)
+                        .start_icon(Icon::new(IconName::File).size(IconSize::Small))
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            cx.stop_propagation();
+                            this.open_file_activity(first, end, window, cx);
+                        })))
+            ))
+            .when_some(review_entry, |row, index| row.child(
+                h_flex().id(("file-review-target", first)).debug_selector(move || format!("file-activity-review-{first}"))
+                    .gap_1().cursor_pointer()
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        cx.stop_propagation();
+                        this.open_file_tool(index, window, cx);
+                    }))
+                    .child(Button::new(("file-review", first), eido_i18n::tr(cx, "review.review"))
+                        .label_size(LabelSize::Small)
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            cx.stop_propagation();
+                            this.open_file_tool(index, window, cx);
+                        })))
+                    .child(DiffStat::new("activity-diff-stat", stats.lines_added as usize, stats.lines_removed as usize)
+                        .label_size(LabelSize::Small))
+            )).into_any_element()
+    }
+
     fn render_entry(
         &self,
         entry_ix: usize,
@@ -7191,6 +7238,7 @@ impl ThreadView {
                         .into_any()
                 }
             }
+            AgentThreadEntry::ToolCall(tool_call) if self.eido_file_tool(tool_call, cx) => Empty.into_any(),
             AgentThreadEntry::ToolCall(tool_call) if activity_collapsed
                 && !matches!(tool_call.status, ToolCallStatus::WaitingForConfirmation { .. } | ToolCallStatus::Failed | ToolCallStatus::Rejected | ToolCallStatus::Canceled) => Empty.into_any(),
             AgentThreadEntry::ToolCall(tool_call) => {
@@ -7259,7 +7307,9 @@ impl ThreadView {
         };
 
         let primary = if self.agent_id.as_ref() == "eido-pi" {
-            if let AgentThreadEntry::ToolCall(tool) = entry {
+            if let AgentThreadEntry::ToolCall(tool) = entry
+                && !self.eido_file_tool(tool, cx)
+            {
                 let mut results: Vec<(String, crate::eido_result::ResultAsset)> = Vec::new();
                 for (index, content) in tool.content.iter().enumerate() {
                     let ToolCallContent::ContentBlock(block) = content else { continue; };
@@ -7300,6 +7350,7 @@ impl ThreadView {
                     .when(!open, |row| row.child(div().flex_1().min_w_0().overflow_hidden()
                         .child(Label::new(util::truncate_and_trailoff(&preview, 140).to_string())
                             .truncate().size(LabelSize::Small).color(Color::Muted)))))
+                .child(self.render_file_activity(first, end, cx))
                 .child(primary).into_any_element()
         } else { primary };
 
@@ -9110,7 +9161,8 @@ impl ThreadView {
             })
             .unwrap_or_else(|| (false, false, focus_handle.clone()));
 
-        let use_card_layout = needs_confirmation || is_edit || (is_terminal_tool && !is_eido);
+        let file_navigation = self.eido_file_tool(tool_call, cx);
+        let use_card_layout = needs_confirmation || (is_edit && !file_navigation) || (is_terminal_tool && !is_eido);
 
         let has_image_content = tool_call.content.iter().any(|c| c.image().is_some());
 
@@ -9119,13 +9171,13 @@ impl ThreadView {
         let has_content = !tool_call.content.is_empty()
             || (should_show_raw_input && tool_call.raw_input.is_some());
 
-        let is_collapsible = has_content && !needs_confirmation;
+        let is_collapsible = has_content && !needs_confirmation && !file_navigation;
         let mut is_open = self
             .entry_view_state
             .read(cx)
             .is_tool_call_expanded(&tool_call.id);
 
-        is_open |= needs_confirmation;
+        is_open = (is_open && !file_navigation) || needs_confirmation;
 
         let input_output_header = |label: SharedString| {
             Label::new(label)
@@ -9401,6 +9453,14 @@ impl ThreadView {
                         h_flex()
                             .id(("tool-call-header", entry_ix))
                             .debug_selector(move || format!("tool-call-header-{entry_ix}"))
+                            .when(file_navigation, |header| header
+                                .cursor_pointer()
+                                .hover(|style| style.bg(cx.theme().colors().element_hover))
+                                .tooltip(Tooltip::text(eido_i18n::tr(cx, "review.open_file")))
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    cx.stop_propagation();
+                                    this.open_file_tool(entry_ix, window, cx);
+                                })))
                             .when(is_eido && is_collapsible, |header| header
                                 .cursor_pointer()
                                 .hover(|style| style.bg(cx.theme().colors().element_hover))
@@ -9437,13 +9497,17 @@ impl ThreadView {
                                 h_flex()
                                     .flex_none()
                                     .gap_2()
-                                    .when(is_eido && has_location, |row| row.child(
+                                    .when(is_eido && (has_location || file_navigation), |row| row.child(
                                         IconButton::new(("open-tool-file", entry_ix), IconName::File)
                                             .icon_size(IconSize::Small)
                                             .tooltip(Tooltip::text(eido_i18n::tr(cx, "review.open_file")))
                                             .on_click(cx.listener(move |this, _, window, cx| {
                                                 cx.stop_propagation();
-                                                this.open_tool_call_location(entry_ix, 0, window, cx);
+                                                if file_navigation {
+                                                    this.open_file_tool(entry_ix, window, cx);
+                                                } else {
+                                                    this.open_tool_call_location(entry_ix, 0, window, cx);
+                                                }
                                             }))
                                     ))
                                     .when_some(tool_call.duration, |this, duration| {
@@ -10950,7 +11014,10 @@ impl ThreadView {
     ) -> Div {
         let is_eido = self.agent_id.as_ref() == "eido-pi";
         let has_location = tool_call.locations.len() == 1;
-        let is_file = tool_call.kind == acp::ToolKind::Edit && has_location;
+        let is_file_read = is_eido && tool_call.kind == acp::ToolKind::Read && has_location
+            && tool_call.tool_name.as_deref().unwrap_or_else(|| tool_call.label.read(cx).source().trim()) == "read";
+        let file_navigation = self.eido_file_tool(tool_call, cx);
+        let is_file = (tool_call.kind == acp::ToolKind::Edit || is_file_read) && has_location;
         let is_subagent_tool_call = tool_call.is_subagent();
 
         let file_icon = if has_location {
@@ -11050,7 +11117,23 @@ impl ThreadView {
                     )
                     .child(tool_icon),
             )
-            .child(if has_location {
+            .child(if file_navigation {
+                let operation = tool_call.tool_name.as_deref()
+                    .unwrap_or_else(|| tool_call.label.read(cx).source().trim());
+                let detail = if operation == "grep" {
+                    tool_call.raw_input.as_ref().and_then(|input| input.get("pattern"))
+                        .and_then(|value| value.as_str()).unwrap_or("").to_string()
+                } else {
+                    tool_call.locations.first().map(|location| location.path.file_name()
+                        .unwrap_or(location.path.as_os_str()).to_string_lossy().into_owned())
+                        .unwrap_or_default()
+                };
+                let location = tool_call.locations.first().map(|location| location.path.to_string_lossy().into_owned());
+                div().id(("file-tool-label", entry_ix)).flex_1().min_w_0()
+                    .child(Label::new(format!("{operation} · {detail}")).color(Color::Muted).truncate())
+                    .when_some(location, |label, path| label.tooltip(Tooltip::text(path)))
+                    .into_any_element()
+            } else if has_location {
                 h_flex()
                     .id(("open-tool-call-location", entry_ix))
                     .w_full()
@@ -11061,17 +11144,25 @@ impl ThreadView {
                             this.text_color(cx.theme().colors().text_muted)
                         }
                     })
-                    .child(
-                        self.render_markdown(
-                            tool_call.label.clone(),
-                            MarkdownStyle {
-                                prevent_mouse_interaction: true,
-                                ..MarkdownStyle::themed(MarkdownFont::Agent, window, cx)
-                                    .with_muted_text(cx)
-                            },
-                            cx,
-                        ),
-                    )
+                    .map(|label| {
+                        if is_file_read {
+                            let path = &tool_call.locations[0].path;
+                            let name = path.file_name().unwrap_or(path.as_os_str()).to_string_lossy();
+                            label.child(Label::new(format!("read · {name}"))
+                                .color(Color::Muted).truncate())
+                                .tooltip(Tooltip::text(path.to_string_lossy().into_owned()))
+                        } else {
+                            label.child(self.render_markdown(
+                                tool_call.label.clone(),
+                                MarkdownStyle {
+                                    prevent_mouse_interaction: true,
+                                    ..MarkdownStyle::themed(MarkdownFont::Agent, window, cx)
+                                        .with_muted_text(cx)
+                                },
+                                cx,
+                            ))
+                        }
+                    })
                     .when(!is_eido, |label| label
                         .tooltip(Tooltip::text(eido_i18n::tr(cx, "review.go_file")))
                         .on_click(cx.listener(move |this, _, window, cx| {
@@ -11105,6 +11196,12 @@ impl ThreadView {
             .get(entry_ix)?
             .location(location_ix)?;
 
+        let read_row = self.thread.read(cx).entries().get(entry_ix).and_then(|entry| {
+            let AgentThreadEntry::ToolCall(tool) = entry else { return None; };
+            if self.agent_id.as_ref() != "eido-pi" || tool.kind != acp::ToolKind::Read { return None; }
+            tool.raw_input.as_ref()?.get("offset")?.as_u64()?.checked_sub(1)
+                .and_then(|row| u32::try_from(row).ok())
+        });
         let project_path = self
             .project
             .upgrade()?
@@ -11118,6 +11215,13 @@ impl ThreadView {
         let open_task = self
             .workspace
             .update(cx, |workspace, cx| {
+                if self.agent_id.as_ref() == "eido-pi" {
+                    let layout = match workspace.eido_layout() {
+                        workspace::EidoLayout::Workbench => workspace::EidoLayout::Split,
+                        layout => layout,
+                    };
+                    workspace.set_eido_layout(layout, cx);
+                }
                 if let Some(project_path) = project_path {
                     workspace.open_path(project_path, None, true, window, cx)
                 } else {
@@ -11143,7 +11247,11 @@ impl ThreadView {
 
                 active_editor.update_in(cx, |editor, window, cx| {
                     let snapshot = editor.buffer().read(cx).snapshot(cx);
-                    if snapshot.as_singleton().is_some()
+                    if let Some(row) = read_row {
+                        editor.change_selections(Default::default(), window, cx, |selections| {
+                            selections.select_ranges([Point::new(row, 0)..Point::new(row, 0)]);
+                        });
+                    } else if snapshot.as_singleton().is_some()
                         && let Some(anchor) = snapshot.anchor_in_excerpt(agent_location.position)
                     {
                         editor.change_selections(Default::default(), window, cx, |selections| {
