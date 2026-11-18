@@ -361,6 +361,10 @@ def build_payload(native, record, executable):
     with tempfile.TemporaryDirectory(prefix='eido-package-startup-') as temporary:
         env = {**os.environ, 'EIDO_USER_DATA_DIR': temporary,
                'EIDO_PI_CONFIG_DIR': str(Path(temporary) / 'pi')}
+        # Resolve the ACP import graph using only the shipped Node and runtime.
+        subprocess.run([str(contents / 'Helpers/node'), '--input-type=module', '--eval',
+                        'await import(process.argv[1]);', (runtime / 'packages/acp/src/server.js').as_uri()],
+                       cwd=temporary, env=env, check=True, timeout=30)
         subprocess.run([str(contents / 'MacOS/eido'), '--help'],
                        env=env, check=True, timeout=30)
     files = audit(bundle)

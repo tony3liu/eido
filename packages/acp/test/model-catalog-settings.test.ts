@@ -57,9 +57,13 @@ test('editing a connection never sends its new key to an old session endpoint', 
   const {createServer} = await import('node:http');
   const directory = await realpath(await mkdtemp(join(tmpdir(),'eido-connection-destination-')));
   const received: {endpoint:string; key:string|undefined; body:any}[] = [];
+  let requireResponses = false;
   const endpoint = (name:string) => createServer(async (request,response) => {
     const chunks:Buffer[]=[];for await(const chunk of request)chunks.push(Buffer.from(chunk));
     received.push({endpoint:name,key:request.headers.authorization,body:JSON.parse(Buffer.concat(chunks).toString())});
+    if (requireResponses && request.url?.endsWith('/chat/completions')) {
+      response.writeHead(400,{'content-type':'application/json'});response.end(JSON.stringify({error:{message:'Chat Completions rejects tools with reasoning_effort. Use /v1/responses instead.'}}));return;
+    }
     response.writeHead(200,{'content-type':'text/event-stream'});
     response.end(`data: ${JSON.stringify({id:'local',object:'chat.completion.chunk',created:1,model:'model',choices:[{index:0,delta:{role:'assistant',content:'Received.'},finish_reason:'stop'}]})}\n\ndata: [DONE]\n\n`);
   });
@@ -72,13 +76,14 @@ test('editing a connection never sends its new key to an old session endpoint', 
   await settings.execute({operation:'custom-connection',provider:'sr',models:['model'],baseUrl:url(oldEndpoint),api:'openai-completions',key:'fixture-old',expectedRevision:null});
   const runtime=await ModelRuntime.create({authPath:join(directory,'auth.json'),modelsPath:join(directory,'models.json'),allowModelNetwork:false});
   const oldModel = runtime.getModel('sr','model')!;
+  let holdApi: string | undefined;
   let holdAuth = false, enterAuth!:()=>void, releaseAuth!:()=>void;
   let interleavedKey: string | undefined;
   const authEntered = new Promise<void>(resolve=>{enterAuth=resolve;});
-  const authReleased = new Promise<void>(resolve=>{releaseAuth=resolve;});
+  let authReleased = new Promise<void>(resolve=>{releaseAuth=resolve;});
   const fixtureResolveAuth = runtime.getAuth.bind(runtime);
   runtime.getAuth = async (model, options) => {
-    const held = holdAuth && typeof model !== 'string';
+    const held = holdAuth && typeof model !== 'string' && (!holdApi || model.api === holdApi);
     if (held) { holdAuth=false; enterAuth(); await authReleased; }
     const auth = await (typeof model === 'string' ? fixtureResolveAuth(model, options) : fixtureResolveAuth(model, options));
     if (held) interleavedKey = auth?.auth.apiKey;
@@ -117,6 +122,18 @@ test('editing a connection never sends its new key to an old session endpoint', 
       {type:'image',mimeType:'image/png',data:'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/lpEAAAAASUVORK5CYII='}]});
     assert.deepEqual(received.map(r=>[r.endpoint,r.key]),[['old','Bearer fixture-old'],['old','Bearer fixture-rotated'],['new','Bearer fixture-new']]);
     assert.doesNotMatch(JSON.stringify(received.at(-1)!.body),/image_url|data:image/,'global image blocking remains in force after reselection');
+    // The same post-resolution guard also applies to the private Responses copy.
+    requireResponses = true; holdAuth = true; holdApi = 'openai-responses';
+    const secondEntered = new Promise<void>(resolve=>{enterAuth=resolve;});
+    authReleased = new Promise<void>(resolve=>{releaseAuth=resolve;});
+    const derivedRequest = assert.rejects(send(),error=>/connection or credentials changed/.test(JSON.stringify(error)));
+    await secondEntered;
+    const latest = (await settings.status()).customConnections as {id:string;revision:string}[];
+    await settings.execute({operation:'custom-connection',provider:'sr',models:['model'],baseUrl:url(oldEndpoint),api:'openai-completions',key:'fixture-final',expectedRevision:latest.find(c=>c.id==='sr')!.revision});
+    releaseAuth(); await derivedRequest;
+    assert.equal(interleavedKey,'fixture-final');
+    assert.equal(received.length,4,'only the initial Completions request ran; neither endpoint receives a stale derived request');
+
   } finally {
     releaseAuth();
     await server.agent.dispose();connection.close();server.connection.close();

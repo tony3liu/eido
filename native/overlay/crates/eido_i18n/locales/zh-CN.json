@@ -846,5 +846,18 @@
   "task.reconnect_before_send": "重连后可发送",
   "task.reconnect_tip": "重新连接并加载历史，不会重发最后一次请求。",
   "task.reconnecting": "正在重新连接… 你仍可编辑草稿。",
-  "task.request_failed": "请求失败"
+  "task.request_failed": "请求失败",
+  "thinking.title": "思考强度",
+  "thinking.current": "思考强度：{value}",
+  "thinking.off": "关闭",
+  "thinking.minimal": "极低",
+  "thinking.low": "低",
+  "thinking.medium": "中",
+  "thinking.high": "高",
+  "thinking.xhigh": "极高",
+  "thinking.max": "最高",
+  "thinking.help": "选择模型用于推理的思考强度。",
+  "thinking.trial_help": "可尝试这些思考档位；自定义服务可能拒绝不支持的档位。",
+  "thinking.change": "调整思考强度",
+  "thinking.cycle": "切换思考档位"
 }

@@ -50,6 +50,41 @@ export function rememberErrorSecrets(owner, values) {
     const secrets = values.filter(value => typeof value === 'string' && value.length > 0);
     if (secrets.length) errorSecrets.set(owner, secrets); else errorSecrets.delete(owner);
 }
+/** Narrow provider instruction; an arbitrary 400 is never a protocol hint. */
+export function requiresResponses(message) {
+    const value = String(message ?? '');
+    return /(?:^\s*(?:Error:\s*)?400\b|\bHTTP(?: status)?[ :]+400\b|["']?status(?:Code)?["']?\s*[:=]\s*400\b)/i.test(value)
+        && /chat[ _-]?completions|chat\/completions/i.test(value)
+        && /tools?|reasoning(?:_effort)?/i.test(value)
+        && /(?:use|switch|require|instead|supported)[\s\S]{0,160}(?:\/v1\/responses|responses (?:api|endpoint))|(?:\/v1\/responses|responses (?:api|endpoint))[\s\S]{0,80}(?:required|instead)/i.test(value);
+}
+const RESPONSES_FAILURE_REASONS = ['cancelled','connection_changed','auth_error','billing_error','rate_limit','request_rejected','provider_error'];
+const STATUS_ALPHABET = 'abcdefghij';
+export function responsesFailure(message, aborted = false) {
+    const value = String(message ?? '');
+    const status = /\b([45]\d{2})\b/.exec(value)?.[1] ?? 'none';
+    const reason = aborted ? 'cancelled' : /this connection changed/i.test(value) ? 'connection_changed'
+        : /\b40[13]\b|unauthorized|authentication|invalid api key|forbidden/i.test(value) ? 'auth_error'
+        : /quota|billing|insufficient|payment|credit/i.test(value) ? 'billing_error'
+        : /\b429\b|rate limit|too many requests/i.test(value) ? 'rate_limit'
+        : /\b400\b|\b422\b/i.test(value) ? 'request_rejected' : 'provider_error';
+    // pi decides whole-turn retries from errorMessage. Keep this terminal
+    // envelope free of transient-error words and HTTP numerals; ACP alone
+    // decodes its bounded reason/status into the useful user-facing error.
+    const code = STATUS_ALPHABET[RESPONSES_FAILURE_REASONS.indexOf(reason)];
+    const encodedStatus = status === 'none' ? status : [...status].map(digit => STATUS_ALPHABET[Number(digit)]).join('');
+    return `EIDO_RESPONSES_ENDED:${code}:${encodedStatus}`;
+}
+function responsesFailureDetail(value) {
+    const match = /^EIDO_RESPONSES_ENDED:([a-g]):(none|[ef][a-j]{2})$/.exec(value ?? '');
+    if (!match) return undefined;
+    const [, code, encodedStatus] = match;
+    const reason = RESPONSES_FAILURE_REASONS[STATUS_ALPHABET.indexOf(code)];
+    const status = encodedStatus === 'none' ? encodedStatus : [...encodedStatus].map(char => STATUS_ALPHABET.indexOf(char)).join('');
+    const reasons = {cancelled:'cancelled', connection_changed:'connection or credentials changed', auth_error:'authentication failed', billing_error:'billing or quota limit', rate_limit:'rate limited', request_rejected:'request rejected', provider_error:'provider or stream failure'};
+    return {kind:['auth_error','billing_error','rate_limit'].includes(reason) ? reason : 'provider_error',
+        details:`Chat Completions rejected tools or the selected thinking effort. Responses was tried automatically and ended: ${reasons[reason]}${status === 'none' ? '' : ` (HTTP ${status})`}. Automatic adaptation has stopped. ${reason === 'connection_changed' ? 'Reselect the model before retrying.' : 'Check the connection and supported thinking levels before retrying.'}`};
+}
 function schemaFailureDetail(message) {
     const value = String(message ?? '');
     if (!/(?:functionDeclaration|function declaration|tool|function)[\s\S]{0,400}schema|schema[\s\S]{0,200}(?:type field|invalid|unsupported)/i.test(value)) return undefined;
@@ -96,7 +131,7 @@ export function classifyPreflight(error) {
     }
     const message = error instanceof Error ? error.message.toLowerCase() : "";
     if (message.includes('this connection changed.')) {
-        return adapterError('provider_error', {details:'This connection changed. Reselect the model before sending to load its current address and API format.'});
+        return adapterError('provider_error', {details:'This connection changed. Reselect the model before sending to load its current address, API format and thinking capabilities.'});
     }
     if (message.includes("no model selected"))
         return adapterError("invalid_model");
@@ -109,8 +144,10 @@ export function classifyPreflight(error) {
     return adapterError("provider_error");
 }
 export function classifyTerminal(message) {
+    const adaptation = responsesFailureDetail(message.errorMessage);
+    if (adaptation) return adapterError(adaptation.kind, {details:adaptation.details});
     if (message.errorMessage?.includes('This connection changed.')) {
-        return adapterError('provider_error', {details:'This connection changed. Reselect the model before sending to load its current address and API format.'});
+        return adapterError('provider_error', {details:'This connection changed. Reselect the model before sending to load its current address, API format and thinking capabilities.'});
     }
     if (message.errorMessage?.includes('This model explicitly disables image input.')) {
         return adapterError('provider_error', {details:'This model explicitly disables image input. Choose another model to send these images.'});
@@ -135,7 +172,7 @@ export function classifyTerminal(message) {
     if (/\b429\b|rate limit|too many requests|overloaded/.test(haystack)) {
         return adapterError("rate_limit");
     }
-    return adapterError("provider_error", { details: schemaFailureDetail(message.errorMessage) ?? imageFailureDetail(message.errorMessage) ?? redactedDiagnostics(diagnostics) });
+    return adapterError("provider_error", { details: (requiresResponses(message.errorMessage) ? 'HTTP 400: Chat Completions rejected tools or the selected thinking effort and requires the Responses API. No automatic retry was safe for this response. Check the connection API format.' : undefined) ?? schemaFailureDetail(message.errorMessage) ?? imageFailureDetail(message.errorMessage) ?? redactedDiagnostics(diagnostics) });
 }
 export function unexpectedError(error, terminal) {
     console.error("pi-acp internal error:", error);

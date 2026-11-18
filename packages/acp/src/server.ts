@@ -25,13 +25,17 @@ import { browserDecisionEnvironment } from "../../runtime/src/browser/config.mjs
 import {computerMcp} from '../../runtime/src/computer.mjs';
 import {codemodeImages} from './codemode-images.ts';
 import {createImageGeneration} from './image-generation.ts';
-import {customImagePolicy, installCustomImagePolicy} from './custom-model-policy.ts';
+import {customImagePolicy, installCustomImagePolicy, installCustomModelCatalog} from './custom-model-policy.ts';
+
+import {installResponsesCompat} from './responses-compat.ts';
 
 export async function startEidoAgent(agentDir: string, sessionDir: string, stream?: Stream, modelRuntime?: ModelRuntime) {
   const runtime = modelRuntime ?? await ModelRuntime.create({
     authPath: join(agentDir, "auth.json"), modelsPath: join(agentDir, "models.json"), allowModelNetwork: false,
   });
   const imagePolicy = await customImagePolicy(agentDir);
+  const disposeCatalog = installCustomModelCatalog(runtime, imagePolicy);
+  const responsesCompat = installResponsesCompat(runtime, imagePolicy);
   // Pi resolves credentials through this public method for ordinary requests and
   // direct summaries alike. Check both sides of async credential resolution so
   // an edit between them cannot pair a fresh key with the old destination.
@@ -40,7 +44,10 @@ export async function startEidoAgent(agentDir: string, sessionDir: string, strea
   const guardedGetAuth: ModelRuntime['getAuth'] = async (model, options) => {
     if (typeof model !== 'string') await imagePolicy.assertCurrent(model);
     const auth = await (typeof model === 'string' ? resolveAuth(model, options) : resolveAuth(model, options));
-    if (typeof model !== 'string') await imagePolicy.assertCurrent(model);
+    if (typeof model !== 'string') {
+      await imagePolicy.assertCurrent(model);
+      responsesCompat.recordAuth(model, auth);
+    }
     return auth;
   };
   runtime.getAuth = guardedGetAuth;
@@ -110,6 +117,7 @@ export async function startEidoAgent(agentDir: string, sessionDir: string, strea
         }
         const created = await createAgentSession({
           ...options,
+          ...(options.model ? {model:imagePolicy.project(options.model)} : {}),
           agentDir,
           // Preserve pi's defaultTools lifecycle with native file operations.
           tools: undefined,
@@ -179,6 +187,8 @@ export async function startEidoAgent(agentDir: string, sessionDir: string, strea
         catch (error) {created.session.dispose(); throw error;}
         const reload = created.session.reload.bind(created.session);
         created.session.reload = async (...args) => {
+          responsesCompat.clear();
+          await imagePolicy.refresh();
           await reload(...args);
           await imageGeneration.refresh();
           toolPolicy.changed();
@@ -246,6 +256,7 @@ export async function startEidoAgent(agentDir: string, sessionDir: string, strea
     timer = setTimeout(() => {
       refresh = refresh.then(async () => {
         if (stopped) return;
+        responsesCompat.clear();
         await imagePolicy.refresh();
         await runtime.refresh({allowNetwork:false});
         await imageGeneration.refresh();
@@ -264,7 +275,7 @@ export async function startEidoAgent(agentDir: string, sessionDir: string, strea
   const dispose = server.agent.dispose.bind(server.agent);
   server.agent.dispose = async () => {
     stopWatching(); await refresh;
-    try { await dispose(); } finally { if (runtime.getAuth === guardedGetAuth) runtime.getAuth = originalGetAuth; }
+    try { await dispose(); } finally { responsesCompat.dispose(); disposeCatalog(); if (runtime.getAuth === guardedGetAuth) runtime.getAuth = originalGetAuth; }
   };
   const close = server.connection.close.bind(server.connection);
   server.connection.close = () => { stopWatching(); return close(); };

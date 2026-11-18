@@ -846,5 +846,18 @@
   "task.reconnect_before_send": "Reconnect to send",
   "task.reconnect_tip": "Reconnect and load history without resending the last request.",
   "task.reconnecting": "Reconnecting… You can keep editing your draft.",
-  "task.request_failed": "Request failed"
+  "task.request_failed": "Request failed",
+  "thinking.title": "Thinking effort",
+  "thinking.current": "Thinking effort: {value}",
+  "thinking.off": "Off",
+  "thinking.minimal": "Minimal",
+  "thinking.low": "Low",
+  "thinking.medium": "Medium",
+  "thinking.high": "High",
+  "thinking.xhigh": "Extra high",
+  "thinking.max": "Maximum",
+  "thinking.help": "Choose how much reasoning effort the model uses.",
+  "thinking.trial_help": "Thinking levels are available to try; this custom provider may reject unsupported levels.",
+  "thinking.change": "Change thinking effort",
+  "thinking.cycle": "Cycle thinking effort"
 }

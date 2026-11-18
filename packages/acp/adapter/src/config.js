@@ -1,6 +1,7 @@
 // Adapted for Eido from @automatalabs/pi-acp 0.9.4 (Apache-2.0). See ../LICENSE.
 import { resolveModelScopeWithDiagnostics } from "@earendil-works/pi-coding-agent";
 import { clampThinkingLevel, getSupportedThinkingLevels, } from "@earendil-works/pi-ai";
+import {hasTrialThinking} from "../../src/custom-model-policy.js";
 import { adapterError } from "./errors.js";
 /** Additive ACP metadata understood by AgentPrism's generic config validator. */
 export const CONFIG_OPTION_META_NAMESPACE = "@automatalabs/agentprism";
@@ -38,7 +39,8 @@ export function thinkingLevelOption(session) {
     const supported = supportedThinkingLevels(session.model);
     return {
         id: "thinkingLevel",
-        name: "Thinking level",
+        name: "Thinking effort",
+        description: hasTrialThinking(session.model) ? "Thinking levels are available to try; this custom provider may reject unsupported levels." : "Choose how much reasoning effort the model uses.",
         type: "select",
         category: "thought_level",
         currentValue: session.thinkingLevel,
