@@ -15,7 +15,7 @@ test('saved connections refresh an open workbench without changing its selected 
   const runtime = await ModelRuntime.create({authPath:join(dir,'auth.json'),modelsPath:join(dir,'models.json'),allowModelNetwork:false});
   await fixtureModel(dir,[],{runtime});
   const toAgent = new TransformStream(), toClient = new TransformStream();
-  const server = await startEidoAgent(dir,join(dir,'sessions'),{readable:toAgent.readable,writable:toClient.writable},runtime);
+  const server = await startEidoAgent(dir,join(dir,'sessions'),{readable:toAgent.readable,writable:toClient.writable},runtime,{catalogAliases:false});
   const updates: any[] = [];
   const connection = client({name:'catalog-settings-test'})
     .onNotification(methods.client.session.update, ({params}) => {
@@ -90,7 +90,7 @@ test('editing a connection never sends its new key to an old session endpoint', 
     return auth;
   };
   const toAgent=new TransformStream(),toClient=new TransformStream();
-  const server=await startEidoAgent(directory,join(directory,'sessions'),{readable:toAgent.readable,writable:toClient.writable},runtime);
+  const server=await startEidoAgent(directory,join(directory,'sessions'),{readable:toAgent.readable,writable:toClient.writable},runtime,{catalogAliases:false});
   const connection=client({name:'destination-edit-test'}).connect({readable:toClient.readable,writable:toAgent.writable});
   try {
     await connection.agent.request(methods.agent.initialize,{protocolVersion:1,clientCapabilities:{}});

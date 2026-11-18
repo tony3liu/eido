@@ -9,7 +9,8 @@ import {getBuiltinModels} from '@earendil-works/pi-ai/providers/all';
 import {ModelRuntime,createAgentSession,SettingsManager,SessionManager} from '@earendil-works/pi-coding-agent';
 import {createAssistantMessageEventStream,getSupportedThinkingLevels,type AssistantMessage,type Model,type Api} from '@earendil-works/pi-ai';
 import {startEidoAgent} from '../src/server.ts';
-import {customImagePolicy,installCustomModelCatalog} from '../src/custom-model-policy.ts';
+import {customImagePolicy,installCustomModelCatalog,resolveCatalogThinking} from '../src/custom-model-policy.ts';
+import {createCatalogAliases} from '../src/catalog-aliases.ts';
 import {installResponsesCompat} from '../src/responses-compat.ts';
 import {isRetryableAssistantError} from '@earendil-works/pi-ai/compat';
 import {classifyTerminal,requiresResponses,responsesFailure} from '../adapter/src/errors.js';
@@ -17,16 +18,16 @@ import {createPiSettings} from '../../runtime/src/pi/settings.mjs';
 
 const rejection = 'Chat Completions does not support tools with reasoning_effort. Use /v1/responses instead.';
 const reject = (response:ServerResponse,status=400,message=rejection) => {response.writeHead(status,{'content-type':'application/json'});response.end(JSON.stringify({error:{message}}));};
-function respond(response:ServerResponse,tool=false) {
+function respond(response:ServerResponse,tool=false,text='Local fixture complete.') {
   const item = tool ? {type:'function_call',id:'fc_ping',call_id:'call_ping',name:'validation_ping',arguments:'{}',status:'completed'}
-    : {type:'message',id:'msg_done',role:'assistant',status:'completed',content:[{type:'output_text',text:'Local fixture complete.',annotations:[]}]};
+    : {type:'message',id:'msg_done',role:'assistant',status:'completed',content:[{type:'output_text',text,annotations:[]}]};
   const events = [{type:'response.created',response:{id:'resp_local'}},{type:'response.output_item.done',output_index:0,item},
     {type:'response.completed',response:{id:'resp_local',status:'completed',output:[item],usage:{input_tokens:10,output_tokens:3,total_tokens:13,input_tokens_details:{cached_tokens:0},output_tokens_details:{reasoning_tokens:1}}}}];
   response.writeHead(200,{'content-type':'text/event-stream'});
   response.end(events.map(event=>`data: ${JSON.stringify(event)}\n\n`).join(''));
 }
 type Request = {path:string;body:any;authorization:string|undefined};
-async function fixture(handler:(request:Request,response:ServerResponse)=>void|Promise<void>,prepare?:(runtime:ModelRuntime,directory:string)=>void,retryEnabled=false) {
+async function fixture(handler:(request:Request,response:ServerResponse)=>void|Promise<void>,prepare?:(runtime:ModelRuntime,directory:string)=>void|Promise<void>,retryEnabled=false, aliases=false) {
   const directory=await realpath(await mkdtemp(join(tmpdir(),'eido-responses-')));
   const requests:Request[]=[];
   const http=createServer(async(req,res)=>{
@@ -38,7 +39,7 @@ async function fixture(handler:(request:Request,response:ServerResponse)=>void|P
   const baseUrl=`http://127.0.0.1:${(http.address() as import('node:net').AddressInfo).port}/v1`;
   const models={providers:{sr:{baseUrl,api:'openai-completions',models:[
     {id:'gpt-fixture'},{id:'gemini-fixture'},{id:'disabled',reasoning:false},{id:'mapped',reasoning:true,thinkingLevelMap:{minimal:null,high:'high'}},{id:'responses',api:'openai-responses'},
-    {id:'gpt-6.2-sol'},{id:'cd-o-5-5'},{id:'ordinary-fixture'},{id:'gpt-6.1-sol'},
+    {id:'Ring-2.6-1T'},{id:'deepseek-v4-pro'},{id:'gpt-6.2-sol'},{id:'cd-o-5-5'},{id:'ordinary-fixture'},{id:'gpt-6.1-sol'},
     {id:'claude-opus-4-7'},{id:'claude-opus-4-6'},{id:'gpt-4'},
     {id:'gpt-explicit-map',reasoning:true,thinkingLevelMap:{xhigh:null,max:'high'}},
     {id:'restricted-map',reasoning:true,thinkingLevelMap:{low:'low',high:'high'}},
@@ -54,10 +55,10 @@ async function fixture(handler:(request:Request,response:ServerResponse)=>void|P
   await mkdir(join(directory,'extensions'));
   await writeFile(join(directory,'extensions','probe.js'),`import {appendFile} from 'node:fs/promises'; export default api=>api.registerTool({name:'validation_ping',label:'Validation ping',description:'Count a local test call',parameters:{type:'object',properties:{}},async execute(){await appendFile(${JSON.stringify(join(directory,'tool-count'))},'x');return {content:[{type:'text',text:'ping complete'}]};}});`);
   const runtime=await ModelRuntime.create({authPath:join(directory,'auth.json'),modelsPath:join(directory,'models.json'),allowModelNetwork:false});
-  prepare?.(runtime,directory);
+  await prepare?.(runtime,directory);
   const originalStream=runtime.streamSimple, originalGetModel=runtime.getModel;
   const toAgent=new TransformStream(),toClient=new TransformStream();
-  const server=await startEidoAgent(directory,join(directory,'sessions'),{readable:toAgent.readable,writable:toClient.writable},runtime);
+  const server=await startEidoAgent(directory,join(directory,'sessions'),{readable:toAgent.readable,writable:toClient.writable},runtime,{catalogAliases:aliases ? {} : false});
   const updates:any[]=[];
   const connection=client({name:'responses-thinking-test'})
     .onNotification(methods.client.session.update,({params})=>{updates.push(params.update);})
@@ -354,4 +355,166 @@ test('Gemini catalog and family trials retain distinct levels and native Google 
     }
     assert.equal(await readFile(join(f.directory,'models.json'),'utf8'),saved);
   } finally {await f.close();}
+});
+
+
+test('full pi catalog inherits other providers while ambiguous and unsafe metadata remain unknown', {timeout:15_000},async()=>{
+  const f=await fixture((request,response)=>request.path.endsWith('/chat/completions')?reject(response):respond(response));
+  try {
+    const reference=getBuiltinModels('ant-ling').find(model=>model.id==='Ring-2.6-1T')!;assert.ok(reference);
+    const inherited=f.runtime.getModel('sr',reference.id)!;
+    assert.deepEqual(inherited.thinkingLevelMap,reference.thinkingLevelMap);
+    assert.deepEqual(getSupportedThinkingLevels(inherited),['high','xhigh']);
+    assert.equal(inherited.baseUrl,f.baseUrl);assert.deepEqual(inherited.cost,{input:0,output:0,cacheRead:0,cacheWrite:0});
+    await f.select('model',`sr/${reference.id}`);await f.select('thinkingLevel','xhigh');await f.send();
+    assert.deepEqual(f.requests.map(request=>request.path),['/v1/chat/completions','/v1/responses']);
+    assert.ok(f.requests.every(request=>(request.body.reasoning_effort??request.body.reasoning?.effort)==='xhigh'));
+    const conflict={id:'deepseek-v4-pro',provider:'sr',api:'openai-completions'} as const;
+    assert.equal(resolveCatalogThinking(conflict),undefined,'conflicting same-ID/same-API catalogs cannot identify the gateway backend');
+    const selected=await f.select('model','sr/deepseek-v4-pro');assert.match(thinking(selected.configOptions).description,/available to try/);
+    const exact=getBuiltinModels('deepseek').find(model=>model.id===conflict.id)!;
+    assert.deepEqual(resolveCatalogThinking({...conflict,provider:'deepseek'})?.thinkingLevelMap,exact.thinkingLevelMap,'exact provider/API has priority over conflicting mirrors');
+    assert.deepEqual(resolveCatalogThinking({...conflict,provider:'deepseek',api:'openai-responses'})?.thinkingLevelMap,exact.thinkingLevelMap,'provider identity has priority across the safe protocol pair');
+    const explicitLevels={...reference,provider:'native-reference',api:'google-generative-ai' as const,thinkingLevelMap:{off:null,low:'low',high:'high'}};
+    const unspecified={...reference,provider:'compatible-mirror',thinkingLevelMap:undefined};
+    assert.deepEqual(resolveCatalogThinking({...conflict,id:reference.id},[unspecified,explicitLevels])?.thinkingLevelMap,explicitLevels.thinkingLevelMap,
+      'a same-API reasoning flag cannot obscure an explicit safe level map from another API');
+    assert.equal(resolveCatalogThinking({...conflict,id:reference.id,provider:unspecified.provider},[unspecified,explicitLevels]),unspecified,
+      'the exact configured provider still retains priority');
+    const unsafe={...reference,thinkingLevelMap:{high:'8192'}};
+    assert.equal(resolveCatalogThinking({...conflict,id:reference.id},[unsafe]),undefined,'same-API foreign numeric budgets need unborrowed provider semantics');
+    assert.equal(resolveCatalogThinking({...conflict,id:reference.id,api:'openai-responses'},[unsafe]),undefined,'cross-API numeric budgets never become reasoning_effort');
+    assert.equal(resolveCatalogThinking({...conflict,id:reference.id},[{...reference,thinkingLevelMap:{high:'default'}}]),undefined,'unknown provider-specific effort labels are not portable');
+    const configured=f.models.providers.sr.models.find(model=>model.id===reference.id)!;
+    (configured as any).reasoning=false;
+    const explicit=f.models.providers.sr.models.find(model=>model.id===conflict.id)!;
+    (explicit as any).thinkingLevelMap={off:null,low:null,medium:null,high:'high',xhigh:null,max:null};
+    await writeFile(join(f.directory,'models.json'),JSON.stringify(f.models));await f.runtime.refresh({allowNetwork:false});
+    assert.deepEqual(getSupportedThinkingLevels(f.runtime.getModel('sr',reference.id)!),['off']);
+    assert.deepEqual(f.runtime.getModel('sr',conflict.id)!.thinkingLevelMap,(explicit as any).thinkingLevelMap,'explicit maps win even when the catalog is ambiguous');
+  } finally {await f.close();}
+});
+
+test('default model alias matching stays bounded and preserves catalog safety', {timeout:20_000}, async()=>{
+  const until = async (predicate:()=>boolean) => {
+    const deadline=Date.now()+4000;
+    while(!predicate() && Date.now()<deadline) await new Promise(resolve=>setTimeout(resolve,10));
+    assert.ok(predicate(),'expected bounded background alias progress');
+  };
+  let release!:()=>void;
+  const held = new Promise<void>(resolve=>{release=resolve;});
+  let auxiliary:any;
+  const aliasId='gemini-3-flash-preview-alias';
+  const f=await fixture(async(request,response)=>{
+    const user=request.body.messages?.find((item:any)=>item.role==='user')?.content;
+    if(typeof user==='string' && user.startsWith('{"targets":')) {
+      auxiliary=JSON.parse(user);
+      assert.equal(request.body.model,'gemini-4-hydrogen');
+      assert.equal(request.body.reasoning_effort,'low','the default Gemini uses its lightest supported effort even when global thinking is off');
+      assert.equal(request.body.tools,undefined);
+      assert.equal(request.body.tool_choice,'none');
+      assert.equal(request.authorization,'Bearer fixture-key');
+      assert.doesNotMatch(JSON.stringify(request.body),/Run this local fixture|validation_ping|fixture-key|127\.0\.0\.1|eido-responses-/);
+      assert.deepEqual(auxiliary.targets.map((target:any)=>target.id).sort(),['cd-o-5-5',aliasId,'gemini-4-hydrogen'].sort());
+      assert.ok(auxiliary.targets.every((target:any)=>target.candidates.length<=32));
+      assert.ok(auxiliary.targets.every((target:any)=>target.candidates.every((candidate:any)=>/^c\d+$/.test(candidate.candidateKey))));
+      assert.ok(auxiliary.targets.find((target:any)=>target.id==='cd-o-5-5').candidates.some((candidate:any)=>candidate.id==='claude-opus-5-5' && candidate.provider==='anthropic'));
+      await held;
+      const text=JSON.stringify({matches:auxiliary.targets.map((target:any)=>({targetIndex:target.targetIndex,
+        candidateKey:target.id===aliasId?target.candidates.find((candidate:any)=>candidate.id==='gemini-3-flash-preview' && candidate.provider==='google').candidateKey
+          :target.id==='cd-o-5-5'?target.candidates.find((candidate:any)=>candidate.id==='claude-opus-5-5' && candidate.provider==='anthropic').candidateKey:null}))});
+      response.writeHead(200,{'content-type':'text/event-stream'});
+      response.end(`data: ${JSON.stringify({id:'alias-local',object:'chat.completion.chunk',created:1,model:'gemini-4-hydrogen',choices:[{index:0,delta:{role:'assistant',content:text},finish_reason:'stop'}]})}\n\ndata: [DONE]\n\n`);
+    } else if(request.path.endsWith('/chat/completions')) reject(response);
+    else respond(response);
+  },async(runtime,directory)=>{
+    const config=JSON.parse(await readFile(join(directory,'models.json'),'utf8'));
+    config.providers={sr:{...config.providers.sr,models:[{id:'gemini-4-hydrogen'},{id:aliasId},{id:'cd-o-5-5'},
+      {id:'gemini-disabled',reasoning:false},{id:'gemini-explicit',reasoning:true,thinkingLevelMap:{high:'high'}},
+      {id:'gpt-image-2.5-sunburst'},{id:'deepseek-v4-pro'},{id:'no-semantic-overlap-zzq'},
+      {id:'gemini-invalid-name',name:'https://private.invalid/secret'}]}};
+    await writeFile(join(directory,'models.json'),JSON.stringify(config));
+    const settings=JSON.parse(await readFile(join(directory,'settings.json'),'utf8'));
+    await writeFile(join(directory,'settings.json'),JSON.stringify({...settings,defaultModel:'gemini-4-hydrogen'}));
+    await runtime.refresh({allowNetwork:false});
+  },false,true);
+  try {
+    await until(()=>!!auxiliary);
+    await f.select('model',`sr/${aliasId}`);await f.select('thinkingLevel','high');
+    assert.ok(!getSupportedThinkingLevels(f.runtime.getModel('sr',aliasId)!).includes('minimal'));
+    release();
+    await until(()=>getSupportedThinkingLevels(f.runtime.getModel('sr',aliasId)!).includes('minimal'));
+    await until(()=>f.updates.some(update=>update.sessionUpdate==='config_option_update'));
+    assert.equal(resolveCatalogThinking({id:'claude-opus-5-5',provider:'sr',api:'openai-completions'}),undefined);
+    assert.ok(!getSupportedThinkingLevels(f.runtime.getModel('sr','cd-o-5-5')!).includes('minimal'),'the selected original catalog record supplies its supported levels');
+    const reselected=await f.select('model',`sr/${aliasId}`);
+    assert.ok(thinking(reselected.configOptions).options.some((option:any)=>option.value==='minimal'));
+    await f.select('thinkingLevel','minimal');await f.send();
+    assert.deepEqual(f.requests.slice(1).map(request=>[request.path,request.body.model,request.body.reasoning_effort??request.body.reasoning?.effort]),[
+      ['/v1/chat/completions',aliasId,'minimal'],['/v1/responses',aliasId,'minimal']]);
+    assert.equal(f.runtime.getModel('sr',aliasId)!.baseUrl,f.baseUrl);
+    const abbreviated=await f.select('model','sr/cd-o-5-5');
+    assert.match(thinking(abbreviated.configOptions).description,/available to try/,'LLM-inferred capabilities remain labeled as trial');
+    await f.select('thinkingLevel','xhigh');await f.send();
+    assert.ok(f.requests.slice(-2).every(request=>request.body.model==='cd-o-5-5' && (request.body.reasoning_effort??request.body.reasoning?.effort)==='xhigh'));
+    assert.equal(f.runtime.getModel('sr','cd-o-5-5')!.baseUrl,f.baseUrl);
+    assert.equal((await SettingsManager.create(f.directory,f.directory,{projectTrusted:false})).getDefaultThinkingLevel(),'off');
+    // Ordinary refresh/new-session calls and unrelated settings do not repeat auxiliary traffic.
+    const settings=JSON.parse(await readFile(join(f.directory,'settings.json'),'utf8'));
+    await writeFile(join(f.directory,'settings.json'),JSON.stringify({...settings,defaultThinkingLevel:'high'}));
+    const next=await f.connection.agent.request(methods.agent.session.new,{cwd:f.directory,mcpServers:[]});
+    await f.connection.agent.request(methods.agent.session.close,{sessionId:next.sessionId});
+    assert.equal(f.requests.length,5);
+  } finally {release();await f.close();}
+
+  // Controlled public runtime calls cover failures and races without remote requests or long waits.
+  const directory=await mkdtemp(join(tmpdir(),'eido-alias-bounds-'));
+  const config={providers:{sr:{baseUrl:'https://example.invalid/v1',api:'openai-completions',models:[{id:'helper',reasoning:false},{id:aliasId}]}}};
+  const defaults={defaultProvider:'sr',defaultModel:'helper',defaultThinkingLevel:'off'};
+  await writeFile(join(directory,'models.json'),JSON.stringify(config));
+  await writeFile(join(directory,'auth.json'),JSON.stringify({sr:{type:'api_key',key:'fixture-secret'}}));
+  await writeFile(join(directory,'settings.json'),JSON.stringify(defaults));
+  const runtime=await ModelRuntime.create({authPath:join(directory,'auth.json'),modelsPath:join(directory,'models.json'),allowModelNetwork:false});
+  const policy=await customImagePolicy(directory);
+  let calls=0, notices=0, mode:'invalid'|'valid'|'deferred'='invalid';
+  let finishLate!:()=>void;
+  let signal:AbortSignal|undefined;
+  runtime.completeSimple=async(model,context,options)=>{
+    calls++;signal=options?.signal;
+    assert.equal(model.id,'helper');assert.equal(options?.reasoning,undefined);
+    assert.equal(options?.toolChoice,'none');assert.equal(options?.maxRetries,0);assert.equal(options?.maxTokens,2048);
+    assert.deepEqual(context.tools,[]);assert.equal(context.messages.length,1);
+    assert.doesNotMatch(JSON.stringify(context),/example\.invalid|fixture-secret|eido-alias-bounds-/);
+    const input=JSON.parse(context.messages[0]!.content as string);
+    const output={...message(model),content:[{type:'text' as const,text:JSON.stringify({matches:input.targets.map((target:any)=>({targetIndex:target.targetIndex,candidateKey:mode==='invalid'?'hallucinated-model':target.candidates.find((candidate:any)=>candidate.id==='gemini-3-flash-preview' && candidate.provider==='google').candidateKey}))})}]};
+    if(mode==='deferred') return new Promise<AssistantMessage>(resolve=>{finishLate=()=>resolve(output);});
+    return output;
+  };
+  const aliases=createCatalogAliases(directory,runtime,policy,()=>false,async()=>{notices++;},{timeoutMs:40});
+  policy.setAliasLookup(aliases.lookup);
+  const target=()=>runtime.getPhysicalModel('sr',aliasId)!;
+  const holdProcess=setInterval(()=>{},1000);
+  try {
+    await aliases.schedule();await aliases.schedule();
+    assert.equal(calls,1);assert.equal(aliases.lookup(target()),undefined);assert.equal(notices,0);
+    await writeFile(join(directory,'settings.json'),JSON.stringify({...defaults,defaultThinkingLevel:'high'}));
+    await aliases.schedule();assert.equal(calls,1,'unrelated global settings preserve negative cache');
+    mode='valid';await writeFile(join(directory,'auth.json'),JSON.stringify({sr:{type:'api_key',key:'rotated-fixture'}}));
+    await aliases.schedule();assert.equal(calls,2);assert.ok(aliases.lookup(target()));assert.equal(notices,1);
+    mode='deferred';config.providers.sr.baseUrl='https://example.invalid/v2';
+    await writeFile(join(directory,'models.json'),JSON.stringify(config));await runtime.refresh({allowNetwork:false});
+    const pending=aliases.schedule();await until(()=>calls===3);
+    // A second edit inside the 500ms watcher gap makes this otherwise valid result stale.
+    config.providers.sr.baseUrl='https://example.invalid/v3';await writeFile(join(directory,'models.json'),JSON.stringify(config));
+    finishLate();await pending;assert.equal(aliases.lookup(target()),undefined);
+    await runtime.refresh({allowNetwork:false});
+    const timeout=aliases.schedule();await until(()=>calls===4);await timeout;
+    assert.equal(signal?.aborted,true);finishLate();await aliases.schedule();
+    assert.equal(calls,4,'timeout is negatively cached and a late success cannot retry');assert.equal(aliases.lookup(target()),undefined);
+    await writeFile(join(directory,'settings.json'),JSON.stringify({...defaults,defaultModel:'missing'}));
+    await aliases.schedule();assert.equal(calls,4,'no fallback default or login is selected');
+    await writeFile(join(directory,'settings.json'),JSON.stringify(defaults));
+    const cancel=aliases.schedule();await until(()=>calls===5);aliases.dispose();await cancel;finishLate();
+    assert.equal(signal?.aborted,true);assert.equal(aliases.lookup(target()),undefined);
+  } finally {clearInterval(holdProcess);aliases.dispose();await rm(directory,{recursive:true,force:true});}
 });

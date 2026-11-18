@@ -9,7 +9,7 @@ import {nativeUiAction} from './native-ui.ts';
 import { runAcp } from "../adapter/src/lib.js";
 import { createAgentSession, ModelRuntime, type AgentSession } from "@earendil-works/pi-coding-agent";
 import { join } from "node:path";
-import {watchFile, unwatchFile} from 'node:fs';
+import {watchFile, unwatchFile, type Stats} from 'node:fs';
 import { ndJsonStream, type AgentContext, type McpServer, type Stream } from "@agentclientprotocol/sdk";
 import {Readable, Writable} from 'node:stream';
 import { editorTools } from "./editor-tools.ts";
@@ -28,8 +28,9 @@ import {createImageGeneration} from './image-generation.ts';
 import {customImagePolicy, installCustomImagePolicy, installCustomModelCatalog} from './custom-model-policy.ts';
 
 import {installResponsesCompat} from './responses-compat.ts';
+import {createCatalogAliases} from './catalog-aliases.ts';
 
-export async function startEidoAgent(agentDir: string, sessionDir: string, stream?: Stream, modelRuntime?: ModelRuntime) {
+export async function startEidoAgent(agentDir: string, sessionDir: string, stream?: Stream, modelRuntime?: ModelRuntime, options: {catalogAliases?:false|{timeoutMs?:number}} = {}) {
   const runtime = modelRuntime ?? await ModelRuntime.create({
     authPath: join(agentDir, "auth.json"), modelsPath: join(agentDir, "models.json"), allowModelNetwork: false,
   });
@@ -52,6 +53,10 @@ export async function startEidoAgent(agentDir: string, sessionDir: string, strea
   };
   runtime.getAuth = guardedGetAuth;
   const imageGeneration = await createImageGeneration(agentDir, runtime);
+  const aliases = options.catalogAliases === false ? undefined : createCatalogAliases(agentDir,runtime,imagePolicy,imageGeneration.supports,async()=>{
+    await server.agent.refreshGlobalModelScope();
+  },options.catalogAliases);
+  imagePolicy.setAliasLookup(aliases?.lookup);
   let connectClient!: (client: AgentContext) => void;
   let supportsForms = false;
   let supportsNativeUi = false;
@@ -95,6 +100,7 @@ export async function startEidoAgent(agentDir: string, sessionDir: string, strea
         await imagePolicy.refresh();
         if (!modelRuntime) await runtime.refresh({ allowNetwork: false });
         await imageGeneration.refresh();
+        void aliases?.schedule();
         // Let pi resolve explicit lists, +/- modifiers, pending registrations and
         // reload additions. Only the absent-setting fallback is Eido-specific.
         if (options.settingsManager) {
@@ -191,6 +197,7 @@ export async function startEidoAgent(agentDir: string, sessionDir: string, strea
           await imagePolicy.refresh();
           await reload(...args);
           await imageGeneration.refresh();
+          void aliases?.schedule();
           toolPolicy.changed();
         };
         installPiCommands(created.session, client, supportsForms, agentDir, supportsNativeUi, () => server.agent.refreshGlobalModelScope());
@@ -250,8 +257,9 @@ export async function startEidoAgent(agentDir: string, sessionDir: string, strea
   let stopped = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let refresh = Promise.resolve();
-  const changed = () => {
-    if (stopped) return;
+  const changed = (current:Stats, previous:Stats) => {
+    if (stopped || (current.mtimeMs === previous.mtimeMs && current.ctimeMs === previous.ctimeMs && current.ino === previous.ino && current.size === previous.size)) return;
+    void aliases?.invalidate();
     clearTimeout(timer);
     timer = setTimeout(() => {
       refresh = refresh.then(async () => {
@@ -260,16 +268,28 @@ export async function startEidoAgent(agentDir: string, sessionDir: string, strea
         await imagePolicy.refresh();
         await runtime.refresh({allowNetwork:false});
         await imageGeneration.refresh();
-        if (!stopped && !runtime.getError()) await server.agent.refreshGlobalModelScope();
+        if (!stopped && !runtime.getError()) {
+          await server.agent.refreshGlobalModelScope();
+          void aliases?.schedule();
+        }
       }).catch(() => { /* Keep current options; the settings view reports configuration errors. */ });
     }, 100);
     timer.unref();
   };
   const watched = ['auth.json', 'models.json', 'models-store.json'].map(name => join(agentDir, name));
   for (const path of watched) watchFile(path, {persistent:false, interval:500}, changed);
+  const settingsPath = join(agentDir,'settings.json');
+  // The resolver compares only the global default identity; thinking and other
+  // settings changes preserve both positive and negative cache entries.
+  const settingsChanged = () => {
+    if (!stopped && aliases) void aliases.invalidate().then(()=>aliases.schedule());
+  };
+  watchFile(settingsPath,{persistent:false,interval:500},settingsChanged);
   const stopWatching = () => {
     stopped = true;
+    aliases?.dispose();
     clearTimeout(timer);
+    unwatchFile(settingsPath,settingsChanged);
     for (const path of watched) unwatchFile(path, changed);
   };
   const dispose = server.agent.dispose.bind(server.agent);
@@ -281,5 +301,6 @@ export async function startEidoAgent(agentDir: string, sessionDir: string, strea
   server.connection.close = () => { stopWatching(); return close(); };
   connectClient(server.connection.client);
   admitRequests();
+  void aliases?.schedule();
   return server;
 }
