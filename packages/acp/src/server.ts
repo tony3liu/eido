@@ -128,7 +128,8 @@ export async function startEidoAgent(agentDir: string, sessionDir: string, strea
           // Preserve pi's defaultTools lifecycle with native file operations.
           tools: undefined,
           noTools: undefined,
-          customTools: [...[...editorTools(options.cwd, options.sessionManager.getSessionId(), client, images.get, researchHooks),
+          customTools: [...[...editorTools(options.cwd, options.sessionManager.getSessionId(), client, images.get, researchHooks,
+            () => options.resourceLoader?.getSkills().skills ?? []),
             ...editorQueryTools(options.cwd, options.sessionManager.getSessionId(), client)]
             .map(tool => ({...tool, defaultActive: false})), preview.tool, shell.tool,
             imageGeneration.tool(() => liveSession, options.sessionManager.getSessionId()),

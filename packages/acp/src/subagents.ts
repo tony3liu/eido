@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
-import { Type } from "typebox";
+import { Type, type Static } from "typebox";
 import { RequestError, type AgentContext, type McpServer, type SessionUpdate, type SessionConfigOption, type ContentBlock } from "@agentclientprotocol/sdk";
 import { defineTool, type AgentSession, type SessionEntry } from "@earendil-works/pi-coding-agent";
 import type { runAcp } from "../adapter/src/lib.js";
@@ -35,6 +35,32 @@ const describeInput = (content: ContentBlock[]) => content.map(block => block.ty
   : block.type === "image" ? "[Image attachment]" : block.type === "resource_link" ? `[Resource: ${block.uri}]` : "[Attached resource]").join("\n");
 const report = (row: Row) => `${row.inputs?.length ? `User instructions received during this run:\n${row.inputs.map(text=>JSON.stringify(text)).join("\n")}\n\nAgent result:\n` : ""}${row.output ?? "No result."}`;
 const jobSchema = Type.Object({agent: roleName(), title: instanceTitle(), task: Type.String({minLength: 1})});
+const delegationSchema = Type.Object({
+  mode: Type.Union([Type.Literal("single"), Type.Literal("parallel"), Type.Literal("chain")],
+    {description: "single: one job; parallel: independent jobs; chain: ordered jobs."}),
+  jobs: Type.Array(jobSchema, {minItems: 1, maxItems: 8, description: "The jobs to execute in the selected mode."}),
+}, {additionalProperties: false});
+type Delegation = Static<typeof delegationSchema>;
+
+// Normalize pre-upgrade calls before pi validates the current schema. Never
+// guess which jobs to run when a legacy call supplies several different forms.
+function prepareDelegation(input: unknown): Delegation {
+  const legacy = input as Record<string, unknown> | null;
+  if (!legacy || typeof legacy !== "object") return input as Delegation;
+  if ("mode" in legacy || "jobs" in legacy) {
+    if (["task", "tasks", "chain", "title", "agent"].some(key => key in legacy)) {
+      throw new Error('Use only "mode" and "jobs" at the top level. Put each task, title, and agent inside jobs.');
+    }
+    return input as Delegation;
+  }
+  const {task, tasks, chain, title, agent} = legacy;
+  const forms = [task, tasks, chain].filter(value => value !== undefined);
+  if (forms.length !== 1) {
+    throw new Error('Specify one mode and one jobs list, for example {"mode":"single","jobs":[{"task":"Review the change"}]}. No agents were started.');
+  }
+  return (tasks !== undefined ? {mode: "parallel", jobs: tasks} : chain !== undefined ? {mode: "chain", jobs: chain} :
+    {mode: "single", jobs: [{task, title, agent}]}) as Delegation;
+}
 const textContent = (text: string) => [{type: "content" as const, content: {type: "text" as const, text}}];
 
 /** Reuse pi sessions and the ACP turn boundary for every child, including retries. */
@@ -109,21 +135,21 @@ export function createSubagents(agentDir: string, sessionDir: string) {
     tool(parentId: string, client: AgentContext) {
       return defineTool({
         name: "subagent", label: "Delegate to agents",
-        description: "Delegate to independent pi agents. Use title/task/agent for one agent, tasks for parallel agents (up to 4 simultaneously), or chain for sequential agents. In chain tasks, {previous} is replaced with the preceding result. Default role is scout (read only); worker can edit native buffers and delegate; reviewer reads; verifier uses preview/browser. Use /agents to manage global roles. Children inherit model/thinking unless their role specifies them. Every child appears in the workbench with its own permissions, edits, results and stop control. Failures block dependent steps; independent parallel tasks continue. Context is independent; include all required instructions. Nesting is bounded to 3 levels and 16 active children per main task.",
-        parameters: Type.Object({title: instanceTitle(), task: Type.Optional(Type.String({minLength: 1})), agent: roleName(),
-          tasks: Type.Optional(Type.Array(jobSchema, {minItems: 1, maxItems: 8})), chain: Type.Optional(Type.Array(jobSchema, {minItems: 1, maxItems: 8}))}),
-        async execute(toolCallId, args, signal) {
+        description: 'Delegate to pi agents using mode and jobs. Example: {"mode":"single","jobs":[{"agent":"reviewer","task":"Review the change"}]}. Use single for exactly one job, parallel for independent jobs (up to 4 running together), or chain for ordered jobs. In a chain, {previous} is replaced with the preceding result. Default role is scout (read only); worker can edit native buffers and delegate; reviewer reads; verifier uses preview/browser. Use /agents to manage global roles. Children inherit model/thinking unless their role specifies them. Every child appears in the workbench with its own permissions, edits, results and stop control. Failures block dependent steps; independent parallel tasks continue. Context is independent; include all required instructions. Nesting is bounded to 3 levels and 16 active children per main task.',
+        parameters: delegationSchema,
+        prepareArguments: prepareDelegation,
+        async execute(toolCallId, {mode: selectedMode, jobs}, signal) {
           if (!enabled) throw new Error("This client does not support native subagents.");
           const parent = sessions.get(parentId);
           if (!parent?.host) throw new Error("Parent session is not ready.");
-          const modes = [!!args.task, !!args.tasks, !!args.chain].filter(Boolean).length;
-          if (modes !== 1) throw new Error("Choose exactly one delegation form: task, tasks, or chain.");
+          const single = selectedMode === "single", chain = selectedMode === "chain";
+          if (single && jobs.length !== 1) throw new Error('Mode "single" requires exactly one job.');
+          if (jobs.some(job => !job.task.trim())) throw new Error("Each job needs a non-empty task.");
           const ancestry = relations.get(parentId), depth = (ancestry?.depth ?? 0) + 1;
           if (depth > 3) throw new Error("Maximum delegation depth reached. Complete this work in the current agent.");
           const rootId = ancestry?.rootSessionId ?? parentId;
           const catalogue = await discoverAgentRoles(agentDir);
-          const jobs: Job[] = args.tasks ?? args.chain ?? [{title: args.title, task: args.task!, agent: args.agent}];
-          const single = !args.tasks && !args.chain, mode = args.chain ? "Chain" : "Parallel";
+          const mode = chain ? "Chain" : "Parallel";
           const groupId = randomUUID();
           const rows: Row[] = jobs.map((job, i) => {
             const role = catalogue.roles.find(role => role.name === (job.agent ?? "scout"));
@@ -135,7 +161,7 @@ export function createSubagents(agentDir: string, sessionDir: string) {
             const counts = rows.reduce<Record<string, number>>((all, row) => ({...all, [row.state]: (all[row.state] ?? 0) + 1}), {});
             publish(parent, {sessionUpdate: "tool_call_update", toolCallId, title: `${mode} · ${rows.length} agents · ${Object.entries(counts).map(([s,n]) => `${n} ${s.toLowerCase()}`).join(" · ")}`,
               status: rows.some(r => ["Queued", "Running", "Stopping"].includes(r.state)) ? "in_progress" : rows.every(r => r.state === "Completed") ? "completed" : "failed",
-              content: textContent(rows.map((r,i) => `${i + 1}. **${r.job.title || r.role.name}** — ${r.state}${args.chain && i > 0 ? ` (after step ${i})` : ""}`).join("\n"))});
+              content: textContent(rows.map((r,i) => `${i + 1}. **${r.job.title || r.role.name}** — ${r.state}${chain && i > 0 ? ` (after step ${i})` : ""}`).join("\n"))});
           };
           for (const row of rows) {
             if (!single) publish(parent, {sessionUpdate: "tool_call", toolCallId: row.id, title: row.job.title || row.role.name, kind: "other", status: "pending"});
@@ -200,7 +226,7 @@ export function createSubagents(agentDir: string, sessionDir: string) {
               settled?.();
             }
           };
-          if (args.chain) {
+          if (chain) {
             let previous: string | undefined;
             for (let i = 0; i < rows.length; i++) {
               const row = rows[i]!;

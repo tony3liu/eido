@@ -1,5 +1,8 @@
-import { lstat, realpath } from "node:fs/promises";
+import { constants } from "node:fs";
+import { lstat, open, readdir, realpath } from "node:fs/promises";
 import { dirname, basename, isAbsolute, relative, resolve, sep } from "node:path";
+
+const privatePart = (part: string) => [".git", ".local", ".pi"].includes(part.toLowerCase()) || part.toLowerCase().startsWith(".eido-review-");
 
 export async function workspacePath(cwd: string, path: string, allowMissing = false) {
   const root = await realpath(cwd);
@@ -23,8 +26,60 @@ export async function workspacePath(cwd: string, path: string, allowMissing = fa
   if (local === ".." || local.startsWith(`..${sep}`) || isAbsolute(local)) {
     throw new Error("File is outside this workspace.");
   }
-  if (local.split(sep).some(part => [".git", ".local", ".pi"].includes(part) || part.startsWith('.eido-review-'))) {
+  if (local.split(sep).some(privatePart)) {
     throw new Error("Private workspace storage is not available to file tools.");
   }
   return canonical;
+}
+
+// Workspace build outputs are a separate, read-only view. Never search .local
+// implicitly or apply this exception to native read/write or editor mutations.
+const buildDirectories = new Set(["bridge-target", "cua-target", "native-app", "native-target", "upstream"]);
+const buildText = new Set([
+  "cua-applied.json", "cua-build.json", "native-applied.json", "native-assets.json", "native-build.json",
+  "native-build.log", "native-check.log", "native-status.json",
+]);
+
+export async function buildArtifactPath(cwd: string, path: string, purpose: "read" | "list") {
+  const [storage, name, ...parts] = relative(resolve(cwd), resolve(cwd, path)).split(sep);
+  if (storage !== ".local") return;
+  if (purpose === "read" ? !name || !buildText.has(name) || parts.length > 0
+    : name && (!buildDirectories.has(name) || parts.some(privatePart))) return;
+  const expected = resolve(await realpath(cwd), storage, ...(name ? [name, ...parts] : []));
+  if (await realpath(expected) !== expected) throw new Error("Build artifact paths cannot follow symlinks.");
+  return expected;
+}
+
+export async function listBuildArtifacts(cwd: string, path: string, limit: number) {
+  const canonical = await buildArtifactPath(cwd, path, "list");
+  if (!canonical) return;
+  const topLevel = basename(canonical) === ".local";
+  const entries = (await readdir(canonical, {withFileTypes: true}))
+    .filter(entry => (entry.isDirectory() || entry.isFile()) && !privatePart(entry.name)
+      && (!topLevel || (entry.isDirectory() ? buildDirectories : buildText).has(entry.name)))
+    .map(entry => entry.name + (entry.isDirectory() ? "/" : ""))
+    .sort();
+  return {output: entries.slice(0, limit).join("\n") || "(empty directory)", truncated: entries.length > limit};
+}
+
+export async function readToolText(path: string, signal?: AbortSignal) {
+  signal?.throwIfAborted();
+  const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  try {
+    const stat = await file.stat();
+    const maxBytes = 4 * 1024 * 1024;
+    if (!stat.isFile() || stat.nlink !== 1) throw new Error("Only regular text files without additional hard links are supported here.");
+    if (stat.size > maxBytes) throw new Error("This file exceeds the 4 MiB read limit. Inspect a smaller excerpt using the terminal.");
+    const buffer = Buffer.alloc(stat.size);
+    let offset = 0;
+    while (offset < buffer.length) {
+      signal?.throwIfAborted();
+      const {bytesRead} = await file.read(buffer, offset, buffer.length - offset, offset);
+      if (!bytesRead) break;
+      offset += bytesRead;
+    }
+    const output = buffer.subarray(0, offset);
+    if (output.includes(0)) throw new Error("This file is not text.");
+    return output;
+  } finally { await file.close(); }
 }

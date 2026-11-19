@@ -1,8 +1,9 @@
 import {createHash} from 'node:crypto';
 import type {ResearchHooks,ResearchProvenance} from './research-requirements.ts';
 import { AsyncLocalStorage } from "node:async_hooks";
-import { stat } from "node:fs/promises";
-import { workspacePath } from "./workspace-path.ts";
+import { realpath, stat } from "node:fs/promises";
+import { resolve } from "node:path";
+import { buildArtifactPath, readToolText, workspacePath } from "./workspace-path.ts";
 import { methods, type AgentContext } from "@agentclientprotocol/sdk";
 import {
   createReadToolDefinition,
@@ -10,10 +11,12 @@ import {
   createWriteToolDefinition,
   defineTool,
   detectSupportedImageMimeTypeFromFile,
+  type Skill,
 } from "@earendil-works/pi-coding-agent";
 
 export function editorTools(cwd: string, sessionId: string, client: Pick<AgentContext, "request">,
-  outputImage: (path:string)=>{data:string;mimeType:string}|undefined = ()=>undefined, research?:ResearchHooks) {
+  outputImage: (path:string)=>{data:string;mimeType:string}|undefined = ()=>undefined, research?:ResearchHooks,
+  skills: () => readonly Skill[] = () => []) {
   const readPaths = new Set<string>();
   const edits=new AsyncLocalStorage<{path:string;contentHash:string}[]>();
   const provenance = new AsyncLocalStorage<ResearchProvenance | undefined>();
@@ -63,16 +66,31 @@ export function editorTools(cwd: string, sessionId: string, client: Pick<AgentCo
   const read = createReadToolDefinition(cwd, { operations: { readFile, access, detectImageMimeType } });
   const recoveringRead: typeof read = {
     ...read,
-    description: `${read.description} If a text offset is past EOF, the read automatically returns a bounded tail of the current file and reports the adjusted range.`,
+    description: `${read.description} Read-only exceptions include registered global skill entries (use their listed absolute paths) and approved .local build logs and metadata. If a text offset is past EOF, returns a bounded tail and reports the adjusted range.`,
     async execute(id, params, signal, onUpdate, ctx) {
       // Keep recovery on the same native buffer snapshot, including unsaved
       // edits. Per-call state also prevents concurrent reads sharing snapshots.
       let snapshot: Buffer | undefined;
       let mime: string | null | undefined;
+      let readOnlyPath: Promise<string | undefined> | undefined;
+      const readOnly = (path: string) => readOnlyPath ??= (async () => {
+        const build = await buildArtifactPath(cwd, path, "read");
+        if (build) return build;
+        const skill = skills().find(skill => skill.sourceInfo.scope === "user" && !skill.disableModelInvocation
+          && resolve(skill.filePath) === resolve(cwd, path));
+        if (!skill) return;
+        const canonical = await realpath(skill.filePath);
+        if (!canonical.endsWith(".md")) throw new Error("The registered skill target must be a Markdown file.");
+        return canonical;
+      })();
       const attempt = createReadToolDefinition(cwd, { operations: {
-        access,
-        readFile: async path => snapshot ??= await readFile(path),
-        detectImageMimeType: async path => mime === undefined ? (mime = (await detectImageMimeType(path)) ?? null) : mime,
+        access: async path => { if (!await readOnly(path)) await access(path); },
+        readFile: async path => {
+          const allowed = await readOnly(path);
+          return snapshot ??= allowed ? await readToolText(allowed, signal) : await readFile(path);
+        },
+        detectImageMimeType: async path => mime === undefined
+          ? (mime = await readOnly(path) ? null : (await detectImageMimeType(path)) ?? null) : mime,
       } });
       try {
         return await attempt.execute(id, params, signal, onUpdate, ctx);
