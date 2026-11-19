@@ -1,7 +1,9 @@
 import type {AgentContext} from "@agentclientprotocol/sdk";
 import {execFile} from "node:child_process";
+import {readdir} from "node:fs/promises";
 import {basename, matchesGlob} from "node:path";
 import {createFindToolDefinition, createGrepToolDefinition, createLsToolDefinition, defineTool} from "@earendil-works/pi-coding-agent";
+import type {sessionFileResources} from "./editor-tools.ts";
 import {buildArtifactPath, findBuildReferences, listBuildArtifacts, readToolText, workspacePath} from "./workspace-path.ts";
 
 export const EDITOR_QUERY = "_eido/fs/query";
@@ -56,7 +58,8 @@ async function grepBuildFile(cwd: string, path: string, args: Query, signal?: Ab
 }
 
 /** Keep pi's public tool schemas and query current native project buffers. */
-export function editorQueryTools(cwd: string, sessionId: string, client: Pick<AgentContext, "request">) {
+export function editorQueryTools(cwd: string, sessionId: string, client: Pick<AgentContext, "request">,
+  resourcePath?: ReturnType<typeof sessionFileResources>) {
   const execute = (operation: "find" | "grep" | "ls") => async (_id: string, args: Query, signal?: AbortSignal) => {
     signal?.throwIfAborted();
     for (const key of ["limit", "context"] as const) {
@@ -70,11 +73,13 @@ export function editorQueryTools(cwd: string, sessionId: string, client: Pick<Ag
     const build = operation === "ls" ? await listBuildArtifacts(cwd, base, args.limit ?? 500)
       : operation === "find" && args.pattern ? await findBuildReferences(cwd, base, args.pattern, Math.min(args.limit ?? 500, 1000), signal)
       : operation === "grep" ? await grepBuildFile(cwd, base, args, signal) : undefined;
-    const result = build ?? await client.request<{output: string; truncated: boolean}>(EDITOR_QUERY,
+    const resource = !build && operation === "ls" ? await resourcePath?.(base, "ls") : undefined;
+    const listing = resource ? await listResource(resource, Math.min(args.limit ?? 500, 500), signal) : undefined;
+    const result = build ?? listing ?? await client.request<{output: string; truncated: boolean}>(EDITOR_QUERY,
       {sessionId, operation, ...args, path: await workspacePath(cwd, args.path ?? ".", true)}, {cancellationSignal: signal});
     signal?.throwIfAborted();
     return {content: [{type: "text" as const, text: result.output}], details: {
-      source: build ? "build-artifacts" : "editor", truncated: result.truncated,
+      source: build ? "build-artifacts" : listing ? "session-resource" : "editor", truncated: result.truncated,
       resultLimitReached: operation === "find" && result.truncated ? args.limit ?? 500 : undefined,
       matchLimitReached: operation === "grep" && result.truncated ? args.limit ?? 100 : undefined,
       entryLimitReached: operation === "ls" && result.truncated ? args.limit ?? 500 : undefined,
@@ -86,6 +91,24 @@ export function editorQueryTools(cwd: string, sessionId: string, client: Pick<Ag
     defineTool({...createGrepToolDefinition(cwd), execute: execute("grep"),
       description: "Search editor contents, including unsaved changes, using a regex or literal pattern. Respects project exclusions. For approved .local files, search one explicit file at a time with a literal or POSIX extended regex. Use find for upstream reference directories. Results are bounded; read a file before editing."}),
     defineTool({...createLsToolDefinition(cwd), execute: execute("ls"),
-      description: "List files and directories in the project. An explicit .local path shows only approved build outputs; private runtime state stays hidden."}),
+      description: "List files and directories in the project, this session's scratchpad or a skill directory. An explicit .local path shows only approved build outputs; private runtime state stays hidden."}),
   ];
+}
+
+async function listResource(path: string, limit: number, signal?: AbortSignal) {
+  const entries = (await readdir(path, {withFileTypes: true}))
+    .filter(entry => !entry.name.startsWith(".") && entry.name.toLowerCase() !== "node_modules"
+      && (entry.isFile() || entry.isDirectory()))
+    .map(entry => entry.name + (entry.isDirectory() ? "/" : "")).sort();
+  signal?.throwIfAborted();
+  const output: string[] = [];
+  let bytes = 0;
+  for (const entry of entries.slice(0, limit)) {
+    bytes += Buffer.byteLength(entry) + 1;
+    if (bytes > 50 * 1024) break;
+    output.push(entry);
+  }
+  const truncated = output.length < entries.length;
+  return {output: (output.join("\n") || "(empty directory)")
+    + (truncated ? "\n\n[Directory listing truncated. Use a more specific path.]" : ""), truncated};
 }

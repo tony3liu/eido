@@ -1,8 +1,11 @@
 import {createHash} from 'node:crypto';
 import type {ResearchHooks,ResearchProvenance} from './research-requirements.ts';
 import { AsyncLocalStorage } from "node:async_hooks";
-import { realpath, stat } from "node:fs/promises";
-import { resolve } from "node:path";
+import { lstat, realpath, stat } from "node:fs/promises";
+import { homedir, tmpdir } from "node:os";
+import { dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { pathToFileURL } from "node:url";
+import { oneCodeDescriptor } from "../../runtime/src/pi/bundled-one-code.mjs";
 import { buildArtifactPath, readToolText, workspacePath } from "./workspace-path.ts";
 import { methods, type AgentContext } from "@agentclientprotocol/sdk";
 import {
@@ -14,9 +17,93 @@ import {
   type Skill,
 } from "@earendil-works/pi-coding-agent";
 
+type ResourcePath = (path: string, operation: "read" | "ls") => Promise<string | undefined>;
+const noResource: ResourcePath = async () => undefined;
+const within = (root: string, path: string) => {
+  const local = relative(root, path);
+  return local !== ".." && !local.startsWith(`..${sep}`) && !isAbsolute(local);
+};
+const documentPath = (path: string) => [".md", ".markdown", ".mdx", ".txt", ".rst", ".adoc"].includes(extname(path).toLowerCase());
+const tryRealpath = (path: string) => realpath(path).catch(() => undefined);
+
+export function sessionFileResources(cwd: string, sessionId: string, agentDir: string, skills: () => readonly Skill[]): ResourcePath {
+  const bundled = oneCodeDescriptor();
+  const temp = process.platform === "win32" ? tmpdir() : "/tmp";
+  const uid = process.getuid?.();
+  let roots: Promise<{workspace: string; agent: string; temp: string}> | undefined;
+  let scratchpad: Promise<string | undefined> | undefined;
+  const scratchpadPath = async () => {
+    if (!bundled.installed || !/^[a-z0-9-]+$/i.test(sessionId)) return;
+    // The model prompt uses this same helper from the bundled extension.
+    const url = pathToFileURL(join(bundled.path, "extensions/lib/core/scratchpad.ts"));
+    const {sessionScratchpadDir} = await import(url.href) as {
+      sessionScratchpadDir(cwd: string, id: string): string;
+    };
+    return sessionScratchpadDir(cwd, sessionId);
+  };
+  return async (input, operation) => {
+    const path = resolve(cwd, input.startsWith("~/") ? join(homedir(), input.slice(2)) : input);
+    const resolved = await (roots ??= (async () => ({
+      workspace: await realpath(cwd), agent: await tryRealpath(agentDir) ?? resolve(agentDir),
+      temp: await tryRealpath(temp) ?? temp,
+    }))());
+    const canonical = await tryRealpath(path);
+    if (!canonical) return;
+    const owner = join(resolved.temp, uid === undefined ? "eido" : `eido-${uid}`);
+    const normalizeTemp = (path: string) => within(temp, path) ? resolve(resolved.temp, relative(temp, path)) : path;
+    const target = normalizeTemp(path);
+    if (within(owner, target) || within(owner, canonical)) {
+      const root = await (scratchpad ??= scratchpadPath());
+      if (!root || !within(root, target) || target !== canonical) throw new Error("File is outside this session's scratchpad.");
+      // The temp owner and every directory leading to this session must be private,
+      // and no component may be a symlink. Never fall through to document reads here.
+      let current = resolved.temp;
+      const parts = relative(resolved.temp, target).split(sep);
+      for (const [i, part] of parts.entries()) {
+        current = join(current, part);
+        const info = await lstat(current);
+        const directory = i < parts.length - 1 || operation === "ls";
+        if ((directory ? !info.isDirectory() : !info.isFile())
+          || (uid !== undefined && (info.uid !== uid || (directory && (info.mode & 0o022) !== 0)
+            || (i < 4 && (info.mode & 0o077) !== 0)))) {
+          throw new Error("Unsafe session scratchpad path.");
+        }
+      }
+      return target;
+    }
+
+    // Keep the existing exact grant for a globally configured skill in private
+    // workspace storage. Ordinary workspace files still use native buffers.
+    const registered = operation === "read" && skills().some(skill =>
+      skill.sourceInfo.scope === "user" && !skill.disableModelInvocation && resolve(skill.filePath) === path);
+    const protectedPath = (path: string) => {
+      const parts = path.toLowerCase().split(sep);
+      return parts.includes(".git") || parts.some(part => part.startsWith(".eido-review-"))
+        || (within(resolved.agent, path) && !within(join(resolved.agent, "skills"), path));
+    };
+    const privateWorkspace = (root: string, path: string) => within(root, path)
+      && relative(root, path).split(sep).some(part => [".local", ".pi"].includes(part.toLowerCase()));
+    if (protectedPath(path) || protectedPath(canonical)) return;
+    if (privateWorkspace(resolve(cwd), path) || privateWorkspace(resolved.workspace, canonical)) {
+      return registered && documentPath(canonical) ? canonical : undefined;
+    }
+    if (within(resolved.workspace, canonical)) return;
+    if (operation === "read") {
+      return documentPath(path) && documentPath(canonical) ? canonical : undefined;
+    }
+    // A direct request to browse a skill may use an unregistered local Skill,
+    // but does not grant directory listings of unrelated places outside the project.
+    for (let directory = canonical; directory !== dirname(directory); directory = dirname(directory)) {
+      if (protectedPath(directory)) break;
+      const marker = await lstat(join(directory, "SKILL.md")).catch(() => undefined);
+      if (marker?.isFile() && marker.nlink === 1) return canonical;
+    }
+  };
+}
+
 export function editorTools(cwd: string, sessionId: string, client: Pick<AgentContext, "request">,
   outputImage: (path:string)=>{data:string;mimeType:string}|undefined = ()=>undefined, research?:ResearchHooks,
-  skills: () => readonly Skill[] = () => []) {
+  resourcePath: ResourcePath = noResource) {
   const readPaths = new Set<string>();
   const edits=new AsyncLocalStorage<{path:string;contentHash:string}[]>();
   const provenance = new AsyncLocalStorage<ResearchProvenance | undefined>();
@@ -66,23 +153,15 @@ export function editorTools(cwd: string, sessionId: string, client: Pick<AgentCo
   const read = createReadToolDefinition(cwd, { operations: { readFile, access, detectImageMimeType } });
   const recoveringRead: typeof read = {
     ...read,
-    description: `${read.description} Read-only exceptions include registered global skill entries, approved .local build logs and metadata, and Rust sources and Cargo manifests under .local/upstream/zed/crates. If a text offset is past EOF, returns a bounded tail and reports the adjusted range.`,
+    description: `${read.description} Also reads Markdown and common plain text documents at explicit paths, and text in this session's scratchpad. Other read-only exceptions include approved .local build logs and metadata, and Rust sources and Cargo manifests under .local/upstream/zed/crates. If a text offset is past EOF, returns a bounded tail and reports the adjusted range.`,
     async execute(id, params, signal, onUpdate, ctx) {
       // Keep recovery on the same native buffer snapshot, including unsaved
       // edits. Per-call state also prevents concurrent reads sharing snapshots.
       let snapshot: Buffer | undefined;
       let mime: string | null | undefined;
       let readOnlyPath: Promise<string | undefined> | undefined;
-      const readOnly = (path: string) => readOnlyPath ??= (async () => {
-        const build = await buildArtifactPath(cwd, path, "read");
-        if (build) return build;
-        const skill = skills().find(skill => skill.sourceInfo.scope === "user" && !skill.disableModelInvocation
-          && resolve(skill.filePath) === resolve(cwd, path));
-        if (!skill) return;
-        const canonical = await realpath(skill.filePath);
-        if (!canonical.endsWith(".md")) throw new Error("The registered skill target must be a Markdown file.");
-        return canonical;
-      })();
+      const readOnly = (path: string) => readOnlyPath ??= (async () =>
+        await buildArtifactPath(cwd, path, "read") ?? await resourcePath(path, "read"))();
       const attempt = createReadToolDefinition(cwd, { operations: {
         access: async path => { if (!await readOnly(path)) await access(path); },
         readFile: async path => {

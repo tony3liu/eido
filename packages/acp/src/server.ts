@@ -12,7 +12,7 @@ import { join } from "node:path";
 import {watchFile, unwatchFile, type Stats} from 'node:fs';
 import { ndJsonStream, type AgentContext, type McpServer, type Stream } from "@agentclientprotocol/sdk";
 import {Readable, Writable} from 'node:stream';
-import { editorTools } from "./editor-tools.ts";
+import { editorTools, sessionFileResources } from "./editor-tools.ts";
 import { editorQueryTools } from "./editor-query.ts";
 import { createPreview } from "./preview.ts";
 import { browserLifecycle } from "./browser-lifecycle.ts";
@@ -121,6 +121,8 @@ export async function startEidoAgent(agentDir: string, sessionDir: string, strea
             'Follow the requested verification scope and skip checks the user declined. For a command-only check call preview with action "start", files and commands; omit server, entry and criterionIds unless they apply. Use the browser only for a real web preview. The command copy lacks .git and may lack tools from your login shell; use native grep/find instead of shell rg, and use read-only git -C <project-path> status for on-disk repository status. Use actual submitted criterion IDs, never invented ones. After an error read the specific result and change the input, or report the blocker if no valid alternative exists. Avoid repeating the same failed check. Report which checks actually ran and whether the inputs changed. For a browser preview, open its exact URL, observe the requested behavior, then check freshness and stop the preview. Never install missing dependencies without user authorization.'
           ];
         }
+        const fileResources = sessionFileResources(options.cwd, options.sessionManager.getSessionId(), agentDir,
+          () => options.resourceLoader?.getSkills().skills ?? []);
         const created = await createAgentSession({
           ...options,
           ...(options.model ? {model:imagePolicy.project(options.model)} : {}),
@@ -128,9 +130,8 @@ export async function startEidoAgent(agentDir: string, sessionDir: string, strea
           // Preserve pi's defaultTools lifecycle with native file operations.
           tools: undefined,
           noTools: undefined,
-          customTools: [...[...editorTools(options.cwd, options.sessionManager.getSessionId(), client, images.get, researchHooks,
-            () => options.resourceLoader?.getSkills().skills ?? []),
-            ...editorQueryTools(options.cwd, options.sessionManager.getSessionId(), client)]
+          customTools: [...[...editorTools(options.cwd, options.sessionManager.getSessionId(), client, images.get, researchHooks, fileResources),
+            ...editorQueryTools(options.cwd, options.sessionManager.getSessionId(), client, fileResources)]
             .map(tool => ({...tool, defaultActive: false})), preview.tool, shell.tool,
             imageGeneration.tool(() => liveSession, options.sessionManager.getSessionId()),
             ...(subagents.enabled ? [subagents.tool(options.sessionManager.getSessionId(), client)] : [])],
