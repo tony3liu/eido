@@ -36,6 +36,7 @@ Eido is a native AI workspace built on [Zed](https://github.com/zed-industries/z
 ## What's new in 0.0.4
 
 - **Cancel and keep working.** After a normal cancellation, send the next message in the same task. If the connection is lost, reconnect to restore the task, draft and pending reviews without replaying a request.
+- **Keep requirement drafts while reading sources.** In the research panel, open a citation or another saved source, then choose **Return to Draft** to resume editing your title, requirement and acceptance criteria.
 - **Readable error and tool results.** Error notices stay above the composer, summarize what happened and keep formatted technical details collapsed. Structured tool output uses consistent code formatting, and shell results show a shorter summary.
 - **File review and split view.** Pending changes are easier to find in the native review, stale read offsets recover from the editor snapshot, and opening split view collapses the task sidebar.
 - **Model compatibility.** Custom connections handle more Responses endpoints, preserve the transcript when switching API formats, and show the thinking levels advertised by each model.

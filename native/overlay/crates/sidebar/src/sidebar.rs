@@ -834,6 +834,8 @@ impl Sidebar {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        workspace::welcome::WelcomePage::install_localizer(cx, eido_i18n::tr_or);
+
         let focus_handle = cx.focus_handle();
         cx.on_focus_in(&focus_handle, window, Self::focus_in)
             .detach();
@@ -2374,11 +2376,17 @@ impl Sidebar {
         };
 
         let color = cx.theme().colors();
-        let sidebar_base_bg = color
-            .title_bar_background
-            .blend(color.panel_background.opacity(0.25));
-
-        let base_bg = color.background.blend(sidebar_base_bg);
+        let base_bg = if is_sticky {
+            color
+                .title_bar_background
+                .blend(color.panel_background.opacity(0.2))
+                .blend(color.text_accent.opacity(0.06))
+        } else {
+            let sidebar_base_bg = color
+                .title_bar_background
+                .blend(color.panel_background.opacity(0.25));
+            color.background.blend(sidebar_base_bg)
+        };
 
         let hover_base = color
             .element_active
@@ -2406,6 +2414,7 @@ impl Sidebar {
             .pl_2()
             .pr_1p5()
             .justify_between()
+            .when(is_sticky, |this| this.bg(base_bg))
             .border_1()
             .map(|this| {
                 if is_focused {
@@ -2928,7 +2937,11 @@ impl Sidebar {
 
                         let menu = menu.when(show_multi_project_entries, |this| {
                             this.entry(
-                                "Open Project in New Window",
+                                eido_i18n::tr_or(
+                                    menu_cx,
+                                    "sidebar.open_project_in_new_window",
+                                    "Open Project in New Window",
+                                ),
                                 Some(Box::new(workspace::MoveProjectToNewWindow)),
                                 {
                                     let project_group_key = project_group_key.clone();
@@ -2963,13 +2976,21 @@ impl Sidebar {
                                                 Some(TextSize::Default.rems(cx).into()),
                                                 false,
                                             ))
-                                            .child(Label::new("-click").color(Color::Muted));
+                                            .child(
+                                                Label::new(eido_i18n::tr_or(
+                                                    cx,
+                                                    "sidebar.focus_project_click_hint",
+                                                    "-click",
+                                                ))
+                                                .color(Color::Muted),
+                                            );
 
-                                        let label = if has_threads {
-                                            "Focus Last Project"
+                                        let (key, fallback) = if has_threads {
+                                            ("sidebar.focus_last_project", "Focus Last Project")
                                         } else {
-                                            "Focus Project"
+                                            ("sidebar.focus_project", "Focus Project")
                                         };
+                                        let label = eido_i18n::tr_or(cx, key, fallback);
 
                                         h_flex()
                                             .w_full()
@@ -3014,7 +3035,11 @@ impl Sidebar {
                         let menu = if open_workspaces.is_empty() {
                             menu
                         } else {
-                            let mut menu = menu.separator().header("Open Worktrees");
+                            let mut menu = menu.separator().header(eido_i18n::tr_or(
+                                menu_cx,
+                                "sidebar.open_worktrees",
+                                "Open Worktrees",
+                            ));
 
                             for (
                                 workspace_index,
@@ -3034,7 +3059,7 @@ impl Sidebar {
                                 let close_workspace = workspace.clone();
 
                                 menu = menu.custom_entry(
-                                    move |_window, _cx| {
+                                    move |_window, cx| {
                                         let close_multi_workspace = close_multi_workspace.clone();
                                         let close_weak_menu = close_weak_menu.clone();
                                         let close_workspace = close_workspace.clone();
@@ -3082,7 +3107,11 @@ impl Sidebar {
                                                     )
                                                     .icon_size(IconSize::Small)
                                                     .visible_on_hover(&row_group_name)
-                                                    .tooltip(Tooltip::text("Close Worktree"))
+                                                    .tooltip(Tooltip::text(eido_i18n::tr_or(
+                                                        cx,
+                                                        "sidebar.close_worktree",
+                                                        "Close Worktree",
+                                                    )))
                                                     .on_click(move |_, window, cx| {
                                                         cx.stop_propagation();
                                                         window.prevent_default();
@@ -3139,49 +3168,61 @@ impl Sidebar {
 
                             this.separator()
                                 .item(
-                                    ContextMenuEntry::new("Move Up")
-                                        .action(Box::new(MoveProjectUp))
-                                        .disabled(!can_move_up)
-                                        .handler(move |_window, cx| {
-                                            move_up_multi_workspace
-                                                .update(cx, |mw, cx| {
-                                                    mw.move_project_group_up(&move_up_key, cx);
-                                                })
-                                                .ok();
-                                            move_up_weak_menu
-                                                .update(cx, |_, cx| cx.emit(DismissEvent))
-                                                .ok();
-                                        }),
+                                    ContextMenuEntry::new(eido_i18n::tr_or(
+                                        menu_cx,
+                                        "sidebar.move_project_up",
+                                        "Move Up",
+                                    ))
+                                    .action(Box::new(MoveProjectUp))
+                                    .disabled(!can_move_up)
+                                    .handler(move |_window, cx| {
+                                        move_up_multi_workspace
+                                            .update(cx, |mw, cx| {
+                                                mw.move_project_group_up(&move_up_key, cx);
+                                            })
+                                            .ok();
+                                        move_up_weak_menu
+                                            .update(cx, |_, cx| cx.emit(DismissEvent))
+                                            .ok();
+                                    }),
                                 )
                                 .item(
-                                    ContextMenuEntry::new("Move Down")
-                                        .action(Box::new(MoveProjectDown))
-                                        .disabled(!can_move_down)
-                                        .handler(move |_window, cx| {
-                                            move_down_multi_workspace
-                                                .update(cx, |mw, cx| {
-                                                    mw.move_project_group_down(&move_down_key, cx);
-                                                })
-                                                .ok();
-                                            move_down_weak_menu
-                                                .update(cx, |_, cx| cx.emit(DismissEvent))
-                                                .ok();
-                                        }),
+                                    ContextMenuEntry::new(eido_i18n::tr_or(
+                                        menu_cx,
+                                        "sidebar.move_project_down",
+                                        "Move Down",
+                                    ))
+                                    .action(Box::new(MoveProjectDown))
+                                    .disabled(!can_move_down)
+                                    .handler(move |_window, cx| {
+                                        move_down_multi_workspace
+                                            .update(cx, |mw, cx| {
+                                                mw.move_project_group_down(&move_down_key, cx);
+                                            })
+                                            .ok();
+                                        move_down_weak_menu
+                                            .update(cx, |_, cx| cx.emit(DismissEvent))
+                                            .ok();
+                                    }),
                                 )
                         });
 
                         let project_group_key = project_group_key.clone();
                         let remove_multi_workspace = multi_workspace.clone();
-                        menu.separator().entry("Remove", None, move |window, cx| {
-                            remove_multi_workspace
-                                .update(cx, |multi_workspace, cx| {
-                                    multi_workspace
-                                        .remove_project_group(&project_group_key, window, cx)
-                                        .detach_and_log_err(cx);
-                                })
-                                .ok();
-                            weak_menu.update(cx, |_, cx| cx.emit(DismissEvent)).ok();
-                        })
+                        menu.separator().entry(
+                            eido_i18n::tr_or(menu_cx, "sidebar.remove_project", "Remove"),
+                            None,
+                            move |window, cx| {
+                                remove_multi_workspace
+                                    .update(cx, |multi_workspace, cx| {
+                                        multi_workspace
+                                            .remove_project_group(&project_group_key, window, cx)
+                                            .detach_and_log_err(cx);
+                                    })
+                                    .ok();
+                                weak_menu.update(cx, |_, cx| cx.emit(DismissEvent)).ok();
+                            },
+                        )
                     });
 
                 let this = this.clone();
@@ -3273,19 +3314,13 @@ impl Sidebar {
             })
             .unwrap_or(px(0.));
 
-        let color = cx.theme().colors();
-        let background = color
-            .title_bar_background
-            .blend(color.panel_background.opacity(0.2));
-
         let element = v_flex()
             .absolute()
             .top(top_offset)
             .left_0()
             .w_full()
-            .bg(background)
             .border_b_1()
-            .border_color(color.border.opacity(0.5))
+            .border_color(cx.theme().colors().border.opacity(0.5))
             .child(header_element)
             .shadow_sm()
             .into_any_element();
@@ -7557,13 +7592,15 @@ impl Sidebar {
     fn render_sidebar_bottom_bar(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let is_archive = matches!(self.view, SidebarView::Archive(..));
         let on_right = self.side(cx) == SidebarSide::Right;
+        let color = cx.theme().colors();
 
         h_flex()
             .p_1()
             .gap_1()
             .when(on_right, |this| this.flex_row_reverse())
+            .bg(color.toolbar_background.blend(color.text_accent.opacity(0.04)))
             .border_t_1()
-            .border_color(cx.theme().colors().border)
+            .border_color(color.border)
             .child(self.render_sidebar_toggle_button(cx))
             .child(
                 IconButton::new("history", IconName::Clock)

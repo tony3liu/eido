@@ -1778,7 +1778,7 @@ impl ConversationView {
             ServerState::Loading { .. } if std::env::var_os("EIDO_ROOT").is_some() => self
                 .initial_title
                 .clone()
-                .unwrap_or_else(|| "New Task".into()),
+                .unwrap_or_else(|| eido_i18n::tr(cx, "workbench.new_task")),
             ServerState::Loading { .. } => self
                 .loading_status
                 .clone()
@@ -3150,7 +3150,14 @@ impl ConversationView {
                 eido_i18n::tr(cx, "task.connection_preserved").to_string()
             };
             if saved.pending_review > 0 {
-                recovery.push_str(&format!(" Awaiting review: {} {}.", saved.pending_review, if saved.pending_review == 1 { "file" } else { "files" }));
+                let key = if saved.pending_review == 1 {
+                    "review.awaiting_one"
+                } else {
+                    "review.awaiting_count"
+                };
+                let review = eido_i18n::tr_args(cx, key, &[("count", saved.pending_review.to_string())]);
+                recovery.push('\n');
+                recovery.push_str(&review);
             }
             message = format!("{recovery}\n\n{message}");
         }
@@ -3170,7 +3177,7 @@ impl ConversationView {
                         this.retry_connection(window, cx);
                     })),
             )
-            .child(self.create_copy_button(if data.is_some() { original } else { message.clone() }))
+            .child(self.create_copy_button(if data.is_some() { original } else { message.clone() }, cx))
             .into_any_element();
 
         let title = if restoring_eido {
@@ -3690,10 +3697,13 @@ impl ConversationView {
         }
     }
 
-    fn create_copy_button(&self, message: impl Into<String>) -> impl IntoElement {
-        let message = message.into();
-
-        CopyButton::new("copy-error-message", message).tooltip_label("Copy Error Message")
+    fn create_copy_button(&self, message: impl Into<String>, cx: &App) -> impl IntoElement {
+        let label = if std::env::var_os("EIDO_ROOT").is_some() {
+            eido_i18n::tr(cx, "composer.copy_error")
+        } else {
+            "Copy Error Message".into()
+        };
+        CopyButton::new("copy-error-message", message.into()).tooltip_label(label)
     }
 
     pub(crate) fn reauthenticate(&mut self, window: &mut Window, cx: &mut Context<Self>) {

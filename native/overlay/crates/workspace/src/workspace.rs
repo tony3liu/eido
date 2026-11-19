@@ -9126,9 +9126,8 @@ impl Workspace {
             .flex_none()
             .flex()
             .items_center()
-            .justify_center()
-            .bg(cx.theme().colors().editor_background)
-            .hover(|this| this.bg(cx.theme().colors().element_selected))
+            .bg(cx.theme().colors().panel_background)
+            .hover(|this| this.bg(cx.theme().colors().border_focused))
             .child(
                 div()
                     .bg(cx.theme().colors().border_variant)

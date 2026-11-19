@@ -2,9 +2,15 @@ use std::{collections::{HashMap, HashSet}, io::Write, process::{Command, Stdio}}
 
 use editor::Editor;
 use eido_i18n::{tr, tr_args, tr_or, LocaleState};
-use gpui::{Context, Entity, IntoElement, Render, Window};
+use gpui::{Context, Entity, FocusHandle, IntoElement, KeyDownEvent, Render, Role, Window};
 use serde_json::{Value, json};
-use ui::{ContextMenu, DropdownMenu, DropdownStyle, prelude::*};
+use ui::{ContextMenu, DropdownMenu, DropdownStyle, TintColor, prelude::*};
+
+const SECTIONS: [(&str, &str); 3] = [
+    ("models", "settings.section.models"),
+    ("services", "settings.section.services"),
+    ("advanced", "settings.section.advanced"),
+];
 
 struct ModelSettingsDraft {
     expected: Value,
@@ -20,6 +26,7 @@ pub(crate) struct PiSettingsView {
     model: String,
     thinking: String,
     section: &'static str,
+    section_focus: [FocusHandle; SECTIONS.len()],
     custom_model_open: bool,
     service_open: HashSet<&'static str>,
     model_settings_open: bool,
@@ -75,7 +82,9 @@ impl PiSettingsView {
     pub(crate) fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let mut view = Self {
             data: None, scroll_handle: gpui::ScrollHandle::new(), provider: String::new(), model: String::new(), thinking: "off".into(),
-            section: "models", custom_model_open: false, service_open: HashSet::new(),
+            section: SECTIONS[0].0,
+            section_focus: std::array::from_fn(|_| cx.focus_handle().tab_index(0)),
+            custom_model_open: false, service_open: HashSet::new(),
             model_settings_open: false, model_settings: HashMap::new(),
             default_tools: input("settings.placeholder.tools", false, window, cx),
             runtime_inputs: HashMap::new(), runtime_values: HashMap::new(), runtime_expected: HashMap::new(), runtime_open: HashSet::new(),
@@ -106,6 +115,53 @@ impl PiSettingsView {
         }).detach();
         view.request(json!({"operation":"status"}), window, cx);
         view
+    }
+
+    fn select_section(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        self.section = SECTIONS[index].0;
+        self.scroll_handle.set_offset(gpui::point(px(0.), px(0.)));
+        self.section_focus[index].focus(window, cx);
+        cx.notify();
+    }
+
+    fn section_tabs(&self, cx: &Context<Self>) -> impl IntoElement + use<> {
+        h_flex()
+            .id("pi-settings-tabs")
+            .role(Role::TabList)
+            .aria_label(tr(cx, "settings.connection.title"))
+            .max_w_full()
+            .gap_0p5()
+            .p_0p5()
+            .flex_wrap()
+            .rounded_md()
+            .border_1()
+            .border_color(cx.theme().colors().border_variant)
+            .bg(cx.theme().colors().element_background)
+            .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                if event.keystroke.modifiers.modified() {
+                    return;
+                }
+                let current = SECTIONS.iter().position(|(id, _)| *id == this.section).unwrap_or(0);
+                let next = match event.keystroke.key.as_str() {
+                    "left" => (current + SECTIONS.len() - 1) % SECTIONS.len(),
+                    "right" => (current + 1) % SECTIONS.len(),
+                    "home" => 0,
+                    "end" => SECTIONS.len() - 1,
+                    _ => return,
+                };
+                this.select_section(next, window, cx);
+                cx.stop_propagation();
+            }))
+            .children(SECTIONS.into_iter().enumerate().map(|(index, (id, label))| {
+                let active = id == self.section;
+                Button::new(id, tr(cx, label))
+                    .aria_role(Role::Tab)
+                    .style(ButtonStyle::OutlinedCustom(gpui::transparent_black()))
+                    .selected_style(ButtonStyle::Tinted(TintColor::Accent))
+                    .toggle_state(active)
+                    .track_focus(&self.section_focus[index].clone().tab_stop(active))
+                    .on_click(cx.listener(move |this, _, window, cx| this.select_section(index, window, cx)))
+            }))
     }
 
     // Language changes update only placeholder strings on the existing editor entities.
@@ -829,19 +885,12 @@ impl Render for PiSettingsView {
                 .child(Label::new(tr(cx, "settings.update.help")).size(LabelSize::Small).color(Color::Muted))); }
         }
         v_flex().id("eido-pi-settings").size_full().min_h_0()
-            .child(v_flex().flex_none().px_8().pt_4().pb_3().gap_3()
-                .child(Label::new(tr(cx, "settings.connection.title")).size(LabelSize::Large))
-                .child(Label::new(tr(cx, "settings.connection.description")).size(LabelSize::Small).color(Color::Muted))
-                .child(h_flex().gap_2().flex_wrap().children([
-                    ("models", "settings.section.models"), ("services", "settings.section.services"), ("advanced", "settings.section.advanced"),
-                ].into_iter().map(|(id, label)| Button::new(id, tr(cx, label))
-                    .style(if self.section == id { ButtonStyle::Filled } else { ButtonStyle::Transparent })
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.section = id;
-                        this.scroll_handle.set_offset(gpui::point(px(0.), px(0.)));
-                        window.blur(cx);
-                        cx.notify();
-                    }))))))
+            .child(v_flex().flex_none().items_start().px_8().pt_5().pb_3().gap_4()
+                .border_b_1().border_color(cx.theme().colors().border_variant)
+                .child(v_flex().w_full().max_w(px(820.)).gap_1()
+                    .child(Headline::new(tr(cx, "settings.connection.title")).size(HeadlineSize::Large))
+                    .child(Label::new(tr(cx, "settings.connection.description")).size(LabelSize::Small).color(Color::Muted)))
+                .child(self.section_tabs(cx)))
             .child(v_flex().id("pi-settings-content").flex_1().min_h_0().overflow_y_scroll().track_scroll(&self.scroll_handle).px_8().py_4().gap_4()
                 .when(!self.notice.is_empty(), |this| this.child(Label::new(notice_message(&self.notice, self.failed, cx)).size(LabelSize::Small).color(if self.failed { Color::Error } else { Color::Success })))
                 .child(content))

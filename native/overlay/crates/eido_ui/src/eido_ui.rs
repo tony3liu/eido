@@ -6,7 +6,7 @@ use gpui::{
 use project_panel::ProjectPanel;
 use terminal_view::terminal_panel::TerminalPanel;
 use ui::{
-    Button, ButtonStyle, Color, IconButton, Label, LabelSize, TintColor, Tooltip, prelude::*,
+    Button, ButtonSize, ButtonStyle, Color, IconButton, Label, LabelSize, TintColor, Tooltip, prelude::*,
 };
 use workspace::{EidoLayout, MultiWorkspace, ToggleWorkspaceSidebar, Workspace, dock::Panel};
 
@@ -249,6 +249,7 @@ impl Render for Composer {
         let centered = self.workspace.read_with(cx, |workspace, cx| workspace.eido_composer_centered(cx)).unwrap_or(false);
         let content_width = thread.as_ref().map(|thread| thread.read(cx).eido_content_width(cx)).unwrap_or(px(780.));
         let compact = window.viewport_size().width < px(1000.);
+        let colors = cx.theme().colors();
         v_flex()
             .key_context("AgentPanel")
             .id("eido-composer-surface")
@@ -257,7 +258,7 @@ impl Render for Composer {
             .when(centered, |this| this.flex_1().min_h_0().overflow_y_scroll())
             .when(!centered, |this| this.flex_none())
             .bg(cx.theme().colors().editor_background)
-            .px(if compact { px(16.) } else { px(24.) })
+            .px(if compact { px(14.) } else { px(20.) })
             .py_4()
             .child(
                 v_flex()
@@ -344,11 +345,10 @@ impl Render for Composer {
                     .mx_auto()
                     .max_h(ui::vh(0.5, window))
                     .rounded(px(12.))
+                    .bg(colors.surface_background)
                     .border_1()
-                    .border_color(cx.theme().colors().border)
-                    .when(focused, |this| {
-                        this.border_color(cx.theme().colors().border_focused)
-                    })
+                    .border_color(colors.border)
+                    .when(focused, |this| this.border_color(colors.border_focused))
                     .overflow_y_scroll()
                     .map(|this| {
                         if let Some(thread) = thread {
@@ -415,15 +415,20 @@ impl Render for Toolbar {
             })
             .unwrap_or((EidoLayout::Workbench, false, false, false));
         let tasks_open = window.root::<MultiWorkspace>().flatten().is_some_and(|workspace| workspace.read(cx).sidebar_open());
+        let colors = cx.theme().colors();
         h_flex()
             .track_focus(&self.focus_handle)
             .w_full()
             .h_full()
-            .px_3()
-            .gap_2()
+            .pl_2()
+            .pr_3()
+            .gap_1p5()
             .child(
                 Button::new("eido-tasks", eido_i18n::tr(cx, "workbench.tasks"))
                     .label_size(LabelSize::Small)
+                    .size(ButtonSize::Compact)
+                    .style(ButtonStyle::Subtle)
+                    .selected_style(ButtonStyle::Tinted(TintColor::Accent))
                     .start_icon(Icon::new(IconName::Thread).size(IconSize::Small))
                     .toggle_state(tasks_open)
                     .tooltip(Tooltip::text(eido_i18n::tr(cx, "workbench.tasks_help")))
@@ -434,6 +439,8 @@ impl Render for Toolbar {
             .child(
                 Button::new("eido-new-conversation", eido_i18n::tr(cx, "workbench.new_task"))
                     .label_size(LabelSize::Small)
+                    .size(ButtonSize::Compact)
+                    .style(ButtonStyle::Subtle)
                     .start_icon(Icon::new(IconName::Plus).size(IconSize::Small))
                     .tooltip(Tooltip::text(eido_i18n::tr(cx, "workbench.new_task_help")))
                     .on_click(cx.listener(|this, _, window, cx| {
@@ -467,10 +474,14 @@ impl Render for Toolbar {
                     .gap_0p5()
                     .p_0p5()
                     .rounded_md()
-                    .bg(cx.theme().colors().element_background)
+                    .border_1()
+                    .border_color(colors.border_variant)
+                    .bg(colors.surface_background)
                     .child(
                         Button::new("eido-workbench", eido_i18n::tr(cx, "workbench.task"))
                             .label_size(LabelSize::Small)
+                            .size(ButtonSize::Compact)
+                            .style(ButtonStyle::Subtle)
                             .start_icon(Icon::new(IconName::Chat).size(IconSize::Small))
                             .toggle_state(layout == EidoLayout::Workbench)
                             .selected_style(ButtonStyle::Tinted(TintColor::Accent))
@@ -482,6 +493,8 @@ impl Render for Toolbar {
                     .child(
                         Button::new("eido-split", eido_i18n::tr(cx, "workbench.split"))
                             .label_size(LabelSize::Small)
+                            .size(ButtonSize::Compact)
+                            .style(ButtonStyle::Subtle)
                             .start_icon(Icon::new(IconName::Split).size(IconSize::Small))
                             .toggle_state(layout == EidoLayout::Split)
                             .selected_style(ButtonStyle::Tinted(TintColor::Accent))
@@ -495,6 +508,8 @@ impl Render for Toolbar {
                     .child(
                         Button::new("eido-files", eido_i18n::tr(cx, "workbench.files"))
                             .label_size(LabelSize::Small)
+                            .size(ButtonSize::Compact)
+                            .style(ButtonStyle::Subtle)
                             .start_icon(Icon::new(IconName::Code).size(IconSize::Small))
                             .toggle_state(layout == EidoLayout::Files)
                             .selected_style(ButtonStyle::Tinted(TintColor::Accent))
@@ -506,10 +521,11 @@ impl Render for Toolbar {
                             ),
                     ),
             )
-            .child(div().w(px(1.)).h(px(16.)).bg(cx.theme().colors().border))
+            .child(div().w(px(1.)).h(px(14.)).bg(colors.border_variant))
             .child(
                 IconButton::new("eido-terminal", IconName::Terminal)
                     .icon_size(IconSize::Small)
+                    .style(ButtonStyle::Subtle)
                     .toggle_state(terminal_open)
                     .selected_style(ButtonStyle::Tinted(TintColor::Accent))
                     .tooltip(Tooltip::text(if terminal_open {

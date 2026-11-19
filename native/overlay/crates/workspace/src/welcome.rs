@@ -16,6 +16,7 @@ use menu::{SelectNext, SelectPrevious};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use settings::{DefaultOpenBehavior, Settings};
+use theme::ActiveTheme;
 use ui::{ButtonLike, Divider, DividerColor, KeyBinding, Vector, VectorName, prelude::*};
 use util::ResultExt;
 use zed_actions::{
@@ -37,6 +38,17 @@ actions!(
     ]
 );
 
+struct WelcomeLocalizer(fn(&App, &str, &str) -> SharedString);
+
+impl gpui::Global for WelcomeLocalizer {}
+
+fn tr(cx: &App, key: &str, fallback: &'static str) -> SharedString {
+    match cx.try_global::<WelcomeLocalizer>() {
+        Some(localizer) => (localizer.0)(cx, key, fallback),
+        None => SharedString::new_static(fallback),
+    }
+}
+
 #[derive(IntoElement)]
 struct SectionHeader {
     title: SharedString,
@@ -57,7 +69,7 @@ impl RenderOnce for SectionHeader {
             .mb_2()
             .gap_2()
             .child(
-                Label::new(self.title.to_ascii_uppercase())
+                Label::new(self.title)
                     .buffer_font(cx)
                     .color(Color::Muted)
                     .size(LabelSize::XSmall),
@@ -68,6 +80,7 @@ impl RenderOnce for SectionHeader {
 
 #[derive(IntoElement)]
 struct SectionButton {
+    id: String,
     label: SharedString,
     icon: IconName,
     action: Box<dyn Action>,
@@ -77,14 +90,16 @@ struct SectionButton {
 
 impl SectionButton {
     fn new(
-        label: impl Into<SharedString>,
+        id_label: &str,
+        label: SharedString,
         icon: IconName,
         action: &dyn Action,
         tab_index: usize,
         focus_handle: FocusHandle,
     ) -> Self {
         Self {
-            label: label.into(),
+            id: format!("onb-button-{id_label}-{tab_index}"),
+            label,
             icon,
             action: action.boxed_clone(),
             tab_index,
@@ -95,10 +110,9 @@ impl SectionButton {
 
 impl RenderOnce for SectionButton {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
-        let id = format!("onb-button-{}-{}", self.label, self.tab_index);
         let action_ref: &dyn Action = &*self.action;
 
-        ButtonLike::new(id)
+        ButtonLike::new(self.id)
             .tab_index(self.tab_index as isize)
             .full_width()
             .size(ButtonSize::Medium)
@@ -142,15 +156,17 @@ impl SectionVisibility {
 struct SectionEntry {
     icon: IconName,
     title: &'static str,
+    title_key: &'static str,
     action: &'static dyn Action,
     visibility_guard: SectionVisibility,
 }
 
 impl SectionEntry {
-    fn render(&self, button_index: usize, focus: &FocusHandle) -> Option<impl IntoElement> {
+    fn render(&self, button_index: usize, focus: &FocusHandle, cx: &App) -> Option<SectionButton> {
         self.visibility_guard.is_visible().then(|| {
             SectionButton::new(
                 self.title,
+                tr(cx, self.title_key, self.title),
                 self.icon,
                 self.action,
                 button_index,
@@ -162,52 +178,61 @@ impl SectionEntry {
 
 const CONTENT: (Section<4>, Section<3>) = (
     Section {
-        title: "Get Started",
+        title: "GET STARTED",
+        title_key: "welcome.get_started",
         entries: [
             SectionEntry {
                 icon: IconName::Plus,
                 title: "New File",
+                title_key: "welcome.new_file",
                 action: &NewFile,
                 visibility_guard: SectionVisibility::Always,
             },
             SectionEntry {
                 icon: IconName::FolderOpen,
                 title: "Open Project",
+                title_key: "welcome.open_project",
                 action: &Open::DEFAULT,
                 visibility_guard: SectionVisibility::Always,
             },
             SectionEntry {
                 icon: IconName::CloudDownload,
                 title: "Clone Repository",
+                title_key: "welcome.clone_repository",
                 action: &GitClone,
                 visibility_guard: SectionVisibility::Always,
             },
             SectionEntry {
                 icon: IconName::ListCollapse,
                 title: "Open Command Palette",
+                title_key: "welcome.open_command_palette",
                 action: &command_palette::Toggle,
                 visibility_guard: SectionVisibility::Always,
             },
         ],
     },
     Section {
-        title: "Configure",
+        title: "CONFIGURE",
+        title_key: "welcome.configure",
         entries: [
             SectionEntry {
                 icon: IconName::Settings,
                 title: "Open Settings",
+                title_key: "menu.open_settings",
                 action: &OpenSettings,
                 visibility_guard: SectionVisibility::Always,
             },
             SectionEntry {
                 icon: IconName::Keyboard,
                 title: "Customize Keymaps",
+                title_key: "welcome.customize_keymaps",
                 action: &OpenKeymap,
                 visibility_guard: SectionVisibility::Always,
             },
             SectionEntry {
                 icon: IconName::Blocks,
                 title: "Explore Extensions",
+                title_key: "welcome.explore_extensions",
                 action: &Extensions {
                     category_filter: None,
                     id: None,
@@ -220,19 +245,20 @@ const CONTENT: (Section<4>, Section<3>) = (
 
 struct Section<const COLS: usize> {
     title: &'static str,
+    title_key: &'static str,
     entries: [SectionEntry; COLS],
 }
 
 impl<const COLS: usize> Section<COLS> {
-    fn render(self, index_offset: usize, focus: &FocusHandle) -> impl IntoElement {
+    fn render(self, index_offset: usize, focus: &FocusHandle, cx: &App) -> gpui::Div {
         v_flex()
             .min_w_full()
-            .child(SectionHeader::new(self.title))
+            .child(SectionHeader::new(tr(cx, self.title_key, self.title)))
             .children(
                 self.entries
                     .iter()
                     .enumerate()
-                    .filter_map(|(index, entry)| entry.render(index_offset + index, focus)),
+                    .filter_map(|(index, entry)| entry.render(index_offset + index, focus, cx)),
             )
     }
 }
@@ -245,6 +271,14 @@ pub struct WelcomePage {
 }
 
 impl WelcomePage {
+    // Workspace has no dependency on the application translation catalog.
+    pub fn install_localizer(cx: &mut App, localize: fn(&App, &str, &str) -> SharedString) {
+        if cx.try_global::<WelcomeLocalizer>().is_none() {
+            cx.set_global(WelcomeLocalizer(localize));
+            cx.refresh_windows();
+        }
+    }
+
     pub fn new(
         workspace: WeakEntity<Workspace>,
         fallback_to_recent_projects: bool,
@@ -330,7 +364,11 @@ impl WelcomePage {
         let focus = self.focus_handle.clone();
         let color = cx.theme().colors();
 
-        let description = "Run multiple threads at once, mix and match any ACP-compatible agent, and keep work conflict-free with worktrees.";
+        let description = tr(
+            cx,
+            "welcome.agent_description",
+            "Run multiple threads at once, mix and match any ACP-compatible agent, and keep work conflict-free with worktrees.",
+        );
 
         v_flex()
             .w_full()
@@ -351,7 +389,11 @@ impl WelcomePage {
                             .color(Color::Muted)
                             .size(IconSize::Small),
                     )
-                    .child(Label::new("Collaborate with Agents")),
+                    .child(Label::new(tr(
+                        cx,
+                        "welcome.agent_title",
+                        "Collaborate with Agents",
+                    ))),
             )
             .child(
                 Label::new(description)
@@ -360,28 +402,36 @@ impl WelcomePage {
                     .mb_2(),
             )
             .child(
-                Button::new("open-agent", "Open Agent Panel")
-                    .full_width()
-                    .tab_index(tab_index as isize)
-                    .style(ButtonStyle::Outlined)
-                    .key_binding(
-                        KeyBinding::for_action_in(&ToggleFocus, &self.focus_handle, cx)
-                            .size(rems_from_px(12_f32)),
-                    )
-                    .on_click(move |_, window, cx| {
-                        focus.dispatch_action(&ToggleWorkspaceSidebar, window, cx);
-                        focus.dispatch_action(&ToggleFocus, window, cx);
-                    }),
+                Button::new(
+                    "open-agent",
+                    tr(cx, "welcome.open_agent_panel", "Open Agent Panel"),
+                )
+                .full_width()
+                .tab_index(tab_index as isize)
+                .style(ButtonStyle::Outlined)
+                .key_binding(
+                    KeyBinding::for_action_in(&ToggleFocus, &self.focus_handle, cx)
+                        .size(rems_from_px(12_f32)),
+                )
+                .on_click(move |_, window, cx| {
+                    focus.dispatch_action(&ToggleWorkspaceSidebar, window, cx);
+                    focus.dispatch_action(&ToggleFocus, window, cx);
+                }),
             )
     }
 
     fn render_recent_project_section(
         &self,
-        recent_projects: Vec<impl IntoElement>,
-    ) -> impl IntoElement {
+        recent_projects: Vec<SectionButton>,
+        cx: &App,
+    ) -> gpui::Div {
         v_flex()
             .w_full()
-            .child(SectionHeader::new("Recent Projects"))
+            .child(SectionHeader::new(tr(
+                cx,
+                "welcome.recent_projects",
+                "RECENT PROJECTS",
+            )))
             .children(recent_projects)
     }
 
@@ -391,15 +441,20 @@ impl WelcomePage {
         tab_index: usize,
         location: &SerializedWorkspaceLocation,
         paths: &PathList,
-    ) -> impl IntoElement {
+        cx: &App,
+    ) -> SectionButton {
         let name = project_name(paths);
-
-        let (icon, title) = match location {
-            SerializedWorkspaceLocation::Local => (IconName::Folder, name),
-            SerializedWorkspaceLocation::Remote(_) => (IconName::Server, name),
+        let (id_label, title) = match name.as_deref() {
+            Some(name) => (name, name.to_owned().into()),
+            None => ("Untitled", tr(cx, "welcome.untitled_project", "Untitled")),
+        };
+        let icon = match location {
+            SerializedWorkspaceLocation::Local => IconName::Folder,
+            SerializedWorkspaceLocation::Remote(_) => IconName::Server,
         };
 
         SectionButton::new(
+            id_label,
             title,
             icon,
             &OpenRecentProject {
@@ -432,6 +487,7 @@ impl Render for WelcomePage {
                     first_section_entries + index,
                     &workspace.location,
                     &workspace.identity_paths,
+                    cx,
                 )
             })
             .collect::<Vec<_>>();
@@ -439,21 +495,35 @@ impl Render for WelcomePage {
         let showing_recent_projects =
             self.fallback_to_recent_projects && !recent_projects.is_empty();
         let second_section = if showing_recent_projects {
-            self.render_recent_project_section(recent_projects)
+            self.render_recent_project_section(recent_projects, cx)
                 .into_any_element()
         } else {
             second_section
-                .render(first_section_entries, &self.focus_handle)
+                .render(first_section_entries, &self.focus_handle, cx)
                 .into_any_element()
         };
 
         let eido = std::env::var_os("EIDO_ROOT").is_some();
-        let welcome_label = if eido {
-            if self.fallback_to_recent_projects { "Welcome back to Eido" } else { "Welcome to Eido" }
-        } else if self.fallback_to_recent_projects {
-            "Welcome back to Zed"
+        let welcome_label = match (eido, self.fallback_to_recent_projects) {
+            (true, true) => tr(cx, "welcome.eido_back", "Welcome back to Eido"),
+            (true, false) => tr(cx, "welcome.eido_title", "Welcome to Eido"),
+            (false, true) => tr(cx, "welcome.zed_back", "Welcome back to Zed"),
+            (false, false) => tr(cx, "welcome.zed_title", "Welcome to Zed"),
+        };
+        let tagline = if eido {
+            tr(cx, "welcome.eido_tagline", "Understand. Create. Evolve.")
         } else {
-            "Welcome to Zed"
+            tr(cx, "welcome.zed_tagline", "The editor for what's next")
+        };
+        let mark_size = rems_from_px(45_f32);
+        let mark = if eido {
+            gpui::svg()
+                .path("images/eido-mark.svg")
+                .size(mark_size)
+                .text_color(cx.theme().colors().text_accent)
+                .into_any_element()
+        } else {
+            Vector::square(VectorName::ZedLogo, mark_size).into_any_element()
         };
 
         h_flex()
@@ -480,19 +550,17 @@ impl Render for WelcomePage {
                             .justify_center()
                             .mb_4()
                             .gap_4()
-                            .child(if eido {
-                                gpui::svg().path("images/eido-mark.svg").size(rems_from_px(45_f32)).text_color(gpui::rgb(0x4b6df3)).into_any_element()
-                            } else { Vector::square(VectorName::ZedLogo, rems_from_px(45_f32)).into_any_element() })
+                            .child(mark)
                             .child(
                                 v_flex().child(Headline::new(welcome_label)).child(
-                                    Label::new(if eido { "Understand. Create. Evolve." } else { "The editor for what's next" })
+                                    Label::new(tagline)
                                         .size(LabelSize::Small)
                                         .color(Color::Muted)
                                         .italic(),
                                 ),
                             ),
                     )
-                    .child(first_section.render(Default::default(), &self.focus_handle))
+                    .child(first_section.render(Default::default(), &self.focus_handle, cx))
                     .child(second_section)
                     .when(ai_enabled && !showing_recent_projects, |this| {
                         let agent_tab_index = next_tab_index;
@@ -502,13 +570,16 @@ impl Render for WelcomePage {
                     .when(!self.fallback_to_recent_projects, |this| {
                         this.child(
                             v_flex().gap_4().child(Divider::horizontal()).child(
-                                Button::new("welcome-exit", "Return to Onboarding")
-                                    .tab_index(next_tab_index as isize)
-                                    .full_width()
-                                    .label_size(LabelSize::XSmall)
-                                    .on_click(|_, window, cx| {
-                                        window.dispatch_action(OpenOnboarding.boxed_clone(), cx);
-                                    }),
+                                Button::new(
+                                    "welcome-exit",
+                                    tr(cx, "welcome.return_to_onboarding", "Return to Onboarding"),
+                                )
+                                .tab_index(next_tab_index as isize)
+                                .full_width()
+                                .label_size(LabelSize::XSmall)
+                                .on_click(|_, window, cx| {
+                                    window.dispatch_action(OpenOnboarding.boxed_clone(), cx);
+                                }),
                             ),
                         )
                     }),
@@ -527,8 +598,8 @@ impl Focusable for WelcomePage {
 impl Item for WelcomePage {
     type Event = ItemEvent;
 
-    fn tab_content_text(&self, _detail: usize, _cx: &App) -> SharedString {
-        "Welcome".into()
+    fn tab_content_text(&self, _detail: usize, cx: &App) -> SharedString {
+        tr(cx, "welcome.tab_title", "Welcome")
     }
 
     fn telemetry_event_text(&self) -> Option<&'static str> {
@@ -657,18 +728,14 @@ mod persistence {
     }
 }
 
-fn project_name(paths: &PathList) -> String {
+fn project_name(paths: &PathList) -> Option<String> {
     let joined = paths
         .paths()
         .iter()
         .filter_map(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
         .collect::<Vec<_>>()
         .join(", ");
-    if joined.is_empty() {
-        "Untitled".to_string()
-    } else {
-        joined
-    }
+    (!joined.is_empty()).then_some(joined)
 }
 
 #[cfg(test)]
@@ -678,26 +745,31 @@ mod tests {
     #[test]
     fn test_project_name_empty() {
         let paths = PathList::new::<&str>(&[]);
-        assert_eq!(project_name(&paths), "Untitled");
+        assert_eq!(project_name(&paths), None);
     }
 
     #[test]
     fn test_project_name_single() {
         let paths = PathList::new(&["/home/user/my-project"]);
-        assert_eq!(project_name(&paths), "my-project");
+        assert_eq!(project_name(&paths).as_deref(), Some("my-project"));
     }
 
     #[test]
     fn test_project_name_multiple() {
         // PathList sorts lexicographically, so filenames appear in alpha order
         let paths = PathList::new(&["/home/user/zed", "/home/user/api"]);
-        assert_eq!(project_name(&paths), "api, zed");
+        assert_eq!(project_name(&paths).as_deref(), Some("api, zed"));
     }
 
     #[test]
     fn test_project_name_root_path_filtered() {
-        // A bare root "/" has no file_name(), falls back to "Untitled"
         let paths = PathList::new(&["/"]);
-        assert_eq!(project_name(&paths), "Untitled");
+        assert_eq!(project_name(&paths), None);
+    }
+
+    #[test]
+    fn test_project_name_named_untitled() {
+        let paths = PathList::new(&["/home/user/Untitled"]);
+        assert_eq!(project_name(&paths).as_deref(), Some("Untitled"));
     }
 }

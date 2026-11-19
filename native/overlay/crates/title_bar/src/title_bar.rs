@@ -313,13 +313,11 @@ impl Render for TitleBar {
         {
             let project_controls = h_flex()
                 .h_full()
-                .gap_2()
+                .gap_1p5()
                 .pl_2()
+                .pr_1p5()
                 .flex_none()
-                .child(
-                    gpui::img("images/eido-logo.png")
-                        .size(px(24.)),
-                )
+                .child(gpui::img("images/eido-logo.png").size(px(20.)))
                 .child(self.render_project_name(project_name, window, cx))
                 .when_some(repository.filter(|_| is_git_enabled), |this, repository| {
                     this.children(self.render_worktree_and_branch(

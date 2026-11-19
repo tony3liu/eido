@@ -5792,7 +5792,7 @@ impl AgentPanel {
                     .active_conversation_view()
                     .is_some_and(|view| view.read(cx).title(cx).as_ref() == "New Agent Thread")
                 {
-                    this.child(Label::new("New Task"))
+                    this.child(Label::new(eido_i18n::tr(cx, "workbench.new_task")))
                 } else {
                     this.child(self.render_title_view(window, cx))
                 }

@@ -2206,11 +2206,11 @@ impl Render for MessageEditor {
             let terminal = terminal.clone();
             return v_flex()
                 .w_full()
-                .gap_1()
+                .gap_1p5()
                 .child(
                     h_flex()
                         .justify_between()
-                        .pr_6()
+                        .px_1()
                         .child(
                             Label::new(eido_i18n::tr(cx, "composer.extension_editor"))
                                 .size(LabelSize::Small)
@@ -2229,6 +2229,10 @@ impl Render for MessageEditor {
                     div()
                         .w_full()
                         .h(px(144.))
+                        .rounded_md()
+                        .border_1()
+                        .border_color(cx.theme().colors().border_variant)
+                        .overflow_hidden()
                         .bg(cx.theme().colors().terminal_background)
                         .child(view.clone()),
                 )
