@@ -1520,6 +1520,7 @@ pub enum Event {
     ZoomChanged,
     ModalOpened,
     Activate,
+    EidoEnteredSplit,
     PanelAdded(AnyView),
     WorktreeCreationChanged,
 }
@@ -9227,8 +9228,12 @@ impl Workspace {
         self.eido_reply_visible
     }
     pub fn set_eido_layout(&mut self, layout: EidoLayout, cx: &mut Context<Self>) {
+        let entered_split = self.eido_layout != EidoLayout::Split && layout == EidoLayout::Split;
         self.eido_layout = layout;
         self.eido_terminal_expanded = false;
+        if entered_split {
+            cx.emit(Event::EidoEnteredSplit);
+        }
         cx.notify();
     }
     pub fn toggle_eido_workbench(&mut self, cx: &mut Context<Self>) {

@@ -518,6 +518,10 @@ impl MultiWorkspace {
             SidebarSide::Right => "right",
         };
         telemetry::event!("Sidebar Toggled", action = "close", side = side);
+        self.apply_close_sidebar(window, cx);
+    }
+
+    fn apply_close_sidebar(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.sidebar_open = false;
         for workspace in self.workspaces().cloned().collect::<Vec<_>>() {
             workspace.update(cx, |workspace, _cx| {
@@ -604,10 +608,19 @@ impl MultiWorkspace {
         })
         .detach();
 
-        cx.subscribe_in(workspace, window, |this, workspace, event, window, cx| {
-            if let WorkspaceEvent::Activate = event {
+        cx.subscribe_in(workspace, window, |this, workspace, event, window, cx| match event {
+            WorkspaceEvent::Activate => {
                 this.activate(workspace.clone(), None, window, cx);
             }
+            WorkspaceEvent::EidoEnteredSplit => {
+                if this.workspace() == workspace
+                    && this.sidebar_open()
+                    && workspace.read(cx).eido_layout() == crate::EidoLayout::Split
+                {
+                    this.apply_close_sidebar(window, cx);
+                }
+            }
+            _ => {}
         })
         .detach();
     }
