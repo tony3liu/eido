@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="native/branding/eido-readme.svg" alt="Eido — AI 工作空间，0.0.3" width="100%">
+  <img src="native/branding/eido-readme.svg" alt="Eido — AI 工作空间，0.0.4" width="100%">
 </p>
 
 <h1 align="center">和 AI 一起，把事情做完。</h1>
@@ -26,23 +26,21 @@
 
 Eido 是基于 [Zed](https://github.com/zed-industries/zed) 和官方未修改的 [pi](https://github.com/earendil-works/pi) 构建的原生 AI 工作空间。从一个希望完成的目标开始，带入相关资料，与 AI 一起推进结果。对话是工作入口，需要时可以随时使用原生文件浏览、代码编辑与改动审阅。
 
-**Eido 0.0.3 现已面向 macOS 13 及以上的 Apple Silicon Mac 发布。** 内置 **pi 1.5.2**。
+**Eido 0.0.4 现已面向 macOS 13 及以上的 Apple Silicon Mac 发布。** 内置 **pi 1.5.2**。
 
 <p>
-  <a href="https://github.com/tony3liu/eido/releases/download/v0.0.3/Eido-0.0.3-macos-arm64.dmg"><strong>下载 Mac 版 · Apple Silicon</strong></a> ·
-  <a href="https://github.com/tony3liu/eido/releases/tag/v0.0.3">版本说明与校验文件</a>
+  <a href="https://github.com/tony3liu/eido/releases/download/v0.0.4/Eido-0.0.4-macos-arm64.dmg"><strong>下载 Mac 版 · Apple Silicon</strong></a> ·
+  <a href="https://github.com/tony3liu/eido/releases/tag/v0.0.4">版本说明与校验文件</a>
 </p>
 
-## 0.0.3 更新
+## 0.0.4 更新
 
-- **按文件查看执行结果。** read、grep 合并为简洁的“文件”入口，点击后在文件区按路径查看源码摘录和搜索命中，再进一步打开完整文件。修改、新增与删除代码进入原生 diff，显示红绿增删；审批和报错仍单独显示。
-- **更好用的模型连接。** 自定义 API 连接可直接编辑；同一连接支持批量填写模型 ID，或从服务端获取列表后勾选。保存后可以在 Workbench 重新选择模型，使用更新后的配置。
-- **直接发送图片。** 自定义模型无需手工声明视觉能力；Eido 尝试把图片交给接口，由服务端决定是否支持，并显示实际错误。
-- **生图与结果卡片。** 支持已适配的 GPT Image 模型，生成的图片可以打开或另存为。主对话模型也可以通过 `generate_image` 调用已配置的生图模型，然后继续任务。
-- **默认内置 One Code。** 集成 [One Code](https://github.com/IsuruMaduranga/one-code) 0.8.0 的 Eido 兼容子集，增强提示词、上下文、工具发现和技能；在扩展中心可以停用。模型、权限和原生文件操作继续由 Eido 统一管理。
-- **任务恢复改进。** 改进报错后切换模型、重新连接与重试的处理，保留历史和当前草稿，避免卡在无法继续的界面。
+- **取消后继续同一任务。** 正常取消后可以直接发送下一条消息。连接断开时，重新连接会恢复任务、草稿和待审阅改动，不会自动重发请求。
+- **更易读的错误和工具结果。** 错误提示显示在输入框上方，先说明原因，技术详情默认收起并可展开查看格式化内容。结构化工具结果统一为代码样式，命令结果提供简短摘要。
+- **文件审阅和分栏。** 待审阅改动更容易找到；读取位置失效时可根据编辑器快照恢复；进入分栏时收起任务侧栏。
+- **模型兼容性。** 自定义连接适配更多 Responses 接口，切换 API 格式时保留对话，并按模型实际支持的选项显示思考强度。
 
-继续提供中英文界面、任务／文件／分栏视图、16px 默认字号，以及官方未修改的 pi 1.5.2。Research & Documents 仍是默认关闭的实验预览。
+继续提供中英文界面和官方未修改的 pi 1.5.2。Research & Documents 仍是默认关闭的实验预览。
 
 ## 在同一个空间工作
 
@@ -60,7 +58,7 @@ Browser Use 和 Computer Use 将任务延伸到网页与桌面应用，应用内
 
 ## 下载与安装
 
-1. 下载 [Eido-0.0.3-macos-arm64.dmg](https://github.com/tony3liu/eido/releases/download/v0.0.3/Eido-0.0.3-macos-arm64.dmg)。
+1. 下载 [Eido-0.0.4-macos-arm64.dmg](https://github.com/tony3liu/eido/releases/download/v0.0.4/Eido-0.0.4-macos-arm64.dmg)。
 2. 退出旧版 Eido，打开磁盘映像，将 **Eido** 拖入 **Applications**。
 3. 启动 Eido，在全局设置中配置模型和认证信息。
 
@@ -105,7 +103,7 @@ Eido 保留原生编辑与审阅能力，同时扩展到编程之外的任务。
 
 ## 反馈建议
 
-欢迎[提交 Issue](https://github.com/tony3liu/eido/issues)，说明目标、预期与实际表现、简短复现步骤，以及 **Eido 0.0.3** 和 macOS 版本。分享截图或日志前，请移除凭据和不适合公开的项目内容。
+欢迎[提交 Issue](https://github.com/tony3liu/eido/issues)，说明目标、预期与实际表现、简短复现步骤，以及 **Eido 0.0.4** 和 macOS 版本。分享截图或日志前，请移除凭据和不适合公开的项目内容。
 
 ## 致谢与开源协议
 
@@ -134,5 +132,5 @@ Eido 尊重并保留这些项目的许可证与署名。**Eido 自有代码采�
 
 <p align="center">
   <strong>理解。创造。演进。</strong><br>
-  <sub>Eido · 0.0.3 · macOS</sub>
+  <sub>Eido · 0.0.4 · macOS</sub>
 </p>

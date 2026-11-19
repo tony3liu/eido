@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="native/branding/eido-readme.svg" alt="Eido — AI workspace, 0.0.3" width="100%">
+  <img src="native/branding/eido-readme.svg" alt="Eido — AI workspace, 0.0.4" width="100%">
 </p>
 
 <h1 align="center">A workspace for getting things done with AI.</h1>
@@ -26,23 +26,21 @@
 
 Eido is a native AI workspace built on [Zed](https://github.com/zed-industries/zed) and the official, unmodified [pi](https://github.com/earendil-works/pi) agent. Start with an outcome, bring in relevant context, and work through the result. The conversation is central; native files, code editing, and review are available when the task needs them.
 
-**Eido 0.0.3 is available for Apple Silicon Macs running macOS 13 or later.** It bundles **pi 1.5.2**.
+**Eido 0.0.4 is available for Apple Silicon Macs running macOS 13 or later.** It bundles **pi 1.5.2**.
 
 <p>
-  <a href="https://github.com/tony3liu/eido/releases/download/v0.0.3/Eido-0.0.3-macos-arm64.dmg"><strong>Download for Mac · Apple Silicon</strong></a> ·
-  <a href="https://github.com/tony3liu/eido/releases/tag/v0.0.3">Release notes and checksums</a>
+  <a href="https://github.com/tony3liu/eido/releases/download/v0.0.4/Eido-0.0.4-macos-arm64.dmg"><strong>Download for Mac · Apple Silicon</strong></a> ·
+  <a href="https://github.com/tony3liu/eido/releases/tag/v0.0.4">Release notes and checksums</a>
 </p>
 
-## What's new in 0.0.3
+## What's new in 0.0.4
 
-- **File activity, grouped by file.** Read and grep operations share a compact Files entry. Open it to inspect native source excerpts and search matches grouped by path, then open a full file when needed. Code edits, additions, and deletions open native diffs with added/removed lines; approvals and errors stay visible.
-- **Editable model connections.** Edit an existing custom API connection, enter multiple model IDs, or fetch the server's model list and select entries. After saving, reselect the model in an open Workbench task to use the updated configuration.
-- **Send images directly.** Custom models no longer require a manual vision-capability declaration. Eido attempts to send the image to the endpoint and reports the service's actual response.
-- **Image generation and result cards.** Supported GPT Image models produce images you can open or save. The main conversation model can also call a configured image model through `generate_image`, then continue the task.
-- **One Code included by default.** An Eido-compatible subset of [One Code](https://github.com/IsuruMaduranga/one-code) 0.8.0 enhances prompts, context, tool discovery, and skills. Disable it in Extensions if needed. Eido continues to manage models, permissions, and native file operations.
-- **Improved task recovery.** Better handling of model changes after errors, reconnection, and explicit retries, while preserving history and the current draft.
+- **Cancel and keep working.** After a normal cancellation, send the next message in the same task. If the connection is lost, reconnect to restore the task, draft and pending reviews without replaying a request.
+- **Readable error and tool results.** Error notices stay above the composer, summarize what happened and keep formatted technical details collapsed. Structured tool output uses consistent code formatting, and shell results show a shorter summary.
+- **File review and split view.** Pending changes are easier to find in the native review, stale read offsets recover from the editor snapshot, and opening split view collapses the task sidebar.
+- **Model compatibility.** Custom connections handle more Responses endpoints, preserve the transcript when switching API formats, and show the thinking levels advertised by each model.
 
-English/Simplified Chinese, Task / Files / Split views, 16px defaults, and the official unmodified pi 1.5.2 remain available. Research & Documents remains an experimental preview, disabled by default.
+English/Simplified Chinese and the official unmodified pi 1.5.2 remain available. Research & Documents remains an experimental preview, disabled by default.
 
 ## Work in one place
 
@@ -60,7 +58,7 @@ Browser Use and Computer Use extend tasks to websites and desktop applications. 
 
 ## Download and install
 
-1. Download [Eido-0.0.3-macos-arm64.dmg](https://github.com/tony3liu/eido/releases/download/v0.0.3/Eido-0.0.3-macos-arm64.dmg).
+1. Download [Eido-0.0.4-macos-arm64.dmg](https://github.com/tony3liu/eido/releases/download/v0.0.4/Eido-0.0.4-macos-arm64.dmg).
 2. Quit an older Eido instance, open the disk image, and drag **Eido** into **Applications**.
 3. Launch Eido and configure your model and authentication in global settings.
 
@@ -105,7 +103,7 @@ Eido keeps native editing and review while expanding beyond coding. This is stil
 
 ## Feedback
 
-[Open an issue](https://github.com/tony3liu/eido/issues) with your goal, expected and actual behavior, a small reproduction, and **Eido 0.0.3** plus your macOS version. Remove credentials and private project content from screenshots and logs.
+[Open an issue](https://github.com/tony3liu/eido/issues) with your goal, expected and actual behavior, a small reproduction, and **Eido 0.0.4** plus your macOS version. Remove credentials and private project content from screenshots and logs.
 
 ## Acknowledgments and licensing
 
@@ -134,5 +132,5 @@ If you fork, modify, or distribute Eido, you must comply with the licenses that 
 
 <p align="center">
   <strong>Understand. Create. Evolve.</strong><br>
-  <sub>Eido · 0.0.3 · macOS</sub>
+  <sub>Eido · 0.0.4 · macOS</sub>
 </p>
