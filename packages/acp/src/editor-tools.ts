@@ -66,7 +66,7 @@ export function editorTools(cwd: string, sessionId: string, client: Pick<AgentCo
   const read = createReadToolDefinition(cwd, { operations: { readFile, access, detectImageMimeType } });
   const recoveringRead: typeof read = {
     ...read,
-    description: `${read.description} Read-only exceptions include registered global skill entries (use their listed absolute paths) and approved .local build logs and metadata. If a text offset is past EOF, returns a bounded tail and reports the adjusted range.`,
+    description: `${read.description} Read-only exceptions include registered global skill entries, approved .local build logs and metadata, and Rust sources and Cargo manifests under .local/upstream/zed/crates. If a text offset is past EOF, returns a bounded tail and reports the adjusted range.`,
     async execute(id, params, signal, onUpdate, ctx) {
       // Keep recovery on the same native buffer snapshot, including unsaved
       // edits. Per-call state also prevents concurrent reads sharing snapshots.

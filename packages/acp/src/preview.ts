@@ -159,7 +159,9 @@ export function createPreview(cwd: string, storage: string, sessionId: string, c
       } catch { signal?.throwIfAborted(); }
     }
     const evidence = { ...description(run), service, ...(run.project ? { project: await projectResult(run) } : {}), freshness: await freshness(run, signal),
-      acceptance: "Not assessed. Browser observations and explicit acceptance criteria are required." };
+      acceptance: run.server || run.entry
+        ? "Not assessed. Browser observations and explicit acceptance criteria are required."
+        : "Command checks only; no browser preview requested." };
     return {...evidence,requirementChecks:await research?.checks(run.research,run.criterionIds,{...evidence,dependencyInputs:run.dependencies})??[]};
   }
 
@@ -167,7 +169,7 @@ export function createPreview(cwd: string, storage: string, sessionId: string, c
 
   const tool = defineTool({
     name: "preview", label: "Development preview", executionMode: "sequential",
-    description: "Start, inspect or stop task-owned project verification from current editor buffers, including unsaved/new files. Always list explicit text files (max 512, 16 MiB total). For static HTML/CSS/JS use an HTML entry. For projects supply sequential commands (check/build) and/or server {command,args,path}; commands run without an implicit shell in a private copy, not an OS sandbox. Select installed dependency/asset directories with dependencies (copied, max 256 MiB); dependencies must not include source files. Nothing is installed or copied back automatically. Supply complete source/config/test inputs. Server must bind HOST/PORT from the environment or {port} in args; path starts with /. macOS/Linux process groups and lsof are required for server ownership. Timeout per check defaults to 60s, max 300s. Start returns command outcomes; zero exits and HTTP reachability are not functional acceptance. Use bundled browser tools to observe/interact, then status to check freshness. Restart after edits. Stop when finished.",
+    description: 'Start with explicit text files (max 512, 16 MiB total) from current editor buffers. For a one-off check or build use action "start", files and commands only. Omit entry and server for that case. For static HTML use entry. Supply server only for an actual HTTP server that binds to HOST and PORT or receives {port} in args. Omit criterionIds unless the user submitted matching acceptance criteria. Commands run without an implicit shell in a private copy. Dependencies selects installed asset directories (max 256 MiB); no files are installed or copied back. Timeout per check defaults to 60s, max 300s. Use status for freshness, and stop an actual browser preview when finished.',
     promptSnippet: "Check, build and preview projects from current editor buffers",
     parameters: Type.Object({
       action: Type.Union([Type.Literal("start"), Type.Literal("status"), Type.Literal("stop")]),
@@ -193,12 +195,16 @@ export function createPreview(cwd: string, storage: string, sessionId: string, c
         const value = active ? await status(active, signal) : {service: "not_started"};
         return {content: [text(value)], details: active ? details(value) : {}};
       }
+      // Some models fill optional fields with placeholders. A bare true command
+      // cannot serve HTTP and must not invalidate otherwise successful checks.
+      const server = params.commands?.length && params.server && !params.server.args?.length
+        && ["true", "/usr/bin/true", "/bin/true"].includes(params.server.command) ? undefined : params.server;
       const provenance=await research?.capture(toolCallId,params.criterionIds);
-      const project = !!(params.commands?.length || params.server);
+      const project = !!(params.commands?.length || server);
       if (!params.files || (!params.files.length && purpose !== 'shell') || (!project && !params.entry)) throw new Error("Start requires files and either an HTML entry, commands, or a server.");
       if (!project && params.dependencies?.length) throw new Error("Copied dependencies require a project command or server.");
-      if (params.server?.path && (!params.server.path.startsWith("/") || params.server.path.startsWith("//") || /[\\\r\n#]/.test(params.server.path))) throw new Error("Server path must be a local URL path beginning with /.");
-      for (const spec of [...params.commands ?? [], ...params.server ? [params.server] : []]) {
+      if (server?.path && (!server.path.startsWith("/") || server.path.startsWith("//") || /[\\\r\n#]/.test(server.path))) throw new Error("Server path must be a local URL path beginning with /.");
+      for (const spec of [...params.commands ?? [], ...server ? [server] : []]) {
         if ([spec.command, ...spec.args ?? []].some(value => value.includes("\0"))) throw new Error("Commands and arguments must not contain NUL bytes.");
       }
       const root = await realpath(cwd);
@@ -226,7 +232,7 @@ export function createPreview(cwd: string, storage: string, sessionId: string, c
       const files = [...inputs].sort(([a], [b]) => a.localeCompare(b)).map(([path, file]) => ({ path, hash: hash(file.content), differsFromDisk: file.differsFromDisk }));
       const runId = randomUUID();
       const run: Run = { research:provenance,criterionIds:params.criterionIds,runId, cwd: root, toolCallId, entry, files, capturedAt: new Date().toISOString(),
-        project, commands: params.commands, server: params.server, dependencies: {roots: [], entries: [], bytes: 0}, fingerprint: "",
+        project, commands: params.commands, server, dependencies: {roots: [], entries: [], bytes: 0}, fingerprint: "",
         directory: join(storage, hash(sessionId), runId) };
       await mkdir(run.directory, { recursive: true, mode: 0o700 });
       if (project) {

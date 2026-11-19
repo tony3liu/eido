@@ -1,6 +1,6 @@
 import { constants } from "node:fs";
 import { lstat, open, readdir, realpath } from "node:fs/promises";
-import { dirname, basename, isAbsolute, relative, resolve, sep } from "node:path";
+import { dirname, basename, isAbsolute, matchesGlob, relative, resolve, sep } from "node:path";
 
 const privatePart = (part: string) => [".git", ".local", ".pi"].includes(part.toLowerCase()) || part.toLowerCase().startsWith(".eido-review-");
 
@@ -40,14 +40,55 @@ const buildText = new Set([
   "native-build.log", "native-check.log", "native-status.json",
 ]);
 
-export async function buildArtifactPath(cwd: string, path: string, purpose: "read" | "list") {
+const isSourcePart = (part: string) => !part.startsWith(".") && !["node_modules", "target"].includes(part.toLowerCase());
+const isReferenceText = (name: string) => name === "Cargo.toml" || name.endsWith(".rs");
+
+export async function buildArtifactPath(cwd: string, path: string, purpose: "read" | "list" | "find") {
   const [storage, name, ...parts] = relative(resolve(cwd), resolve(cwd, path)).split(sep);
   if (storage !== ".local") return;
-  if (purpose === "read" ? !name || !buildText.has(name) || parts.length > 0
-    : name && (!buildDirectories.has(name) || parts.some(privatePart))) return;
+  const upstream = name === "upstream" && parts[0] === "zed" && parts[1] === "crates" && parts.every(isSourcePart);
+  const text = name && buildText.has(name) && parts.length === 0;
+  if (purpose === "read" && !text && !(upstream && parts.length > 2 && isReferenceText(parts.at(-1)!))) return;
+  if (purpose === "find" && !upstream) return;
+  if (purpose === "list" && name && (!buildDirectories.has(name) || parts.some(privatePart))) return;
   const expected = resolve(await realpath(cwd), storage, ...(name ? [name, ...parts] : []));
   if (await realpath(expected) !== expected) throw new Error("Build artifact paths cannot follow symlinks.");
   return expected;
+}
+
+/** Explicit searches of native reference sources only. Do not read symlink
+ * targets or expand this directory into ordinary workspace searches. */
+export async function findBuildReferences(cwd: string, path: string, pattern: string, limit: number, signal?: AbortSignal) {
+  const base = await buildArtifactPath(cwd, path, "find");
+  if (!base) return;
+  const paths: string[] = [];
+  let scanned = 0;
+  let bytes = 0;
+  let truncated = false;
+  const normalized = pattern.replace(/^(?:\.\/)+/, "");
+  async function visit(directory: string) {
+    const entries = await readdir(directory, {withFileTypes: true});
+    entries.sort((a, b) => a.name.localeCompare(b.name));
+    for (const entry of entries) {
+      signal?.throwIfAborted();
+      if (++scanned > 10_000) { truncated = true; return; }
+      if (!isSourcePart(entry.name)) continue;
+      const absolute = resolve(directory, entry.name);
+      if (entry.isDirectory()) {
+        if (await realpath(absolute) === absolute) await visit(absolute);
+        if (truncated) return;
+      } else if (entry.isFile() && isReferenceText(entry.name)) {
+        const local = relative(base!, absolute).split(sep).join("/");
+        if (!matchesGlob(normalized.includes("/") ? local : entry.name, normalized)) continue;
+        bytes += Buffer.byteLength(local) + 1;
+        if (paths.length >= limit || bytes > 50 * 1024) { truncated = true; return; }
+        paths.push(local);
+      }
+    }
+  }
+  await visit(base);
+  return {output: (paths.join("\n") || "No files found matching pattern")
+    + (truncated ? "\n\n[Results truncated. Narrow the source directory or glob.]" : ""), truncated};
 }
 
 export async function listBuildArtifacts(cwd: string, path: string, limit: number) {

@@ -3483,14 +3483,14 @@ impl ThreadView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let thread = &self.thread;
         if self.agent_id.as_ref() == "eido-pi" {
-            AgentDiff::open_file(thread.clone(), buffer.clone(), self.workspace.clone(), window, cx).log_err();
+            self.reveal_file_tools(cx);
+            AgentDiff::open_file(self.thread.clone(), buffer.clone(), self.workspace.clone(), window, cx).log_err();
             return;
         }
 
         let Some(diff) =
-            AgentDiffPane::deploy(thread.clone(), self.workspace.clone(), window, cx).log_err()
+            AgentDiffPane::deploy(self.thread.clone(), self.workspace.clone(), window, cx).log_err()
         else {
             return;
         };
@@ -3871,7 +3871,7 @@ impl ThreadView {
                                     .tooltip({
                                         move |_, cx| {
                                             Tooltip::with_meta(
-                                                "Go to File",
+                                                eido_i18n::tr(cx, "review.go_file"),
                                                 None,
                                                 full_path.clone(),
                                                 cx,
@@ -3923,7 +3923,7 @@ impl ThreadView {
                 cx.notify();
             }))
             .child(
-                Button::new("review", eido_i18n::tr(cx, "review.review"))
+                Button::new(("review-file", index), eido_i18n::tr(cx, "review.review"))
                     .label_size(LabelSize::Small)
                     .on_click({
                         let buffer = buffer.clone();
@@ -4749,7 +4749,7 @@ impl ThreadView {
                                 let focus_handle = focus_handle.clone();
                                 move |_window, cx| {
                                     Tooltip::for_action_in(
-                                        "Review Changes",
+                                        eido_i18n::tr(cx, "review.review"),
                                         &OpenAgentDiff,
                                         &focus_handle,
                                         cx,
@@ -4759,8 +4759,13 @@ impl ThreadView {
                             .on_click(cx.listener(|this, _, window, cx| {
                                 let buffers = this.thread.read(cx).action_log().read(cx)
                                     .changed_buffers(cx).map(|(buffer, _)| buffer).collect::<Vec<_>>();
-                                if this.agent_id.as_ref() == "eido-pi" && buffers.len() == 1 {
-                                    this.open_edited_buffer(&buffers[0], window, cx);
+                                if this.agent_id.as_ref() == "eido-pi" {
+                                    if let [buffer] = buffers.as_slice() {
+                                        this.open_edited_buffer(buffer, window, cx);
+                                    } else {
+                                        this.reveal_file_tools(cx);
+                                        AgentDiffPane::deploy(this.thread.clone(), this.workspace.clone(), window, cx).log_err();
+                                    }
                                 } else {
                                     window.dispatch_action(OpenAgentDiff.boxed_clone(), cx);
                                 }
@@ -11209,19 +11214,13 @@ impl ThreadView {
             .find_project_path(&tool_call_location.path, cx);
 
         if self.agent_id.as_ref() == "eido-pi" {
+            self.reveal_file_tools(cx);
             AgentDiff::set_active_thread(&self.workspace, self.thread.clone(), window, cx);
         }
 
         let open_task = self
             .workspace
             .update(cx, |workspace, cx| {
-                if self.agent_id.as_ref() == "eido-pi" {
-                    let layout = match workspace.eido_layout() {
-                        workspace::EidoLayout::Workbench => workspace::EidoLayout::Split,
-                        layout => layout,
-                    };
-                    workspace.set_eido_layout(layout, cx);
-                }
                 if let Some(project_path) = project_path {
                     workspace.open_path(project_path, None, true, window, cx)
                 } else {
@@ -12862,7 +12861,9 @@ impl ThreadView {
         let mut results = v_flex().id("verification-results").max_h(px(220.)).overflow_y_scroll().gap_1();
         for (index, row) in rows.into_iter().take(if self.eido_verification.expanded {total} else {1}).enumerate() {
             let current = self.eido_verification.freshness(&row.evidence);
-            let session_id = row.session_id; let tool_id = row.tool_call_id;
+            let session_id = row.session_id;
+            let tool_id = row.tool_call_id;
+            let fallback = format!("{} · {}", row.evidence.outcome_display(&row.status, cx), row.evidence.run_id);
             results = results.child(v_flex().gap_0p5()
                 .child(h_flex().gap_2().flex_wrap()
                     .child(Label::new(row.evidence.requirement_display(current, cx)).size(LabelSize::Small))
@@ -12870,16 +12871,12 @@ impl ThreadView {
                     .child(Label::new(crate::eido_research::state_label(current, cx)).size(LabelSize::Small).color(if current == "Inputs changed" {Color::Warning} else {Color::Muted}))
                     .child(Button::new(("verification-output", index), eido_i18n::tr(cx, "review.view_result")).label_size(LabelSize::Small)
                         .on_click(cx.listener(move |this, _, window, cx| {
-                            if this.thread.read(cx).session_id() == &session_id {
-                                this.eido_reveal_verification(&tool_id, cx);
-                            } else if let Some(server) = this.server_view.upgrade() {
-                                server.update(cx, |server, cx| {
-                                    server.navigate_to_thread(session_id.clone(), window, cx);
-                                    if let Some(view) = server.thread_view(&session_id) {
-                                        view.update(cx, |view, cx| view.eido_reveal_verification(&tool_id, cx));
-                                    }
-                                });
-                            }
+                            let output = this.conversation.read(cx).threads.get(&session_id)
+                                .and_then(|thread| thread.read(cx).tool_call(&tool_id))
+                                .map(|(_, tool)| file_navigation::tool_output(tool, cx))
+                                .filter(|output| !output.is_empty())
+                                .unwrap_or_else(|| fallback.clone());
+                            this.open_file_tool_output(output, eido_i18n::tr(cx, "review.view_result").to_string(), window, cx);
                         }))))
                 .when(self.eido_verification.expanded, |this| this.child(Label::new(format!("{} · {} · {}", row.source, row.evidence.captured_at, row.evidence.run_id)).size(LabelSize::XSmall).color(Color::Muted))));
         }
@@ -12888,14 +12885,6 @@ impl ThreadView {
             content = content.child(Label::new(eido_i18n::tr(cx, "review.results_scope")).size(LabelSize::XSmall).color(Color::Muted));
         }
         Some(content.into_any_element())
-    }
-
-    fn eido_reveal_verification(&mut self, tool_id: &acp::ToolCallId, cx: &mut Context<Self>) {
-        if let Some((entry_ix, _)) = self.thread.read(cx).tool_call(tool_id) {
-            self.entry_view_state.update(cx, |state, _| state.expand_tool_call(tool_id.clone()));
-            self.list_state.scroll_to(ListOffset {item_ix: entry_ix, offset_in_item: px(0.)});
-            cx.notify();
-        }
     }
 
     fn render_file_operations(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
@@ -12918,6 +12907,7 @@ impl ThreadView {
                 .child(Label::new(format!("{} · {}", crate::eido_research::state_label(record.label(), cx), record.proposal.path.file_name().unwrap_or_default().to_string_lossy())).size(LabelSize::Small))
                 .child(Button::new(SharedString::from(format!("file-operation-copy-{id}")), eido_i18n::tr(cx, "review.review")).label_size(LabelSize::Small)
                     .on_click(cx.listener(move |this, _, window, cx| {
+                        this.reveal_file_tools(cx);
                         if let Some(workspace) = this.workspace.upgrade() {
                             open_markdown_in_workspace("File Operation Review".into(), copy.markdown(), workspace, window, cx).detach_and_log_err(cx);
                         }
@@ -12964,6 +12954,7 @@ impl ThreadView {
                 .child(Label::new(eido_i18n::tr_args(cx, "review.recovery", &[("name", file.path.file_name().unwrap_or_default().to_string_lossy().to_string())])).size(LabelSize::Small))
                 .child(Button::new(("open-review-copy", index), eido_i18n::tr(cx, "review.saved_copy")).label_size(LabelSize::Small)
                     .on_click(cx.listener(move |this, _, window, cx| {
+                        this.reveal_file_tools(cx);
                         if let Some(workspace) = this.workspace.upgrade() {
                             open_markdown_in_workspace("Saved Review".into(), crate::eido_review_store::copy_markdown(&saved), workspace, window, cx).detach_and_log_err(cx);
                         }

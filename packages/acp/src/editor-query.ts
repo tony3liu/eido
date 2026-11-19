@@ -1,9 +1,59 @@
 import type {AgentContext} from "@agentclientprotocol/sdk";
+import {execFile} from "node:child_process";
+import {basename, matchesGlob} from "node:path";
 import {createFindToolDefinition, createGrepToolDefinition, createLsToolDefinition, defineTool} from "@earendil-works/pi-coding-agent";
-import {listBuildArtifacts, workspacePath} from "./workspace-path.ts";
+import {buildArtifactPath, findBuildReferences, listBuildArtifacts, readToolText, workspacePath} from "./workspace-path.ts";
 
 export const EDITOR_QUERY = "_eido/fs/query";
 type Query = {path?: string; pattern?: string; glob?: string; limit?: number; context?: number; ignoreCase?: boolean; literal?: boolean};
+
+async function grepBuildFile(cwd: string, path: string, args: Query, signal?: AbortSignal) {
+  const canonical = await buildArtifactPath(cwd, path, "read");
+  if (!canonical) {
+    if (await buildArtifactPath(cwd, path, "find")) {
+      throw new Error("For read-only upstream references, use find to locate Rust source or Cargo.toml files, then grep or read one file at a time.");
+    }
+    return;
+  }
+  if (!args.pattern || /[\r\n\0]/.test(args.pattern)) throw new Error("Provide a single-line search pattern.");
+  const name = basename(canonical);
+  const empty = {output: "No matches found", truncated: false};
+  if (args.glob && !matchesGlob(name, args.glob.replace(/^(?:\.\/)+/, ""))) return empty;
+  const data = await readToolText(canonical, signal);
+  // Pass bounded file content over stdin instead of giving grep a directory
+  // or a protected path. The built-in OS grep supports fixed strings and EREs.
+  const limit = Math.min(args.limit ?? 100, 1000);
+  const matches = await new Promise<string>((resolve, reject) => {
+    const child = execFile("/usr/bin/grep", ["-n", "-m", String(limit + 1), args.literal ? "-F" : "-E",
+      ...(args.ignoreCase ? ["-i"] : []), "-e", args.pattern!],
+      {signal, timeout: 3000, maxBuffer: 5 * 1024 * 1024}, (error, stdout, stderr) => {
+        if (error && error.code !== 1) reject(new Error(stderr.trim() || error.message));
+        else resolve(stdout);
+      });
+    child.stdin?.on("error", () => {}); // grep may finish before consuming its input.
+    child.stdin?.end(data);
+  });
+  if (!matches) return empty;
+  const numbers = matches.trimEnd().split("\n").map(line => Number(line.split(":", 1)[0]));
+  const rows = new Set(numbers.slice(0, limit));
+  const context = Math.min(args.context ?? 0, 100);
+  const source = data.toString("utf8").split("\n");
+  const output: string[] = [];
+  let truncated = numbers.length > limit;
+  let bytes = 0;
+  let previous = 0;
+  outer: for (const row of rows) {
+    for (let i = Math.max(previous + 1, 1, row - context); i <= Math.min(source.length, row + context); i++) {
+      const sep = rows.has(i) ? ":" : "-";
+      const line = `${name}${sep}${i}${sep} ${source[i - 1]!.slice(0, 500)}`;
+      bytes += Buffer.byteLength(line) + 1;
+      if (bytes > 50 * 1024) { truncated = true; break outer; }
+      output.push(line);
+      previous = i;
+    }
+  }
+  return {output: output.join("\n") + (truncated ? "\n\n[Results truncated. Narrow the pattern or context.]" : ""), truncated};
+}
 
 /** Keep pi's public tool schemas and query current native project buffers. */
 export function editorQueryTools(cwd: string, sessionId: string, client: Pick<AgentContext, "request">) {
@@ -16,7 +66,10 @@ export function editorQueryTools(cwd: string, sessionId: string, client: Pick<Ag
       }
     }
     signal?.throwIfAborted();
-    const build = operation === "ls" ? await listBuildArtifacts(cwd, args.path ?? ".", args.limit ?? 500) : undefined;
+    const base = args.path ?? ".";
+    const build = operation === "ls" ? await listBuildArtifacts(cwd, base, args.limit ?? 500)
+      : operation === "find" && args.pattern ? await findBuildReferences(cwd, base, args.pattern, Math.min(args.limit ?? 500, 1000), signal)
+      : operation === "grep" ? await grepBuildFile(cwd, base, args, signal) : undefined;
     const result = build ?? await client.request<{output: string; truncated: boolean}>(EDITOR_QUERY,
       {sessionId, operation, ...args, path: await workspacePath(cwd, args.path ?? ".", true)}, {cancellationSignal: signal});
     signal?.throwIfAborted();
@@ -28,9 +81,10 @@ export function editorQueryTools(cwd: string, sessionId: string, client: Pick<Ag
     }};
   };
   return [
-    defineTool({...createFindToolDefinition(cwd), execute: execute("find")}),
+    defineTool({...createFindToolDefinition(cwd), execute: execute("find"),
+      description: "Find workspace files by glob. Explicit .local/upstream/zed/crates paths can find Rust and Cargo reference sources."}),
     defineTool({...createGrepToolDefinition(cwd), execute: execute("grep"),
-      description: "Search current editor contents, including unsaved changes, using a regex or literal pattern. Returns file paths, line numbers and optional context. Respects project exclusions. Read a file before editing it. Results are bounded; narrow the path or pattern when truncated."}),
+      description: "Search editor contents, including unsaved changes, using a regex or literal pattern. Respects project exclusions. For approved .local files, search one explicit file at a time with a literal or POSIX extended regex. Use find for upstream reference directories. Results are bounded; read a file before editing."}),
     defineTool({...createLsToolDefinition(cwd), execute: execute("ls"),
       description: "List files and directories in the project. An explicit .local path shows only approved build outputs; private runtime state stays hidden."}),
   ];

@@ -17,7 +17,7 @@ struct FileActivityRanges {
     original: Vec<String>,
 }
 
-fn tool_output(tool: &ToolCall, cx: &App) -> String {
+pub(super) fn tool_output(tool: &ToolCall, cx: &App) -> String {
     tool.content.iter().filter_map(|content| match content {
         ToolCallContent::ContentBlock(acp_thread::ContentBlock::Markdown { markdown }) => Some(markdown.read(cx).source().to_string()),
         _ => None,
@@ -98,16 +98,22 @@ impl ThreadView {
         } else {
             let buffer = tool.diffs().next().map(|diff| diff.read(cx).buffer().clone());
             self.reveal_file_tools(cx);
-            if let Some(pane) = AgentDiffPane::deploy(self.thread.clone(), self.workspace.clone(), window, cx).log_err()
-                && let Some(buffer) = buffer
-            {
-                let key = PathKey::for_buffer(&buffer, cx);
-                pane.update(cx, |pane, cx| pane.move_to_path(key, window, cx));
+            if self.thread.read(cx).action_log().read(cx).changed_buffers(cx).next().is_some() {
+                if let Some(pane) = AgentDiffPane::deploy(self.thread.clone(), self.workspace.clone(), window, cx).log_err()
+                    && let Some(buffer) = buffer
+                {
+                    let key = PathKey::for_buffer(&buffer, cx);
+                    pane.update(cx, |pane, cx| pane.move_to_path(key, window, cx));
+                }
+            } else if let Some(buffer) = buffer {
+                self.open_edited_buffer(&buffer, window, cx);
+            } else {
+                self.open_tool_call_location(entry_ix, 0, window, cx);
             }
         }
     }
 
-    fn reveal_file_tools(&self, cx: &mut Context<Self>) {
+    pub(super) fn reveal_file_tools(&self, cx: &mut Context<Self>) {
         self.workspace.update(cx, |workspace, cx| {
             let layout = match workspace.eido_layout() {
                 workspace::EidoLayout::Workbench => workspace::EidoLayout::Split,
@@ -115,6 +121,12 @@ impl ThreadView {
             };
             workspace.set_eido_layout(layout, cx);
         }).log_err();
+    }
+
+    pub(super) fn open_file_tool_output(&mut self, output: String, title: String,
+        window: &mut Window, cx: &mut Context<Self>)
+    {
+        self.open_file_inputs(vec![FileActivityInput { base: None, read: None, output, label: title.clone() }], title, window, cx);
     }
 
     /// Combine successful reads and searches from one activity group. The
