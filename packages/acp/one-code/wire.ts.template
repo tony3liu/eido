@@ -1,10 +1,36 @@
+import ledger from '../extensions/request/ledger/index.ts';
 import wire from '../extensions/request/ledger/wire.ts';
+import {redactTail} from '../extensions/lib/request/ledger/redact.ts';
+import {hasSecretValues, redactSecretValuesIn} from '../extensions/lib/profile/secrets.ts';
+
+const responsesCompatModel = Symbol.for('eido.pi.responses-compat');
+const keepsFullTranscript = model => model?.api === 'openai-completions' && model[responsesCompatModel] === true;
+
+export function contextLedger(pi) {
+  return ledger({...pi, on(event, handler) {
+    pi.on(event, (data, ctx) => {
+      // The wire counterpart cannot splice an old-format prefix after a protocol fallback.
+      if (event === 'context' && keepsFullTranscript(ctx.model)) return;
+      return handler(data, ctx);
+    });
+  }});
+}
 
 export default function(pi) {
   // Preserve the shared provider registry and pi's global warming policy.
   // Anthropic threads are owned by pi; its native payload must remain intact.
   return wire({...pi, registerProvider() {}, on(event, handler) {
     if (event === 'cache_warming_decision') return;
-    pi.on(event, (data, ctx) => ctx.model?.api === 'anthropic-messages' && event.startsWith('before_provider_') ? undefined : handler(data, ctx));
+    pi.on(event, (data, ctx) => {
+      if (!event.startsWith('before_provider_')) return handler(data, ctx);
+      if (ctx.model?.api === 'anthropic-messages') return;
+      if (!keepsFullTranscript(ctx.model)) return handler(data, ctx);
+      // pi provides the full transcript on both attempts. Keep One Code's
+      // redaction, using the actual payload shape rather than the selected API.
+      if (event === 'before_provider_request' && hasSecretValues()) {
+        const api = Array.isArray(data.payload?.input) ? 'openai-responses' : 'openai-completions';
+        return redactTail(data.payload, api, 0, redactSecretValuesIn);
+      }
+    });
   }});
 }

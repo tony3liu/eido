@@ -28,6 +28,7 @@ export async function prepareOneCode(output = join(runtimeRoot, '.local/one-code
       await mkdir(join(temporary, to, '..'), {recursive: true});
       await cp(join(own, from), join(temporary, to));
     }
+    await writeFile(join(temporary, 'eido/ledger.ts'), "export {contextLedger as default} from './wire.ts';\n");
     const hiddenSkills = (await readdir(join(temporary, 'profile/skills'))).filter(name => !manifest.skills.includes(name));
     for (const name of hiddenSkills) await rm(join(temporary, 'profile/skills', name), {recursive: true, force: true});
     const review = join(temporary, 'profile/skills/code-review');
@@ -37,9 +38,9 @@ export async function prepareOneCode(output = join(runtimeRoot, '.local/one-code
     await writeFile(join(review, 'cells/eido.md'), body);
     await writeFile(join(review, 'cells/table.json'), JSON.stringify({tables: {default: Object.fromEntries(['low','medium','high','xhigh','max'].map(level => [level, 'eido']))}}));
     await writeFile(join(review, 'SKILL.md'), '---\nname: code-review\ndescription: Review code changes for actionable correctness and regression issues using Eido tools.\n---\n'+body);
-    const replacements = {'extensions/request/tool-search/index.ts': 'eido/search.ts', 'extensions/request/ledger/wire.ts': 'eido/wire.ts', 'extensions/commands/resources/index.ts': 'eido/resources.ts'};
+    const replacements = {'extensions/request/tool-search/index.ts': 'eido/search.ts', 'extensions/request/ledger/index.ts': 'eido/ledger.ts', 'extensions/request/ledger/wire.ts': 'eido/wire.ts', 'extensions/commands/resources/index.ts': 'eido/resources.ts'};
     const entries = manifest.entries.filter(item => item.mode === 'upstream').map(item => replacements[item.entry] ?? item.entry);
-    const overrides = ['profile/index.ts', 'profile/brand.json', 'profile/eido-sources.ts', 'eido/search.ts', 'eido/wire.ts', 'eido/resources.ts', 'profile/skills/code-review/SKILL.md', 'profile/skills/code-review/cells/eido.md', 'profile/skills/code-review/cells/table.json'];
+    const overrides = ['profile/index.ts', 'profile/brand.json', 'profile/eido-sources.ts', 'eido/search.ts', 'eido/ledger.ts', 'eido/wire.ts', 'eido/resources.ts', 'profile/skills/code-review/SKILL.md', 'profile/skills/code-review/cells/eido.md', 'profile/skills/code-review/cells/table.json'];
     const overrideHashes = Object.fromEntries(await Promise.all(overrides.map(async path => [path, createHash('sha256').update(await readFile(join(temporary,path))).digest('hex')])));
     const generated = {...manifest, integrity, entryDecisions: manifest.entries, entries, overrideHashes, compatibility: 'Eido compatible subset', hiddenSkills};
     await writeFile(join(temporary, 'eido-manifest.json'), JSON.stringify(generated, null, 2)+'\n');

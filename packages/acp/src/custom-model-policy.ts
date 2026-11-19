@@ -59,6 +59,9 @@ export function resolveCatalogThinking(model: Pick<Model<Api>, 'id'|'provider'|'
 }
 const trialThinkingModels = new WeakSet<object>();
 export function hasTrialThinking(model: object | undefined) { return !!model && trialThinkingModels.has(model); }
+// Bundled One Code runs in a separate extension module graph. Mark the selected
+// model so its context and wire hooks can leave protocol switching to pi.
+const responsesCompatModel = Symbol.for('eido.pi.responses-compat');
 const changedConnection = () => new Error('This connection changed. Reselect the model before sending to load its current address, API format and thinking capabilities.');
 const bindings = new WeakMap<object, CustomImagePolicy>();
 export function imageInputAllowed(session: object | undefined, model: Model<Api> | undefined) {
@@ -94,6 +97,7 @@ export async function customImagePolicy(directory: string) {
       (openaiCompatible || nativeGoogle) && !builtin && (configured.reasoning === undefined ||
         (configured.thinkingLevelMap === undefined && model.thinkingLevelMap === undefined)));
     const projected = {...model, reasoning, ...(thinkingLevelMap ? {thinkingLevelMap:{...thinkingLevelMap}} : {}),
+      ...(model.api === 'openai-completions' ? {[responsesCompatModel]:true} : {}),
       // pi's native Anthropic encoder needs this public flag to send effort.
       // Only the exact same API can inherit it; existing explicit values win.
       ...(nativeAnthropic && builtin?.forceAdaptiveThinking === true ? {compat:{forceAdaptiveThinking:true,...model.compat}} : {})};
