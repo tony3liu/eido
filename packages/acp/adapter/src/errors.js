@@ -23,6 +23,7 @@ const LABELS = {
     unsupported_mcp_transport: "unsupported mcp transport",
     extension_setup_error: "pi extension setup failed",
     child_cleanup_error: "child process cleanup failed",
+    turn_cleanup_error: "turn cleanup did not complete",
     invalid_cursor: "invalid list cursor",
     unknown_auth_method: "unknown auth method",
     notification_error: "notification delivery failed",
@@ -188,4 +189,8 @@ export function isChildCleanupError(error) {
         return false;
     const data = error.data;
     return Boolean(data && typeof data === "object" && data.errorKind === "child_cleanup_error");
+}
+export function isTurnCleanupError(error) {
+    return isChildCleanupError(error) || (error instanceof RequestError
+        && error.code === -32603 && error.data?.errorKind === "turn_cleanup_error");
 }

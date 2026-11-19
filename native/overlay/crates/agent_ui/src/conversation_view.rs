@@ -160,6 +160,54 @@ pub(crate) enum ThreadError {
         message: SharedString,
         acp_error_code: Option<SharedString>,
     },
+    Structured {
+        original: SharedString,
+        data: serde_json::Value,
+        acp_error_code: Option<SharedString>,
+        requires_reconnect: bool,
+    },
+}
+
+impl ThreadError {
+    fn structured_data(text: &str) -> Option<serde_json::Value> {
+        let text = text.trim();
+        let json = ["Internal error: ", "Invalid params: ", "Invalid request: "]
+            .into_iter()
+            .find_map(|prefix| text.strip_prefix(prefix))
+            .unwrap_or(text);
+        let data: serde_json::Value = serde_json::from_str(json).ok()?;
+        data.is_object().then_some(data)
+    }
+
+    fn reconnect_required(&self) -> bool {
+        matches!(self, Self::Structured { requires_reconnect: true, .. })
+    }
+
+    fn terminated_error_data(data: &serde_json::Value) -> bool {
+        matches!(
+            data.get("errorKind").and_then(serde_json::Value::as_str),
+            Some("child_cleanup_error" | "turn_cleanup_error" | "session_terminated")
+        )
+    }
+
+    fn structured_summary(data: &serde_json::Value) -> &'static str {
+        let kind = data.get("errorKind").and_then(serde_json::Value::as_str);
+        let phase = data.pointer("/details/phase").and_then(serde_json::Value::as_str);
+        match (kind, phase) {
+            (Some("child_cleanup_error"), _) => "task.error_child_cleanup",
+            (Some("turn_cleanup_error"), Some("pi")) => "task.error_pi_stop",
+            (Some("turn_cleanup_error"), Some("queue")) => "task.error_queue_cleanup",
+            (Some("turn_cleanup_error"), Some("resources")) => "task.error_tool_cleanup",
+            (Some("turn_cleanup_error"), _) => "task.error_turn_cleanup",
+            (Some("session_terminated"), _) => "task.error_session_terminated",
+            (Some("provider_error"), _) => "task.error_provider",
+            (Some("rate_limit"), _) => "task.error_rate_limit",
+            (Some("billing_error"), _) => "task.error_billing",
+            (Some("session_busy"), _) => "task.error_session_busy",
+            (Some("invalid_model"), _) => "task.error_invalid_model",
+            _ => "task.error_details_hint",
+        }
+    }
 }
 
 impl From<anyhow::Error> for ThreadError {
@@ -236,9 +284,17 @@ impl From<anyhow::Error> for ThreadError {
             let message: SharedString = format!("{:#}", error).into();
 
             // Extract ACP error code if available
-            let acp_error_code = error
-                .downcast_ref::<acp::Error>()
-                .map(|acp_error| SharedString::from(acp_error.code.to_string()));
+            let acp_error = error.downcast_ref::<acp::Error>();
+            let acp_error_code = acp_error.map(|error| SharedString::from(error.code.to_string()));
+            if let Some(data) = acp_error
+                .and_then(|error| error.data.as_ref())
+                .filter(|data| data.is_object())
+                .cloned()
+                .or_else(|| Self::structured_data(&message))
+            {
+                let requires_reconnect = acp_error.is_some() && Self::terminated_error_data(&data);
+                return Self::Structured { original: message, data, acp_error_code, requires_reconnect };
+            }
 
             Self::Other {
                 message,
@@ -646,7 +702,10 @@ pub struct ConversationView {
     pub(crate) root_session_id: Option<acp::SessionId>,
     server_state: ServerState,
     retained_thread: Option<Entity<ThreadView>>,
+    pending_review_handoff: Option<WeakEntity<AcpThread>>,
     recovery_editor: Option<Entity<MessageEditor>>,
+    load_error_details_open: bool,
+    load_error_data: Option<serde_json::Value>,
     connection_generation: u64,
     focus_handle: FocusHandle,
     notifications: Vec<WindowHandle<AgentNotification>>,
@@ -929,7 +988,10 @@ impl ConversationView {
             thread_id,
             root_session_id: resume_session_id.clone(),
             retained_thread: None,
+            pending_review_handoff: None,
             recovery_editor: None,
+            load_error_details_open: false,
+            load_error_data: None,
             connection_generation: 0,
             initial_title: title.clone(),
             initialized_at: std::time::Instant::now(),
@@ -961,6 +1023,8 @@ impl ConversationView {
     }
 
     fn set_server_state(&mut self, state: ServerState, cx: &mut Context<Self>) {
+        self.load_error_details_open = false;
+        self.load_error_data = None;
         if std::env::var_os("EIDO_ROOT").is_some()
             && matches!(self.server_state, ServerState::Loading { .. })
         {
@@ -1062,12 +1126,18 @@ impl ConversationView {
 
     /// Retry task loading, preserving an existing healthy shared connection.
     pub(crate) fn retry_connection(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if matches!(self.server_state, ServerState::Loading { .. }) { return; }
+        if !self.can_reset(cx) { return; }
         // Reuse a healthy shared ACP process. Restore only this task's history;
         // restarting it here would also interrupt unrelated conversations.
         if self.connection_store.read(cx).connection_status(&self.connection_key, cx)
             == crate::agent_connection_store::AgentConnectionStatus::Disconnected
         {
+            if self.agent.agent_id().as_ref() == "eido-pi"
+                && let Some(view) = self.root_thread_view()
+                && view.read(cx).eido_connection_lost
+            {
+                self.pending_review_handoff = Some(view.read(cx).thread.downgrade());
+            }
             self.connection_store.update(cx, |store, cx| {
                 store.restart_connection(self.connection_key.clone(), self.agent.clone(), cx);
             });
@@ -1075,13 +1145,27 @@ impl ConversationView {
         self.reset(window, cx);
     }
 
-    fn reset(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if matches!(self.server_state, ServerState::Loading { .. })
-            || self.as_connected().is_some_and(|connected| connected.threads.values()
-                .any(|view| matches!(view.read(cx).thread.read(cx).status(), ThreadStatus::Generating)))
-        {
+    fn reconnect_terminated_task(&mut self, thread: &Entity<AcpThread>, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.can_reset(cx) { return; }
+        let Some(view) = self.root_thread_view() else { return };
+        if view.read(cx).thread != *thread || !view.read(cx).eido_connection_lost {
             return;
         }
+        let runtime = thread.read(cx);
+        if runtime.connection().forget_terminated_session(runtime.session_id(), thread.entity_id()) {
+            self.pending_review_handoff = Some(thread.downgrade());
+        }
+        self.retry_connection(window, cx);
+    }
+
+    fn can_reset(&self, cx: &App) -> bool {
+        !matches!(self.server_state, ServerState::Loading { .. })
+            && !self.as_connected().is_some_and(|connected| connected.threads.values()
+                .any(|view| matches!(view.read(cx).thread.read(cx).status(), ThreadStatus::Generating)))
+    }
+
+    fn reset(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.can_reset(cx) { return; }
         let (resume_session_id, work_dirs, title) = self
             .root_thread_view()
             .map(|thread_view| {
@@ -1285,6 +1369,9 @@ impl ConversationView {
                 if this.connection_generation != generation { return; }
                 match result {
                     Ok(thread) => {
+                        if let Some(previous) = this.pending_review_handoff.take().and_then(|thread| thread.upgrade()) {
+                            crate::eido_review_store::reconnect(&previous, &thread, cx);
+                        }
                         this.clear_resolved_request_elicitations_for_connection(&connection, cx);
                         let root_session_id = thread.read(cx).session_id().clone();
 
@@ -1347,11 +1434,16 @@ impl ConversationView {
                         );
                     }
                     Err(err) => {
+                        let data = err.downcast_ref::<acp::Error>()
+                            .and_then(|error| error.data.as_ref())
+                            .filter(|data| data.is_object())
+                            .cloned();
                         this.handle_load_error(
-                            LoadError::Other(err.to_string().into()),
+                            LoadError::Other(format!("{err:#}").into()),
                             window,
                             cx,
                         );
+                        this.load_error_data = data;
                     }
                 };
             })
@@ -1851,7 +1943,7 @@ impl ConversationView {
 
     fn eido_observe_task(&self, thread: &Entity<AcpThread>, window: &Window, cx: &mut Context<Self>) {
         let thread = thread.read(cx);
-        if thread.connection().agent_id().as_ref() != "eido-pi" || thread.parent_session_id().is_some() {
+        if thread.eido_replaced() || thread.connection().agent_id().as_ref() != "eido-pi" || thread.parent_session_id().is_some() {
             return;
         }
         let session = thread.session_id().to_string();
@@ -3024,7 +3116,7 @@ impl ConversationView {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let restoring_eido = self.agent.agent_id().as_ref() == "eido-pi" && self.root_session_id.is_some();
-        let (title, mut message) = match e {
+        let (title, original) = match e {
             LoadError::Unsupported {
                 command: path,
                 current_version,
@@ -3043,6 +3135,13 @@ impl ConversationView {
             }
             LoadError::Other(msg) => ("Failed to Launch", msg.to_string()),
         };
+        let data = match e {
+            LoadError::Other(_) => self.load_error_data.clone().or_else(|| ThreadError::structured_data(&original)),
+            _ => None,
+        };
+        let mut message = data.as_ref().map(|data| {
+            eido_i18n::tr(cx, ThreadError::structured_summary(data)).to_string()
+        }).unwrap_or_else(|| original.clone());
         if restoring_eido {
             let saved = crate::eido_task::read(&self.root_session_id.as_ref().unwrap().to_string(), cx);
             let mut recovery = if saved.restored_status() == acp_thread::EidoTurnStatus::Interrupted {
@@ -3060,21 +3159,54 @@ impl ConversationView {
             .gap_1()
             .child(
                 Button::new("retry-agent-launch", eido_i18n::tr(cx, "task.reconnect"))
+                    .when(self.agent.agent_id().as_ref() == "eido-pi", |button| {
+                        button
+                            .label_size(LabelSize::Small)
+                            .start_icon(Icon::new(IconName::RotateCw).size(IconSize::Small))
+                            .style(ButtonStyle::Tinted(TintColor::Accent))
+                    })
                     .tooltip(Tooltip::text(eido_i18n::tr(cx, "task.reconnect_tip")))
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.retry_connection(window, cx);
                     })),
             )
-            .child(self.create_copy_button(message.clone()))
+            .child(self.create_copy_button(if data.is_some() { original } else { message.clone() }))
             .into_any_element();
 
-        Callout::new()
-            .severity(Severity::Error)
-            .icon(IconName::XCircleFilled)
-            .title(if restoring_eido { eido_i18n::tr(cx, "task.connection_lost") } else { title.into() })
-            .description(message)
-            .actions_slot(action_slot)
-            .into_any_element()
+        let title = if restoring_eido {
+            eido_i18n::tr(cx, "task.connection_lost")
+        } else {
+            title.into()
+        };
+        if self.agent.agent_id().as_ref() == "eido-pi" || data.is_some() {
+            let mut body = v_flex().gap_1().child(
+                div().id("task-load-error-message").max_h(px(132.)).overflow_y_scroll()
+                    .child(Label::new(message).size(LabelSize::Small).color(Color::Muted)),
+            );
+            if let Some(data) = data {
+                body = body.child(thread_view::error_details(
+                    "load-error-details",
+                    &data,
+                    self.load_error_details_open,
+                    cx.listener(|this, _, _, cx| {
+                        this.load_error_details_open = !this.load_error_details_open;
+                        cx.notify();
+                    }),
+                    &self.project,
+                    window,
+                    cx,
+                ));
+            }
+            thread_view::request_error_surface(title, body, action_slot, window, cx).into_any_element()
+        } else {
+            Callout::new()
+                .severity(Severity::Error)
+                .icon(IconName::XCircleFilled)
+                .title(title)
+                .actions_slot(action_slot)
+                .description(message)
+                .into_any_element()
+        }
     }
 
     fn render_unsupported(
@@ -3803,8 +3935,8 @@ impl Render for ConversationView {
                     .into_any()
             }
             ServerState::LoadError { error: e, .. } if self.retained_thread.is_some() => v_flex().size_full().min_h_0()
-                .child(self.render_load_error(e, window, cx))
-                .child(self.retained_thread.clone().unwrap()).into_any_element(),
+                .child(v_flex().flex_1().min_h_0().child(self.retained_thread.clone().unwrap()))
+                .child(self.render_load_error(e, window, cx)).into_any_element(),
             ServerState::LoadError { error: e, .. } => v_flex()
                 .flex_1()
                 .size_full()

@@ -6,11 +6,11 @@ import { randomUUID } from "node:crypto";
 import { isAbsolute } from "node:path";
 import { DefaultResourceLoader, SettingsManager, createBashToolDefinition, getAgentDir, resolveModelScopeWithDiagnostics } from "@earendil-works/pi-coding-agent";
 import { AUTH_METHODS, authenticateMethod } from "./auth.js";
-import { adapterError, isChildCleanupError, isRequestError, unexpectedError } from "./errors.js";
+import { adapterError, isChildCleanupError, isTurnCleanupError, isRequestError, unexpectedError } from "./errors.js";
 import { bridgeMcpServers, } from "./mcp-bridge.js";
 import { createCodemodeExtension, createToolSearchExtension } from "@earendil-works/pi-coding-agent";
 import { shutdownPiSession } from "./pi-shutdown.js";
-import { PiSession } from "./session.js";
+import { cleanupDeadline, PiSession } from "./session.js";
 import { ChildProcessRegistrySlot, createTrackedBashOperations } from "./child-process-registry.js";
 import { SYSTEM_PROMPT_ADVERTISEMENT, SYSTEM_PROMPT_META_KEY, readSystemPromptMeta, systemPromptLoaderOverrides, } from "./system-prompt.js";
 import { PKG_VERSION } from "./version.js";
@@ -25,6 +25,7 @@ class FailedOpenCleanup {
     lifecycle;
     deps;
     resourceDispose;
+    piStop;
     constructor(pi, bridge, children, lifecycle, deps) {
         this.pi = pi;
         this.bridge = bridge;
@@ -33,72 +34,40 @@ class FailedOpenCleanup {
         this.deps = deps;
     }
     get remainingChildren() { return this.children.remainingChildren; }
-    startResources(bridgeClose) {
-        this.resourceDispose ??= (async () => {
-            await this.bridge.drainRefreshes().catch((error) => {
-                console.error("pi-acp failed-open refresh drain error:", error);
-            });
-            const results = await Promise.allSettled([
-                shutdownPiSession(this.pi),
-                bridgeClose,
-            ]);
-            for (const result of results) {
-                if (result.status === "rejected")
-                    console.error("pi-acp failed-open resource disposal error:", result.reason);
-            }
-        })();
-        return this.resourceDispose;
-    }
     async dispose() {
         const deadline = new AbortController();
-        const timer = new AbortController();
-        const expiry = this.deps.sleep(this.deps.graceMs, timer.signal).then(() => {
-            const failure = adapterError("child_cleanup_error", {
-                details: { remainingChildren: this.children.remainingChildren },
-            });
-            deadline.abort(failure);
-            throw failure;
+        const childFailure = () => adapterError("child_cleanup_error", {
+            details: { remainingChildren: this.children.remainingChildren },
         });
-        expiry.catch(() => undefined);
-        // Failed-open cleanup has the same synchronous prefix as a published
-        // session: close spawn admission first, logically close every MCP client
-        // before aborting the binding lifetime, then start Pi abort before its
-        // one-shot resource disposal can run.
         const captured = this.children.closeEpoch(deadline.signal);
-        this.bridge.startDisposal();
-        if (!this.lifecycle.signal.aborted)
-            this.lifecycle.abort(new Error("failed open disposed"));
+        const childDrain = cleanupDeadline(this.deps, captured.drain.catch(() => {
+            throw childFailure();
+        }), this.deps.graceMs, () => {
+            const error = childFailure();
+            deadline.abort(error);
+            return error;
+        });
         this.bridge.abortRefreshes();
-        const bridgeClose = this.bridge.close();
-        bridgeClose.catch(() => undefined);
-        let abort;
-        try {
-            abort = this.pi.abort();
+        if (!this.piStop) {
+            const attempt = Promise.resolve().then(() => this.pi.abort()).catch(() => {
+                throw adapterError("turn_cleanup_error", { details: { phase: "pi", reason: "failed" } });
+            });
+            this.piStop = attempt;
+            attempt.catch(() => { if (this.piStop === attempt) this.piStop = undefined; });
         }
-        catch (error) {
-            abort = Promise.reject(error);
-        }
-        abort.catch(() => undefined);
-        const settled = Promise.allSettled([abort, captured.drain]);
-        let cleanupError;
-        await Promise.race([settled, expiry]).then((results) => {
-            if (!Array.isArray(results))
-                return;
-            const failure = results.find((result) => result.status === "rejected");
-            if (failure) {
-                cleanupError = adapterError("child_cleanup_error", {
-                    details: { remainingChildren: this.children.remainingChildren },
-                });
-            }
-        }, (error) => { cleanupError = error; });
-        timer.abort();
-        // Pi disposal is defense in depth only after the abort/tree barrier has
-        // committed success or failure. MCP physical close was already started
-        // by the synchronous disposal prefix above.
-        const resources = this.startResources(bridgeClose);
-        await resources;
-        if (cleanupError)
-            throw cleanupError;
+        const timeout = this.deps.turnCleanupTimeoutMs ?? 15_000;
+        await Promise.all([childDrain, cleanupDeadline(this.deps, this.piStop, timeout, () =>
+            adapterError("turn_cleanup_error", { details: { phase: "pi", reason: "timeout" } }))]);
+        this.resourceDispose ??= (async () => {
+            this.bridge.startDisposal();
+            if (!this.lifecycle.signal.aborted)
+                this.lifecycle.abort(new Error("failed open disposed"));
+            await Promise.all([shutdownPiSession(this.pi), this.bridge.close()]);
+        })().catch(() => {
+            throw adapterError("turn_cleanup_error", { details: { phase: "disposal", reason: "failed" } });
+        });
+        await cleanupDeadline(this.deps, this.resourceDispose, timeout, () =>
+            adapterError("turn_cleanup_error", { details: { phase: "disposal", reason: "timeout" } }));
     }
 }
 function validateCwd(cwd) {
@@ -130,6 +99,7 @@ export class PiAcpAgent {
     openingControllers = new Set();
     openingTasks = new Set();
     tombstones = new Set();
+    recoverable = new Set();
     deleting = new Set();
     cleanupRecords = new Map();
     mcpOwnerToken = {};
@@ -164,17 +134,17 @@ export class PiAcpAgent {
     authenticate(context) {
         return authenticateMethod(context.params.methodId);
     }
-    ensureMayOpen(id) {
+    ensureMayOpen(id, recover = false) {
         if (this.deleting.has(id)) throw adapterError("session_busy");
         if (this.disposed)
             throw adapterError("internal_error");
-        if (this.tombstones.has(id))
+        if (this.tombstones.has(id) || (!recover && (this.recoverable.has(id) || this.cleanupRecords.has(id))))
             throw adapterError("session_terminated");
         if (this.live.has(id) || this.opening.has(id))
             throw adapterError("session_already_open");
     }
-    reserve(id, opening) {
-        this.ensureMayOpen(id);
+    reserve(id, opening, recover = false) {
+        this.ensureMayOpen(id, recover);
         this.opening.set(id, opening);
     }
     beginOpening(requestSignal) {
@@ -390,7 +360,7 @@ export class PiAcpAgent {
                 settingsManager,
                 childRegistry,
                 lifecycleController: lifecycle,
-                onWedged: (sessionId, session, cleanupRetryRequired) => this.terminateWedged(sessionId, session, cleanupRetryRequired),
+                onWedged: (sessionId, session) => this.terminateWedged(sessionId, session),
             });
             bindingState.wrapper = wrapper;
             pi[Symbol.for("eido.pi.host")]?.attach(wrapper);
@@ -443,7 +413,8 @@ export class PiAcpAgent {
                     await wrapper.dispose();
                 }
                 catch (candidate) {
-                    if (isChildCleanupError(candidate)) {
+                    if (isTurnCleanupError(candidate)) {
+                        this.recoverable.delete(id);
                         this.cleanupRecords.set(id, wrapper);
                         cleanupError = candidate;
                     }
@@ -460,7 +431,8 @@ export class PiAcpAgent {
                         await rollback.dispose();
                     }
                     catch (candidate) {
-                        if (isChildCleanupError(candidate)) {
+                        if (isTurnCleanupError(candidate)) {
+                            this.recoverable.delete(id);
                             this.cleanupRecords.set(id, rollback);
                             cleanupError = candidate;
                         }
@@ -524,7 +496,7 @@ export class PiAcpAgent {
         const systemPrompt = readSystemPromptMeta(context.params._meta);
         const opening = this.beginOpening(context.signal);
         try {
-            this.reserve(context.params.sessionId, opening);
+            this.reserve(context.params.sessionId, opening, this.recoverable.has(context.params.sessionId));
             opening.id = context.params.sessionId;
         }
         catch (error) {
@@ -535,6 +507,11 @@ export class PiAcpAgent {
         const task = (async () => {
             try {
                 this.gate(opening);
+                const id = context.params.sessionId;
+                if (this.recoverable.has(id)) {
+                    await this.finishOwnedSession(id, this.cleanupRecords.get(id));
+                    this.gate(opening);
+                }
                 const infos = await this.deps.sessions.list(context.params.cwd, this.deps.sessionDir);
                 this.gate(opening);
                 const info = infos.find(({ id }) => id === context.params.sessionId);
@@ -548,6 +525,7 @@ export class PiAcpAgent {
                     throw adapterError("session_corrupt");
                 }
                 const session = await this.construct(opening, manager, context.params.cwd, context.client, context.params.mcpServers ?? [], replay, undefined, systemPrompt);
+                this.recoverable.delete(id);
                 return { configOptions: session.configOptions(), modes: null };
             }
             catch (error) {
@@ -568,7 +546,8 @@ export class PiAcpAgent {
         return this.reattach(context, false);
     }
     forkSession(context) {
-        if (this.tombstones.has(context.params.sessionId))
+        if (this.tombstones.has(context.params.sessionId) || this.recoverable.has(context.params.sessionId)
+            || this.cleanupRecords.has(context.params.sessionId))
             throw adapterError("session_terminated");
         const liveSource = this.live.get(context.params.sessionId);
         if (liveSource?.busy)
@@ -593,7 +572,8 @@ export class PiAcpAgent {
                         throw adapterError("unknown_session");
                 }
                 this.gate(opening);
-                if (this.tombstones.has(context.params.sessionId))
+                if (this.tombstones.has(context.params.sessionId) || this.recoverable.has(context.params.sessionId)
+                    || this.cleanupRecords.has(context.params.sessionId))
                     throw adapterError("session_terminated");
                 if (liveSource?.busy)
                     throw adapterError("session_busy");
@@ -686,12 +666,14 @@ export class PiAcpAgent {
             // Stop the owned runtime before touching its journal, and use the
             // same cross-process ownership guard as load/resume.
             await this.closeSession(context);
-            if (this.cleanupRecords.has(id)) throw adapterError("child_cleanup_error");
+            if (this.cleanupRecords.has(id))
+                throw adapterError("turn_cleanup_error", { details: { phase: "disposal", reason: "failed" } });
             release = await this.deps.eidoClaimSession?.(id);
             const sessions = await this.deps.sessions.listAll(this.deps.sessionDir);
             const target = sessions.find(session => session.id === id);
             if (target) await rm(target.path);
             this.tombstones.add(id);
+            this.recoverable.delete(id);
             return {};
         } finally {
             await release?.();
@@ -707,30 +689,33 @@ export class PiAcpAgent {
                 throw opening.cleanupError;
             return {};
         }
-        const session = this.live.get(context.params.sessionId) ?? this.cleanupRecords.get(context.params.sessionId);
-        if (!session)
-            return {};
-        try {
-            await session.dispose();
-            this.cleanupRecords.delete(context.params.sessionId);
-        }
-        catch (error) {
-            if (isChildCleanupError(error)) {
-                this.tombstones.add(context.params.sessionId);
-                this.cleanupRecords.set(context.params.sessionId, session);
-                throw error;
+        const id = context.params.sessionId;
+        const session = this.live.get(id) ?? this.cleanupRecords.get(id);
+        if (session) {
+            const wasLive = this.live.get(id) === session;
+            if (wasLive) {
+                this.cleanupRecords.set(id, session);
+                this.recoverable.add(id);
+                this.live.delete(id);
             }
-            console.error("pi-acp close error:", error);
-        }
-        finally {
-            if (this.live.get(context.params.sessionId) === session)
-                this.live.delete(context.params.sessionId);
+            await this.finishOwnedSession(id, session);
+            if (wasLive && !this.opening.has(id)) this.recoverable.delete(id);
         }
         return {};
     }
+    async finishOwnedSession(id, session) {
+        if (!session) return;
+        try {
+            await session.dispose();
+        } catch (error) {
+            if (isTurnCleanupError(error)) throw error;
+            throw adapterError("turn_cleanup_error", { details: { phase: "disposal", reason: "failed" } });
+        }
+        if (this.cleanupRecords.get(id) === session) this.cleanupRecords.delete(id);
+    }
     requireLive(id) {
         if (this.deleting.has(id)) throw adapterError("session_busy");
-        if (this.tombstones.has(id))
+        if (this.tombstones.has(id) || this.recoverable.has(id) || this.cleanupRecords.has(id))
             throw adapterError("session_terminated");
         const session = this.live.get(id);
         if (!session)
@@ -766,28 +751,17 @@ export class PiAcpAgent {
     cancel(context) {
         this.live.get(context.params.sessionId)?.cancel();
     }
-    async terminateWedged(id, session, cleanupRetryRequired) {
-        this.tombstones.add(id);
-        if (this.live.get(id) === session)
-            this.live.delete(id);
-        if (cleanupRetryRequired)
-            this.cleanupRecords.set(id, session);
+    async terminateWedged(id, session) {
+        // A late failure from a retired generation must not close its successor.
+        if (this.live.get(id) !== session) return;
+        this.recoverable.add(id);
+        this.cleanupRecords.set(id, session);
+        this.live.delete(id);
         try {
-            if (cleanupRetryRequired) {
-                await session.disposeAfterCleanupFailure();
-            }
-            else {
-                await session.dispose();
-                this.cleanupRecords.delete(id);
-            }
-        }
-        catch (error) {
-            if (isChildCleanupError(error) || session.cleanupRetryRequired) {
-                this.cleanupRecords.set(id, session);
-            }
-            else {
-                console.error("pi-acp wedged-session resource disposal error:", error);
-            }
+            await this.finishOwnedSession(id, session);
+        } catch (error) {
+            // Keep the old session and its owner for an explicit recovery retry.
+            console.error("pi-acp wedged-session cleanup error:", error);
         }
     }
     dispose() {
@@ -819,19 +793,25 @@ export class PiAcpAgent {
         const entries = [...records.entries()];
         const results = await Promise.allSettled(entries.map(([, session]) => session.dispose()));
         this.cleanupRecords.clear();
+        let firstFailure;
         let sawChildFailure = false;
         for (let index = 0; index < results.length; index += 1) {
             const result = results[index];
-            if (result.status === "rejected" && isChildCleanupError(result.reason)) {
+            if (result.status === "rejected") {
                 const [id, session] = entries[index];
                 this.cleanupRecords.set(id, session);
-                sawChildFailure = true;
+                firstFailure ??= result.reason;
+                sawChildFailure ||= isChildCleanupError(result.reason);
             }
         }
         if (sawChildFailure) {
             const remainingChildren = [...this.cleanupRecords.values()]
                 .reduce((sum, session) => sum + session.remainingChildren, 0);
             throw adapterError("child_cleanup_error", { details: { remainingChildren } });
+        }
+        if (this.cleanupRecords.size) {
+            if (isTurnCleanupError(firstFailure)) throw firstFailure;
+            throw adapterError("turn_cleanup_error", { details: { phase: "disposal", reason: "failed" } });
         }
     }
 }

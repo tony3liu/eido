@@ -1647,6 +1647,18 @@ impl AgentConnection for AcpConnection {
         self.agent_capabilities.load_session
     }
 
+    fn forget_terminated_session(&self, session_id: &acp::SessionId, thread: EntityId) -> bool {
+        let mut sessions = self.sessions.borrow_mut();
+        if sessions.get(session_id).is_some_and(|session| session.thread.entity_id() == thread) {
+            // Drop the release subscription as well. Only the agent has the
+            // cleanup evidence needed to reopen this session on the next load.
+            sessions.remove(session_id);
+            true
+        } else {
+            false
+        }
+    }
+
     fn supports_resume_session(&self) -> bool {
         self.agent_capabilities
             .session_capabilities

@@ -5,9 +5,11 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {spawn, type ChildProcessWithoutNullStreams} from 'node:child_process';
 import {once} from 'node:events';
-import { client, methods, type AgentContext, type CreateElicitationRequest, type CreateElicitationResponse, type SessionUpdate } from "@agentclientprotocol/sdk";
+import { client, methods, RequestError, type AgentContext, type CreateElicitationRequest, type CreateElicitationResponse, type SessionUpdate } from "@agentclientprotocol/sdk";
 import { startEidoAgent } from "../src/server.ts";
-import { fixtureModel, type FixtureStep } from "./fixture-model.ts";
+import { call, fixtureModel, type FixtureStep } from "./fixture-model.ts";
+import type { ChildProcessRegistrySlot } from "../adapter/src/child-process-registry.js";
+import type { PiAcpDeps } from "../adapter/src/deps.js";
 import { NATIVE_UI_ACTION } from "../src/native-ui.ts";
 import type { AgentSession, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import {createPiUIState} from '../src/pi-ui-state.ts';
@@ -21,6 +23,7 @@ async function harness(steps: FixtureStep[] = [], options: {
   configureRuntime?: (runtime: ModelRuntime) => void;
   createRuntime?: (cwd: string) => Promise<ModelRuntime>;
   form?: (params: CreateElicitationRequest, signal: AbortSignal) => Promise<CreateElicitationResponse>;
+  readTextFile?: () => Promise<{content: string}>;
   native?: (params: {sessionId: string; action: string; data: Record<string, unknown>}) => Promise<Record<string, unknown>>;
   terminal?: (method:string, params:any) => Promise<any>;
 } = {}) {
@@ -34,7 +37,7 @@ async function harness(steps: FixtureStep[] = [], options: {
   const server = await startEidoAgent(cwd, join(cwd, "sessions"), {readable: toAgent.readable, writable: toClient.writable}, fixture.runtime);
   const updates: {sessionId: string; update: SessionUpdate}[] = [];
   const completedElicitations: string[] = [];
-  const connection = client({name: "eido-command-test"})
+  const endpoint = client({name: "eido-command-test"})
     .onNotification(methods.client.session.update, ({params}) => { updates.push(params); })
     .onNotification(methods.client.elicitation.complete, ({params}) => {completedElicitations.push(params.elicitationId);})
     .onRequest(methods.client.elicitation.create, ({params, signal}) => options.form?.(params, signal) ?? {action: "cancel"})
@@ -42,14 +45,19 @@ async function harness(steps: FixtureStep[] = [], options: {
     .onRequest(methods.client.terminal.release, ({params}) => options.terminal!(methods.client.terminal.release,params))
     .onRequest(methods.client.terminal.waitForExit, ({params}) => options.terminal!(methods.client.terminal.waitForExit,params))
     .onRequest(NATIVE_UI_ACTION, {parse: raw => raw as {sessionId: string; action: string; data: Record<string, unknown>}},
-      async ({params}) => ({result: await options.native?.(params) ?? {}}))
-    .connect({readable: toClient.readable, writable: toAgent.writable});
+      async ({params}) => ({result: await options.native?.(params) ?? {}}));
+  const readTextFile = options.readTextFile;
+  const handlers = readTextFile ? endpoint
+    .onRequest(methods.client.fs.readTextFile, readTextFile)
+    .onRequest(methods.client.session.requestPermission, () => ({outcome: {outcome: "selected", optionId: "allow_once"}})) : endpoint;
+  const connection = handlers.connect({readable: toClient.readable, writable: toAgent.writable});
   await connection.agent.request(methods.agent.initialize, {protocolVersion: 1, clientCapabilities: {
     ...(options.form ? {elicitation: {form: {}}} : {}), ...(options.native ? {_meta: {eidoNativeUi: 1}} : {}),
     ...(options.terminal ? {terminal:true} : {}),
+    ...(options.readTextFile ? {fs: {readTextFile: true}} : {}),
   }});
   return {
-    cwd, settings, updates, completedElicitations, requests: fixture.requests, connection,
+    cwd, settings, updates, completedElicitations, requests: fixture.requests, connection, agent: server.agent,
     newTask: () => connection.agent.request(methods.agent.session.new, {cwd, mcpServers: []}),
     prompt: (sessionId: string, text: string) => connection.agent.request(methods.agent.session.prompt, {sessionId, prompt: [{type: "text", text}]}),
     text: (sessionId: string) => updates.filter(item => item.sessionId === sessionId).flatMap(({update}) => update.sessionUpdate === "agent_message_chunk" && update.content.type === "text" ? [update.content.text] : []).join("\n"),
@@ -1693,6 +1701,183 @@ test('pi extension cancellation settles after cleanup, survives reload and does 
     assert.equal(states().at(-1)?.status,'completed');
   } finally {await h.dispose();}
 });
+
+function gate<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>(done => { resolve = done; });
+  return {promise, resolve};
+}
+
+function heldEditorRead() {
+  const started = gate<void>();
+  const response = gate<{content: string}>();
+  return {
+    started: started.promise,
+    readTextFile: () => { started.resolve(); return response.promise; },
+    release: () => response.resolve({content: "late editor response"}),
+  };
+}
+
+function cancellationFixture(h: Awaited<ReturnType<typeof harness>>, sessionId: string) {
+  // Observe the real adapter internals only to hold its cleanup dependencies;
+  // all admission, settlement and recovery assertions go through ACP.
+  const {deps, live} = h.agent as unknown as {
+    deps: PiAcpDeps;
+    live: Map<string, {pi: AgentSession; childRegistry: ChildProcessRegistrySlot}>;
+  };
+  const session = live.get(sessionId);
+  assert.ok(session);
+  deps.graceMs = 30;
+  deps.turnCleanupTimeoutMs = 5_000;
+  return {pi: session.pi, childRegistry: session.childRegistry, deps};
+}
+
+function errorKind(kind: string, details?: object) {
+  return (error: unknown) => {
+    assert.ok(error instanceof RequestError);
+    const data = error.data as {errorKind: string; details?: unknown};
+    assert.equal(data?.errorKind, kind);
+    if (details !== undefined) assert.deepEqual(data.details, details);
+    return true;
+  };
+}
+
+async function assertFirstTurn(h: Awaited<ReturnType<typeof harness>>, status: "cancelled" | "failed") {
+  const turns = (await h.entries()).filter(entry => entry.customType === "eido.turn.v1").map(entry => entry.data);
+  assert.deepEqual(turns.map(turn => turn.status), ["running", status]);
+  assert.equal(turns[0].id, turns[1].id);
+}
+
+test("ACP cancellation cleanup: a slow Pi stop cannot consume the child deadline or admit a new prompt", {timeout: 30_000}, async () => {
+  const read = heldEditorRead();
+  const stoppedPi = gate<void>();
+  const releaseStop = gate<void>();
+  const h = await harness([() => call("read", {path: "sample.ts"}), () => "Explicit follow-up succeeded."], read);
+  try {
+    await writeFile(join(h.cwd, "sample.ts"), "editor fixture");
+    const {sessionId} = await h.newTask();
+    const {pi} = cancellationFixture(h, sessionId);
+    const abort = pi.abort.bind(pi);
+    pi.abort = async () => {
+      await abort();
+      stoppedPi.resolve();
+      await releaseStop.promise;
+    };
+    const pending = h.prompt(sessionId, "Stop during editor read");
+    void pending.catch(() => undefined);
+    await read.started;
+    await h.connection.agent.notify(methods.agent.session.cancel, {sessionId});
+    await stoppedPi.promise;
+    // The injected child deadline is 30 ms and the child registry is already
+    // drained. Pi still has time on its own deadline, but the turn stays busy.
+    await delay(90);
+    await h.connection.agent.notify(methods.agent.session.cancel, {sessionId});
+    await assert.rejects(h.prompt(sessionId, "Do not run before cleanup"), errorKind("session_busy"));
+    assert.equal(h.requests(), 1);
+    releaseStop.resolve();
+    assert.equal((await pending).stopReason, "cancelled");
+    await assertFirstTurn(h, "cancelled");
+    assert.equal((await h.prompt(sessionId, "Send this after cleanup")).stopReason, "end_turn");
+    assert.match(h.text(sessionId), /Explicit follow-up succeeded/);
+    assert.equal(h.requests(), 2);
+  } finally {
+    releaseStop.resolve();
+    read.release();
+    await h.dispose();
+  }
+});
+
+test("ACP cancellation cleanup: a pending spawn blocks recovery even with zero registered children", {timeout: 30_000}, async () => {
+  const read = heldEditorRead();
+  const h = await harness([() => call("read", {path: "sample.ts"}), () => "Recovered on explicit send."], read);
+  let settleSpawn: (() => void) | undefined;
+  try {
+    await writeFile(join(h.cwd, "sample.ts"), "editor fixture");
+    const {sessionId} = await h.newTask();
+    const {childRegistry} = cancellationFixture(h, sessionId);
+    const params = {sessionId, cwd: h.cwd, mcpServers: []};
+    const failure = assert.rejects(h.prompt(sessionId, "Retain this original turn"),
+      errorKind("child_cleanup_error", {remainingChildren: 0}));
+    await read.started;
+    settleSpawn = childRegistry.beginSpawn().failed;
+    assert.equal(childRegistry.remainingChildren, 0);
+    await h.connection.agent.notify(methods.agent.session.cancel, {sessionId});
+    await failure;
+    await assertFirstTurn(h, "failed");
+    await assert.rejects(h.prompt(sessionId, "Do not send to the retired session"), errorKind("session_terminated"));
+    h.updates.length = 0;
+    await assert.rejects(h.connection.agent.request(methods.agent.session.load, params),
+      errorKind("child_cleanup_error", {remainingChildren: 0}));
+    assert.equal(h.updates.length, 0, "failed recovery must not replay session history");
+    assert.equal(h.requests(), 1);
+
+    settleSpawn();
+    await h.connection.agent.request(methods.agent.session.load, params);
+    assert.ok(h.updates.some(({sessionId: id, update}) => id === sessionId && update.sessionUpdate === "user_message_chunk"
+      && update.content.type === "text" && update.content.text === "Retain this original turn"));
+    assert.equal(h.requests(), 1, "explicit load replays history without running the old prompt");
+    assert.equal((await h.prompt(sessionId, "Continue after recovery")).stopReason, "end_turn");
+    assert.match(h.text(sessionId), /Recovered on explicit send/);
+    assert.equal(h.requests(), 2);
+    await h.connection.agent.request(methods.agent.session.delete, {sessionId});
+    await assert.rejects(h.connection.agent.request(methods.agent.session.load, params), errorKind("session_terminated"));
+    assert.equal(h.requests(), 2);
+  } finally {
+    settleSpawn?.();
+    read.release();
+    await h.dispose();
+  }
+});
+
+for (const reason of ["failed", "timeout"] as const) {
+  test(`ACP cancellation cleanup: a Pi stop that ${reason === "failed" ? "rejects" : "times out"} reports its own phase`, {timeout: 30_000}, async () => {
+    const read = heldEditorRead();
+    const releaseStop = gate<void>();
+    const h = await harness([() => call("read", {path: "sample.ts"}), () => "Recovered after the stop failure."], read);
+    try {
+      await writeFile(join(h.cwd, "sample.ts"), "editor fixture");
+      const {sessionId} = await h.newTask();
+      const {pi, deps} = cancellationFixture(h, sessionId);
+      if (reason === "timeout") deps.turnCleanupTimeoutMs = 90;
+      const params = {sessionId, cwd: h.cwd, mcpServers: []};
+      const abort = pi.abort.bind(pi);
+      const secret = "fixture-private-stop-token";
+      let stopCalls = 0;
+      pi.abort = async () => {
+        const first = ++stopCalls === 1;
+        await abort();
+        if (first && reason === "failed") throw new Error(secret);
+        if (first && reason === "timeout") await releaseStop.promise;
+      };
+      const cleanupError = errorKind("turn_cleanup_error", {phase: "pi", reason});
+      const failure = assert.rejects(h.prompt(sessionId, "Stop despite a Pi error"), (error: unknown) => {
+        assert.ok(error instanceof RequestError);
+        assert.doesNotMatch(JSON.stringify([error.message, error.data]), new RegExp(secret));
+        return cleanupError(error);
+      });
+      await read.started;
+      await h.connection.agent.notify(methods.agent.session.cancel, {sessionId});
+      await failure;
+      await assertFirstTurn(h, "failed");
+      await assert.rejects(h.prompt(sessionId, "Do not automatically retry"), errorKind("session_terminated"));
+      if (reason === "timeout") {
+        await assert.rejects(h.connection.agent.request(methods.agent.session.load, params), cleanupError);
+        assert.equal(stopCalls, 1, "recovery must not start a concurrent Pi stop");
+        deps.turnCleanupTimeoutMs = 5_000;
+        releaseStop.resolve();
+      }
+      await h.connection.agent.request(methods.agent.session.load, params);
+      assert.equal(h.requests(), 1);
+      assert.equal((await h.prompt(sessionId, "Continue explicitly")).stopReason, "end_turn");
+      assert.match(h.text(sessionId), /Recovered after the stop failure/);
+      assert.equal(h.requests(), 2);
+    } finally {
+      releaseStop.resolve();
+      read.release();
+      await h.dispose();
+    }
+  });
+}
 
 
 test('pi 1.1.0 busy retries settle once, retain failure and remain cancellable', {timeout:30_000},async()=> {

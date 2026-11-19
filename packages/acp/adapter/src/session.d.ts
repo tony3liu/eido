@@ -7,6 +7,7 @@ import type { McpBridge, McpResultProjection } from "./mcp-bridge.js";
 import { type ChildProcessRegistrySlot } from "./child-process-registry.js";
 import type { SteeringRequest, SteeringResponse } from "./steering.js";
 import { type LoadedTurnStatus } from "./loaded-turn.js";
+export declare function cleanupDeadline<T>(deps: Pick<PiAcpDeps, "sleep">, work: Promise<T>, timeoutMs: number, onTimeout: () => Error): Promise<T>;
 export interface PiSessionOptions {
     sessionId: string;
     cwd: string;
@@ -20,7 +21,7 @@ export interface PiSessionOptions {
     settingsManager: SettingsManager;
     childRegistry: ChildProcessRegistrySlot;
     lifecycleController: AbortController;
-    onWedged(sessionId: string, session: PiSession, cleanupRetryRequired: boolean): Promise<void>;
+    onWedged(sessionId: string, session: PiSession): Promise<void>;
 }
 export declare class PiSession {
     readonly sessionId: string;
@@ -47,10 +48,19 @@ export declare class PiSession {
     private activeTurn;
     private steerChain;
     private configReserved;
-    private cleanupDirty;
     private cleanupGeneration;
+    private pendingChildDrain;
     private resourceDisposePromise;
     private bridgeClosePromise;
+    private piStop;
+    private toolCleanup;
+    private execution;
+    private disposePromise;
+    private disposeGeneration;
+    private waitForCleanup;
+    private captureChildDrain;
+    private finishToolResources;
+    private closeTurnResources;
     /** The `_session/loaded_turn` extension's watch flag: set when a
      *  `loadedTurnStatus()` query answered `running` (a client is waiting
      *  for that turn's authoritative end), cleared — and the
@@ -104,9 +114,7 @@ export declare class PiSession {
     cancel(): void;
     childCleanupFailure(): void;
     dispose(): Promise<void>;
-    disposeAfterCleanupFailure(): Promise<void>;
     get remainingChildren(): number;
-    get cleanupRetryRequired(): boolean;
     disposeResources(): Promise<void>;
     poison(): void;
 }

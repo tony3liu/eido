@@ -39,6 +39,7 @@ export interface PiAcpDeps {
     builtinMcpClients?(binding: McpSessionBinding): Promise<readonly BuiltinMcpClient[]>;
     sleep(ms: number, signal: AbortSignal): Promise<void>;
     graceMs: number;
+    turnCleanupTimeoutMs?: number;
     mcpTimeoutMs: number;
 }
 export declare function realSleep(ms: number, signal: AbortSignal): Promise<void>;

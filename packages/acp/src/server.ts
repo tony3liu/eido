@@ -161,32 +161,29 @@ export async function startEidoAgent(agentDir: string, sessionDir: string, strea
         const browser = browserLifecycle(created.session);
         const prompt = created.session.prompt.bind(created.session);
         created.session.prompt = async (...args) => {
-          try {
-            const result = await prompt(...args);
-            // Extension commands can start a custom run without awaiting it.
-            // Pi 1.2+ is busy during before_agent_start as well. Keep the ACP
-            // turn and its resources alive until that public SDK run settles.
-            await created.session.waitForIdle();
-            return result;
-          } finally {
-            const cleanup = await Promise.allSettled([research.finishTurn(created.session.sessionId),mcp.finishTurn(created.session.sessionId), browser.close(), preview.finishTurn(!!child), shell.finishTurn()]);
-            const failed = cleanup.find(result => result.status === "rejected");
-            if (failed?.status === "rejected") throw failed.reason;
-          }
-        };
-        // The adapter awaits pi.abort() on cancellation. Settlement hooks are not
-        // guaranteed on an aborted turn, so release preview after tools settle.
-        const abort = created.session.abort.bind(created.session);
-        created.session.abort = async () => {
-          try { await abort(); } finally {
-            const results = await Promise.allSettled([research.finishTurn(created.session.sessionId),mcp.finishTurn(created.session.sessionId), preview.finishTurn(true), shell.finishTurn(), browser.close()]);
-            const failed = results.find(result => result.status === "rejected");
-            if (failed?.status === "rejected") throw failed.reason;
-          }
+          const result = await prompt(...args);
+          // Extension commands can start a custom run without awaiting it.
+          await created.session.waitForIdle();
+          return result;
         };
         // The SDK bash override uses current editor captures and the same native
         // process supervisor as preview. Role restrictions apply after discovery.
         const child = subagents.register(created.session);
+        Object.defineProperty(created.session, Symbol.for("eido.pi.finish-tool-resources"), {
+          value: async (mode: "normal" | "cancel" | "stop-static") => {
+            if (mode === "stop-static") {
+              if (!child) await preview.finishTurn(true);
+              return;
+            }
+            const id = created.session.sessionId;
+            const results = await Promise.allSettled([
+              research.finishTurn(id), mcp.finishTurn(id), browser.close(),
+              preview.finishTurn(mode === "cancel" || !!child), shell.finishTurn(),
+            ]);
+            const failed = results.find(result => result.status === "rejected");
+            if (failed?.status === "rejected") throw failed.reason;
+          },
+        });
         const decisionTools = new Set(["do", "check", "choose"].map(name => `mcp__eido_browser__browser_${name}`));
         let toolPolicy: ReturnType<typeof installAgentToolPolicy>;
         try { toolPolicy = installAgentToolPolicy(created.session, child ? child.role?.tools ?? ["read"] : undefined,

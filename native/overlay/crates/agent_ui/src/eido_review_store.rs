@@ -5,7 +5,7 @@ use anyhow::{Context as _, Result};
 #[cfg(test)]
 use db::kvp::KeyValueStore;
 use futures::{StreamExt, channel::mpsc};
-use gpui::{App, AppContext as _, AsyncApp, Context, Entity, WeakEntity};
+use gpui::{App, AppContext as _, AsyncApp, Context, Entity, EntityId, Global, WeakEntity};
 use serde::{Deserialize, Serialize};
 use std::{cell::RefCell, collections::HashMap, path::PathBuf, rc::Rc, time::Duration};
 use util::ResultExt as _;
@@ -47,7 +47,25 @@ struct SavedReview {
     archived: Vec<SavedFile>,
 }
 
-type Owners = Rc<RefCell<HashMap<String, WeakEntity<AcpThread>>>>;
+type Owners = Rc<RefCell<HashMap<String, Rc<Owner>>>>;
+
+#[derive(Default)]
+struct ReviewOwners {
+    owners: Owners,
+    rejected: HashMap<EntityId, (WeakEntity<AcpThread>, usize)>,
+}
+impl Global for ReviewOwners {}
+
+struct Owner {
+    thread: RefCell<WeakEntity<AcpThread>>,
+    state: Rc<RefCell<State>>,
+    writer: Writer,
+}
+
+impl Owner {
+    fn is_current(&self, id: EntityId) -> bool { self.thread.borrow().entity_id() == id }
+    fn thread(&self) -> WeakEntity<AcpThread> { self.thread.borrow().clone() }
+}
 
 #[derive(Default)]
 struct State {
@@ -116,21 +134,58 @@ fn capture(log: &Entity<ActionLog>, state: &Rc<RefCell<State>>, sender: &Writer,
 /// Observe every ACP session, including child sessions without an open view.
 /// Storage uses the existing application database and is scoped by session + roots.
 pub fn init(cx: &mut App) {
-    let owners: Owners = Rc::default();
-    cx.observe_new::<AcpThread>(move |thread, _, cx| {
+    cx.set_global(ReviewOwners::default());
+    cx.observe_new::<AcpThread>(|thread, _, cx| {
         if std::env::var_os("EIDO_ROOT").is_none() { return; }
-        let Some(roots) = thread.work_dirs() else { return; };
-        let roots: Vec<_> = roots.ordered_paths().cloned().collect();
-        let Ok(key) = serde_json::to_string(&(thread.session_id().to_string(), roots)) else { return; };
-        if owners.borrow().get(&key).and_then(|owner| owner.upgrade()).is_some() {
+        let Some(key) = review_key(thread) else { return; };
+        let owners = cx.global::<ReviewOwners>().owners.clone();
+        owners.borrow_mut().retain(|_, owner| owner.thread().upgrade().is_some());
+        cx.global_mut::<ReviewOwners>().rejected.retain(|_, (thread, _)| thread.upgrade().is_some());
+        if owners.borrow().contains_key(&key) {
             thread.set_review_write_error(Some("This task has an active review in another window. Continue there or close that task before reopening it here.".into()));
             thread.handle_session_update(acp::SessionUpdate::Notice(acp::Notice::new(
                 acp::NoticeSeverity::Warning, "This task's pending review is active in another window. Review it there before editing here.")), cx).log_err();
+            if let Some(&(notice, _)) = thread.notices().last() {
+                let id = cx.entity_id();
+                let weak = cx.weak_entity();
+                cx.global_mut::<ReviewOwners>().rejected.insert(id, (weak, notice));
+            }
             return;
         }
-        owners.borrow_mut().insert(key.clone(), cx.weak_entity());
-        attach_with_owners(thread, key, owners.clone(), cx);
+        attach_with_owners(thread, key, owners, cx);
     }).detach();
+}
+
+fn review_key(thread: &AcpThread) -> Option<String> {
+    let roots: Vec<_> = thread.work_dirs()?.ordered_paths().cloned().collect();
+    serde_json::to_string(&(thread.session_id().to_string(), roots)).ok()
+}
+
+/// Called only on an explicit reconnect's successful load, after checking the
+/// view's connection generation. The original entity must still own this task.
+pub(crate) fn reconnect(previous: &Entity<AcpThread>, replacement: &Entity<AcpThread>, cx: &mut App) {
+    let old = previous.read(cx);
+    let new = replacement.read(cx);
+    if previous == replacement || old.project() != new.project()
+        || old.parent_session_id().is_some() || new.parent_session_id().is_some()
+    { return; }
+    let Some(key) = review_key(old) else { return; };
+    if review_key(new).as_ref() != Some(&key) { return; }
+    let Some(store) = cx.try_global::<ReviewOwners>() else { return; };
+    let Some(owner) = store.owners.borrow().get(&key).cloned() else { return; };
+    let Some(notice) = store.rejected.get(&replacement.entity_id()).map(|(_, notice)| *notice) else { return; };
+    if !owner.is_current(previous.entity_id()) { return; }
+
+    let log = old.action_log().clone();
+    capture_resolutions(old, &owner.state);
+    capture(&log, &owner.state, &owner.writer, cx);
+    *owner.thread.borrow_mut() = replacement.downgrade();
+    cx.global_mut::<ReviewOwners>().rejected.remove(&replacement.entity_id());
+    AcpThread::handoff_eido_reviews(previous, replacement, cx);
+    replacement.update(cx, |thread, cx| {
+        thread.dismiss_notice(notice, cx);
+        subscribe(thread, log, owner, cx);
+    });
 }
 
 #[cfg(test)]
@@ -145,55 +200,29 @@ fn attach_with_owners(thread: &mut AcpThread, key: String, owners: Owners, cx: &
     let saved = crate::eido_session_store::read(NAMESPACE, &key, cx)
         .and_then(|raw| raw.map(|raw| serde_json::from_str::<SavedReview>(&raw).map_err(Into::into)).transpose());
     let (errors, mut failures) = mpsc::unbounded();
-    let sender = Writer {key: key.clone(), errors};
+    let owner = Rc::new(Owner { thread: RefCell::new(cx.weak_entity()), state, writer: Writer { key: key.clone(), errors } });
+    owners.borrow_mut().insert(key, owner.clone());
+    subscribe(thread, log.clone(), owner.clone(), cx);
     cx.spawn({
-        let state = state.clone();
-        async move |thread, cx| {
+        // The writer may outlive its first thread, but must not keep itself or
+        // its channel alive after all review subscriptions are dropped.
+        let owner = Rc::downgrade(&owner);
+        async move |_, cx| {
             while let Some(error) = failures.next().await {
-                state.borrow_mut().last_payload = None;
-                notify(&thread, format!("Pending review could not be saved: {error}. Keep this task open."), cx);
+                let Some(owner) = owner.upgrade() else { break; };
+                owner.state.borrow_mut().last_payload = None;
+                notify(&owner.thread(), format!("Pending review could not be saved: {error}. Keep this task open."), cx);
             }
         }
     }).detach();
-    let subscription = cx.observe(&log, {
-        let state = state.clone(); let sender = sender.clone();
-        move |_, log, cx| { capture(&log, &state, &sender, cx); }
-    });
-    thread.retain_review_subscription(subscription);
-    let resolved = cx.observe_self({
-        let state = state.clone(); let sender = sender.clone(); let log = log.clone();
-        move |thread, cx| {
-            if capture_resolutions(thread, &state) { capture(&log, &state, &sender, cx); }
-        }
-    });
-    thread.retain_review_subscription(resolved);
-    let release = cx.on_release({
-        let state = state.clone(); let sender = sender.clone(); let log = log.clone();
-        move |thread, cx| {
-            capture_resolutions(thread, &state);
-            capture(&log, &state, &sender, cx);
-        }
-    });
-    thread.retain_review_subscription(release);
-    // Capture while the app can still be read, then only await background I/O.
-    // A diff still being computed retains its last consistent checkpoint.
-    let quit = cx.on_app_quit({
-        let state = state.clone(); let sender = sender.clone(); let log = log.downgrade();
-        move |thread, cx| {
-            capture_resolutions(thread, &state);
-            if let Some(log) = log.upgrade() { capture(&log, &state, &sender, cx); }
-            let save = crate::eido_session_store::flush(NAMESPACE, &sender.key, cx);
-            async move { let _ = save.await; }
-        }
-    });
-    thread.retain_review_subscription(quit);
     let roots = thread.work_dirs().map(|dirs| dirs.ordered_paths().cloned().collect::<Vec<_>>()).unwrap_or_default();
-    cx.spawn(async move |thread, cx| {
+    cx.spawn(async move |_, cx| {
+        let state = &owner.state;
         let review = match saved {
             Ok(files) => files.unwrap_or_default(),
             Err(error) => {
                 // Leave corrupt/unknown storage intact for recovery.
-                notify(&thread, format!("Pending review could not be loaded: {error}. Its saved record has been preserved."), cx);
+                notify(&owner.thread(), format!("Pending review could not be loaded: {error}. Its saved record has been preserved."), cx);
                 return;
             }
         };
@@ -201,7 +230,7 @@ fn attach_with_owners(thread: &mut AcpThread, key: String, owners: Owners, cx: &
         if review.parent.is_some() { state.borrow_mut().parent = review.parent; }
         state.borrow_mut().archived = review.archived.clone();
         for file in review.archived {
-            thread.update(cx, |thread, cx| thread.add_review_copy(file.into(), true, cx)).log_err();
+            owner.thread().update(cx, |thread, cx| thread.add_review_copy(file.into(), true, cx)).log_err();
         }
         let parent = state.borrow().parent.clone();
         for file in review.files {
@@ -219,20 +248,66 @@ fn attach_with_owners(thread: &mut AcpThread, key: String, owners: Owners, cx: &
                 anyhow::Ok(())
             }.await;
             if let Err(error) = result {
-                notify(&thread, format!("Pending review for {} was preserved but not applied: {error}.", file.path.display()), cx);
-                thread.update(cx, |thread, cx| thread.add_review_copy(file.clone().into(), false, cx)).log_err();
+                notify(&owner.thread(), format!("Pending review for {} was preserved but not applied: {error}.", file.path.display()), cx);
+                owner.thread().update(cx, |thread, cx| thread.add_review_copy(file.clone().into(), false, cx)).log_err();
                 state.borrow_mut().conflicts.push(file);
             }
         }
         state.borrow_mut().restoring = false;
-        thread.update(cx, |thread, _| thread.set_review_write_error(None)).log_err();
-        cx.update(|cx| { capture(&log, &state, &sender, cx); });
+        if let Some(thread) = owner.thread().upgrade() {
+            thread.update(cx, |thread, _| thread.set_review_write_error(None));
+            cx.update(|cx| { capture(&log, state, &owner.writer, cx); });
+        }
     }).detach();
+}
+
+fn subscribe(thread: &mut AcpThread, log: Entity<ActionLog>, owner: Rc<Owner>, cx: &mut Context<AcpThread>) {
+    let id = cx.entity_id();
+    let subscription = cx.observe(&log, {
+        let owner = owner.clone();
+        move |_, log, cx| {
+            if owner.is_current(id) { capture(&log, &owner.state, &owner.writer, cx); }
+        }
+    });
+    thread.retain_review_subscription(subscription);
+    let resolved = cx.observe_self({
+        let owner = owner.clone(); let log = log.clone();
+        move |thread, cx| {
+            if owner.is_current(id) && capture_resolutions(thread, &owner.state) {
+                capture(&log, &owner.state, &owner.writer, cx);
+            }
+        }
+    });
+    thread.retain_review_subscription(resolved);
+    let release = cx.on_release({
+        let owner = owner.clone(); let log = log.clone();
+        move |thread, cx| {
+            if owner.is_current(id) {
+                capture_resolutions(thread, &owner.state);
+                capture(&log, &owner.state, &owner.writer, cx);
+            }
+        }
+    });
+    thread.retain_review_subscription(release);
+    // Capture while the app can still be read, then only await background I/O.
+    // A diff still being computed retains its last consistent checkpoint.
+    let quit = cx.on_app_quit({
+        let log = log.downgrade();
+        move |thread, cx| {
+            let save = owner.is_current(id).then(|| {
+                capture_resolutions(thread, &owner.state);
+                if let Some(log) = log.upgrade() { capture(&log, &owner.state, &owner.writer, cx); }
+                crate::eido_session_store::flush(NAMESPACE, &owner.writer.key, cx)
+            });
+            async move { if let Some(save) = save { let _ = save.await; } }
+        }
+    });
+    thread.retain_review_subscription(quit);
 }
 
 async fn ancestor_review(parent: &str, roots: &[PathBuf], owners: &Owners, cx: &mut AsyncApp) -> Result<SavedReview> {
     let key = serde_json::to_string(&(parent, roots))?;
-    let live = owners.borrow().get(&key).cloned();
+    let live = owners.borrow().get(&key).map(|owner| owner.thread());
     if let Some(live) = live {
         for _ in 0..100 {
             if let Ok(Some(review)) = live.read_with(cx, |thread, cx| {
@@ -320,6 +395,81 @@ mod tests {
 
     fn saved(key: &str, cx: &TestAppContext) -> Vec<SavedFile> {
         cx.read(|cx| serde_json::from_str::<SavedReview>(&KeyValueStore::global(cx).scoped(NAMESPACE).read(key).unwrap().unwrap()).unwrap().files)
+    }
+
+    #[gpui::test]
+    async fn test_eido_reconnect_hands_review_to_replacement_only_from_current_owner(cx: &mut TestAppContext) {
+        crate::conversation_view::tests::init_test(cx);
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree("/reviews", serde_json::json!({})).await;
+        let project = Project::test(fs.clone(), [Path::new("/reviews")], cx).await;
+        let previous = session(project.clone(), cx).await;
+        let (id, key) = previous.read_with(cx, |thread, _| (thread.session_id().clone(), review_key(thread).unwrap()));
+        let load = |cx: &mut App| {
+            Rc::new(StubAgentConnection::new().with_supports_load_session(true)).load_session(
+                id.clone(), project.clone(), PathList::new(&[Path::new("/reviews")]), None, cx,
+            )
+        };
+        let contender = cx.update(load).await.unwrap();
+        let replacement = cx.update(load).await.unwrap();
+        // Seed the owner and contention notices without enabling EIDO_ROOT
+        // for other tests. These are the entries observed on a real reload.
+        cx.update(|cx| cx.set_global(ReviewOwners::default()));
+        previous.update(cx, |thread, cx| {
+            let owners = cx.global::<ReviewOwners>().owners.clone();
+            attach_with_owners(thread, key.clone(), owners, cx);
+        });
+        for duplicate in [&contender, &replacement] {
+            duplicate.update(cx, |thread, cx| {
+                thread.set_review_write_error(Some("Review already owned".into()));
+                thread.handle_session_update(acp::SessionUpdate::Notice(acp::Notice::new(
+                    acp::NoticeSeverity::Warning, "Review already owned",
+                )), cx).unwrap();
+                let notice = thread.notices().last().unwrap().0;
+                let id = cx.entity_id();
+                let weak = cx.weak_entity();
+                cx.global_mut::<ReviewOwners>().rejected.insert(id, (weak, notice));
+            });
+        }
+        cx.run_until_parked();
+        let path = PathBuf::from("/reviews/pending.txt");
+        previous.update(cx, |thread, cx| thread.create_text_file(path.clone(), "pending change\n".into(), cx)).await.unwrap();
+        previous.update(cx, |thread, cx| {
+            thread.add_review_copy(ReviewCheckpoint {
+                path: "/reviews/kept.txt".into(), base: "".into(), current: "old proposal".into(),
+                disk_mtime: None, sources: vec![], has_external_overlap: false,
+            }, false, cx);
+            thread.keep_current_review(Path::new("/reviews/kept.txt"), cx);
+        });
+        cx.run_until_parked();
+        let (log, journal) = previous.read_with(cx, |thread, _| (thread.action_log().clone(), thread.file_reviews().clone()));
+
+        cx.update(|cx| reconnect(&contender, &replacement, cx));
+        assert!(replacement.read_with(cx, |thread, _| thread.review_is_unavailable()));
+        assert!(!previous.read_with(cx, |thread, _| thread.eido_replaced()));
+
+        cx.update(|cx| reconnect(&previous, &replacement, cx));
+        assert!(previous.read_with(cx, |thread, _| thread.eido_replaced() && thread.review_is_unavailable()));
+        assert!(contender.read_with(cx, |thread, _| thread.review_is_unavailable()));
+        replacement.read_with(cx, |thread, _| {
+            assert_eq!(thread.action_log(), &log);
+            assert_eq!(thread.file_reviews(), &journal);
+            assert!(thread.notices().is_empty());
+            assert!(!thread.review_is_unavailable());
+            assert_eq!(thread.review_copies().len(), 1);
+            assert!(thread.review_copies()[0].1, "keep the existing review decision");
+        });
+        drop(previous);
+        cx.run_until_parked();
+        cx.read(|cx| {
+            let owners = cx.global::<ReviewOwners>().owners.borrow();
+            assert_eq!(owners[&key].thread().upgrade().as_ref(), Some(&replacement));
+        });
+        assert_eq!(saved(&key, cx)[0].current, "pending change\n");
+        log.update(cx, |log, cx| log.reject_all_edits(None, cx)).await;
+        cx.run_until_parked();
+        assert!(saved(&key, cx).is_empty(), "only the replacement observes and persists new decisions");
+        assert!(fs.read_file_sync(&path).is_err());
     }
 
     #[gpui::test]

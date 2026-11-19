@@ -80,18 +80,90 @@ struct ToolCodeBlock {
     view: WeakEntity<ThreadView>,
 }
 
+pub(super) fn request_error_surface(
+    title: SharedString,
+    body: impl IntoElement,
+    actions: impl IntoElement,
+    window: &Window,
+    cx: &App,
+) -> Div {
+    let width = AgentSettings::get_global(cx).max_content_width.unwrap_or(px(780.));
+    let colors = cx.theme().colors();
+    let inset = if window.viewport_size().width < px(1000.) { px(14.) } else { px(20.) };
+    div().w_full().flex_none().px(inset).py_1().child(
+        v_flex().w_full().min_w_0().max_w(width).mx_auto().gap_1p5()
+            .px_3().py_2().rounded(px(8.))
+            .border_1().border_color(colors.border_variant)
+            .bg(colors.surface_background)
+            .child(
+                h_flex().w_full().min_w_0().gap_2().justify_between().flex_wrap()
+                    .child(h_flex().min_w_0().gap_2()
+                        .child(Icon::new(IconName::XCircle).size(IconSize::Small).color(Color::Error))
+                        .child(Label::new(title).size(LabelSize::Small).weight(gpui::FontWeight::SEMIBOLD)))
+                    .child(actions),
+            )
+            .child(body),
+    )
+}
+
+pub(super) fn error_details(
+    id: &'static str,
+    data: &serde_json::Value,
+    expanded: bool,
+    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+    project: &Entity<Project>,
+    window: &mut Window,
+    cx: &mut App,
+) -> impl IntoElement {
+    let code = expanded.then(|| {
+        let text = serde_json::to_string_pretty(data).unwrap_or_else(|_| data.to_string());
+        let markdown = code_block_markdown(SharedString::from(id), &text, "json", project, window, cx);
+        div()
+            .id(SharedString::from(format!("{id}-json")))
+            .min_h_0()
+            .max_h(px(232.))
+            .overflow_y_scroll()
+            .child(MarkdownElement::new(
+                markdown,
+                MarkdownStyle::themed(MarkdownFont::Agent, window, cx),
+            ))
+    });
+    v_flex()
+        .gap_1()
+        .child(
+            Button::new(id, eido_i18n::tr(cx, "task.error_details"))
+                .label_size(LabelSize::Small)
+                .start_icon(Icon::new(if expanded { IconName::ChevronDown } else { IconName::ChevronRight }).size(IconSize::Small))
+                .on_click(on_click),
+        )
+        .children(code)
+}
+
+fn code_block_markdown(
+    id: SharedString,
+    text: &str,
+    language: &str,
+    project: &Entity<Project>,
+    window: &mut Window,
+    cx: &mut App,
+) -> Entity<Markdown> {
+    let languages = project.read(cx).languages().clone();
+    // A command may itself print a Markdown fence. Keep all of it literal.
+    let ticks = text.split(|ch| ch != '`').map(str::len).max().unwrap_or(0);
+    let fence = "`".repeat(3.max(ticks + 1));
+    let source: SharedString = format!("{fence}{language}\n{text}\n{fence}").into();
+    let markdown = window.use_keyed_state(id, cx, |_, cx| Markdown::new(source.clone(), Some(languages), None, cx));
+    if markdown.read(cx).source() != &source {
+        markdown.update(cx, |markdown, cx| markdown.reset(source, cx));
+    }
+    markdown
+}
+
 impl RenderOnce for ToolCodeBlock {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let Some(view) = self.view.upgrade() else { return Empty.into_any_element() };
-        let languages = view.read(cx).project.upgrade().map(|project| project.read(cx).languages().clone());
-        // A command may itself print a Markdown fence. Keep all of it literal.
-        let ticks = self.text.split(|ch| ch != '`').map(str::len).max().unwrap_or(0);
-        let fence = "`".repeat(3.max(ticks + 1));
-        let source: SharedString = format!("{fence}{}\n{}\n{fence}", self.language, self.text).into();
-        let markdown = window.use_keyed_state(self.id, cx, |_, cx| Markdown::new(source.clone(), languages, None, cx));
-        if markdown.read(cx).source() != &source {
-            markdown.update(cx, |markdown, cx| markdown.reset(source, cx));
-        }
+        let Some(project) = view.read(cx).project.upgrade() else { return Empty.into_any_element() };
+        let markdown = code_block_markdown(self.id, &self.text, self.language, &project, window, cx);
         view.read(cx).render_markdown(markdown, MarkdownStyle::themed(MarkdownFont::Agent, window, cx), cx).into_any_element()
     }
 }
@@ -676,6 +748,8 @@ pub struct ThreadView {
     pub thread_retry_status: Option<RetryStatus>,
     pub(super) thread_error: Option<ThreadError>,
     pub thread_error_markdown: Option<Entity<Markdown>>,
+    thread_error_details_open: bool,
+    thread_error_from_delivery: bool,
     pub token_limit_callout_dismissed: bool,
     pub last_token_limit_telemetry: Option<acp_thread::TokenUsageRatio>,
     thread_feedback: ThreadFeedbackState,
@@ -1153,6 +1227,8 @@ impl ThreadView {
             thread_retry_status: None,
             thread_error: None,
             thread_error_markdown: None,
+            thread_error_details_open: false,
+            thread_error_from_delivery: false,
             token_limit_callout_dismissed: false,
             last_token_limit_telemetry: None,
             thread_feedback: Default::default(),
@@ -1802,16 +1878,48 @@ impl ThreadView {
                 } else {
                     let mut request = acp::PromptRequest::new(session_id, content.clone());
                     request.meta = Some(acp::Meta::from_iter([("eidoDeliveryId".into(), id.clone().into())]));
-                    let injected = cx.update(|_, cx| connection.eido_send_next(request, cx))?.await?;
-                    if !this.update(cx, |this, cx|
-                        this.eido_send_target_is_current(&source_thread, &recipient, &thread, selected.as_ref(), cx))?
-                    { return Ok(()); }
-                    if !injected {
-                        let response = thread.update(cx, |thread, cx| thread.eido_send_delivery(content, false, id.clone(), cx)).await?;
-                        if !this.update(cx, |this, cx|
-                            this.eido_send_target_is_current(&source_thread, &recipient, &thread, selected.as_ref(), cx))?
-                        { return Ok(()); }
-                        recipient.update(cx, |recipient, cx| recipient.eido_delivery_settled(&id, response.is_some_and(|response| response.stop_reason == acp::StopReason::EndTurn), cx));
+                    let injection = cx.update(|_, cx| connection.eido_send_next(request, cx))?.await;
+                    let response = match injection {
+                        Ok(false) => {
+                            if !this.update(cx, |this, cx|
+                                this.eido_send_target_is_current(&source_thread, &recipient, &thread, selected.as_ref(), cx))?
+                            {
+                                recipient.update(cx, |recipient, cx| {
+                                    if recipient.eido_send_is_current(&thread) {
+                                        recipient.eido_delivery_settled(&id, false, cx);
+                                    }
+                                });
+                                return Ok(());
+                            }
+                            Some(thread.update(cx, |thread, cx| thread.eido_send_delivery(content, false, id.clone(), cx)).await)
+                        }
+                        Ok(true) => None,
+                        Err(error) => Some(Err(error)),
+                    };
+                    // A source-side target change does not invalidate an outcome
+                    // already returned for this exact recipient generation.
+                    if let Some(response) = response {
+                        match response {
+                            Ok(response) => recipient.update(cx, |recipient, cx| {
+                                if recipient.eido_send_is_current(&thread) {
+                                    recipient.eido_delivery_settled(&id, response.is_some_and(|response| response.stop_reason == acp::StopReason::EndTurn), cx);
+                                }
+                            }),
+                            Err(error) => {
+                                let error = ThreadError::from(error);
+                                recipient.update(cx, |recipient, cx| {
+                                    if recipient.eido_send_is_current(&thread) {
+                                        recipient.eido_delivery_settled(&id, false, cx);
+                                        recipient.handle_delivery_error(error, cx);
+                                    }
+                                });
+                                this.update(cx, |this, cx| {
+                                    this.eido_delivery_status = None;
+                                    cx.notify();
+                                }).ok();
+                                return Ok(());
+                            }
+                        }
                     }
                 }
                 completed = this.update_in(cx, |this, window, cx| {
@@ -1825,8 +1933,14 @@ impl ThreadView {
             }.await;
             let current = completed || this.update(cx, |this, cx|
                 this.eido_send_target_is_current(&source_thread, &recipient, &thread, selected.as_ref(), cx)).unwrap_or(false);
-            if current && result.is_err() {
-                if let Some(id) = delivery_id { recipient.update(cx, |recipient, cx| recipient.eido_delivery_settled(&id, false, cx)); }
+            if result.is_err() && !is_command
+                && let Some(id) = delivery_id
+            {
+                recipient.update(cx, |recipient, cx| {
+                    if recipient.eido_send_is_current(&thread) {
+                        recipient.eido_delivery_settled(&id, false, cx);
+                    }
+                });
             }
             this.update(cx, |this, cx| {
                 this.is_loading_contents = false;
@@ -2296,9 +2410,23 @@ impl ThreadView {
         cx: &mut Context<Self>,
     ) {
         let error = error.into();
+        self.thread_error_from_delivery = false;
+        if self.agent_id.as_ref() == "eido-pi" && error.reconnect_required() {
+            self.eido_connection_lost = true;
+            self.message_queue.pause();
+            // eido_persist_queue retains and observes the write internally.
+            let _ = self.eido_persist_queue(cx);
+        }
         self.emit_thread_error_telemetry(&error, cx);
+        self.thread_error_markdown = None;
+        self.thread_error_details_open = false;
         self.thread_error = Some(error);
         cx.notify();
+    }
+
+    fn handle_delivery_error(&mut self, error: ThreadError, cx: &mut Context<Self>) {
+        self.handle_thread_error(error, cx);
+        self.thread_error_from_delivery = true;
     }
 
     fn emit_thread_error_telemetry(&self, error: &ThreadError, cx: &mut Context<Self>) {
@@ -2388,6 +2516,11 @@ impl ThreadView {
                     acp_error_code,
                     message,
                 } => ("other", acp_error_code.clone(), message.clone()),
+                ThreadError::Structured { original, acp_error_code, .. } => (
+                    "structured",
+                    acp_error_code.clone(),
+                    original.clone(),
+                ),
             };
 
         let agent_telemetry_id = self.thread.read(cx).connection().telemetry_id();
@@ -2420,7 +2553,9 @@ impl ThreadView {
     }
 
     pub(super) fn can_retry_request(&self, cx: &App) -> bool {
-        !self.eido_connection_lost && !self.is_loading_contents
+        !self.eido_connection_lost
+            && !(self.thread_error.is_some() && self.thread_error_from_delivery)
+            && !self.is_loading_contents
             && self.thread.read(cx).status() == ThreadStatus::Idle
             && (self.thread.read(cx).can_retry(cx)
                 || (self.agent_id.as_ref() == "eido-pi" && self.in_flight_prompt.is_some()))
@@ -3584,6 +3719,8 @@ impl ThreadView {
     pub fn clear_thread_error(&mut self, cx: &mut Context<Self>) {
         self.thread_error = None;
         self.thread_error_markdown = None;
+        self.thread_error_details_open = false;
+        self.thread_error_from_delivery = false;
         self.token_limit_callout_dismissed = true;
         cx.notify();
     }
@@ -4995,6 +5132,16 @@ impl ThreadView {
         AgentSettings::get_global(cx).max_content_width.unwrap_or(px(780.))
     }
 
+    fn show_composer_reconnect(&self, cx: &Context<Self>) -> bool {
+        self.server_view.read_with(cx, |view, _| match &view.server_state {
+            ServerState::Connected(connected) => {
+                !matches!(self.thread_error, Some(ThreadError::Structured { .. }))
+                    || connected.active_view().is_none_or(|active| active.entity_id() != cx.entity_id())
+            }
+            ServerState::Loading { .. } | ServerState::LoadError { .. } => false,
+        }).unwrap_or(true)
+    }
+
     /// Only a fresh, idle task can give its space to the global composer.
     /// Notices, recovery, approvals and queued work must keep the thread visible.
     pub fn eido_is_new_task(&self, cx: &App) -> bool {
@@ -5211,8 +5358,12 @@ impl ThreadView {
                                                 .on_click(cx.listener(|this, _, _, cx| this.cancel_generation(cx))),
                                         ),
                                     )
-                                    .map(|row| if self.eido_connection_lost {
-                                        row.child(Label::new(eido_i18n::tr(cx, "task.reconnect_before_send")).size(LabelSize::Small).color(Color::Muted))
+                                    .map(|row| if self.eido_connection_lost && self.thread.read(cx).parent_session_id().is_none() {
+                                        row.when(self.show_composer_reconnect(cx), |row| {
+                                            row.child(self.reconnect_task_button("composer-reconnect-task", cx))
+                                        })
+                                    } else if self.eido_connection_lost {
+                                        row.child(Label::new(eido_i18n::tr(cx, "task.error_child_session_terminated")).size(LabelSize::Small).color(Color::Muted))
                                     } else { row.child(self.render_send_button(cx)) }),
                             ),
                     ),
@@ -12455,9 +12606,20 @@ impl ThreadView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<Div> {
+        if self.agent_id.as_ref() == "eido-pi"
+            && self.eido_connection_lost
+            && self.server_view.read_with(cx, |view, _| {
+                !matches!(view.server_state, ServerState::Connected(_))
+            }).unwrap_or(false)
+        {
+            return None;
+        }
         let callout = match self.thread_error.as_ref()? {
             ThreadError::Other { message, .. } => {
-                self.render_any_thread_error(message.clone(), window, cx)
+                return Some(self.render_any_thread_error(message.clone(), window, cx));
+            }
+            ThreadError::Structured { original, data, .. } => {
+                return Some(self.render_structured_thread_error(original.clone(), data, window, cx));
             }
             ThreadError::Refusal => self.render_refusal_error(cx),
             ThreadError::DataRetentionConsentRequired => {
@@ -12840,7 +13002,7 @@ impl ThreadView {
         error: SharedString,
         window: &mut Window,
         cx: &mut Context<'_, Self>,
-    ) -> Callout {
+    ) -> Div {
         let can_resume = self.can_retry_request(cx);
 
         let markdown = if let Some(markdown) = &self.thread_error_markdown {
@@ -12857,28 +13019,115 @@ impl ThreadView {
             .render_markdown(markdown, markdown_style, cx)
             .into_any_element();
 
-        Callout::new()
-            .severity(Severity::Error)
-            .icon(IconName::XCircle)
-            .title(eido_i18n::tr(cx, "task.request_failed"))
-            .description_slot(description)
-            .actions_slot(
-                h_flex()
-                    .gap_0p5()
-                    .when(can_resume, |this| {
-                        this.child(
-                            Button::new("retry", eido_i18n::tr(cx, "task.retry"))
-                                .label_size(LabelSize::Small)
-                                .start_icon(Icon::new(IconName::RotateCw).size(IconSize::Small))
-                                .tooltip(Tooltip::text(eido_i18n::tr(cx, "task.retry_generation")))
-                                .on_click(cx.listener(|this, _, _window, cx| {
-                                    this.retry_generation(cx);
-                                })),
-                        )
-                    })
-                    .child(self.create_copy_button(error.to_string())),
+        let description = v_flex().gap_1().child(description)
+            .when(self.thread_error_from_delivery, |this| {
+                this.child(Label::new(eido_i18n::tr(cx, "task.error_review_delivery")).size(LabelSize::Small).color(Color::Muted))
+            });
+        let actions = h_flex().gap_0p5()
+            .when(can_resume, |this| this.child(self.request_retry_button(cx)))
+            .child(self.create_copy_button(error.to_string()));
+        let title = eido_i18n::tr(cx, "task.request_failed");
+        if self.agent_id.as_ref() == "eido-pi" {
+            request_error_surface(
+                title,
+                div().id("request-error-message").max_h(px(160.)).overflow_y_scroll().child(description),
+                actions.child(self.dismiss_error_button(cx)),
+                window,
+                cx,
             )
-            .dismiss_action(self.dismiss_error_button(cx))
+        } else {
+            div().child(Callout::new()
+                .severity(Severity::Error)
+                .icon(IconName::XCircle)
+                .title(title)
+                .description_slot(description)
+                .actions_slot(actions)
+                .dismiss_action(self.dismiss_error_button(cx))
+                .border_position(self.callout_border_position()))
+        }
+    }
+
+    fn request_retry_button(&self, cx: &mut Context<Self>) -> Button {
+        Button::new("retry", eido_i18n::tr(cx, "task.retry"))
+            .label_size(LabelSize::Small)
+            .start_icon(Icon::new(IconName::RotateCw).size(IconSize::Small))
+            .tooltip(Tooltip::text(eido_i18n::tr(cx, "task.retry_generation")))
+            .on_click(cx.listener(|this, _, _, cx| this.retry_generation(cx)))
+    }
+
+    fn reconnect_task_button(&self, id: &'static str, cx: &mut Context<'_, Self>) -> Button {
+        Button::new(id, eido_i18n::tr(cx, "task.reconnect"))
+            .label_size(LabelSize::Small)
+            .start_icon(Icon::new(IconName::RotateCw).size(IconSize::Small))
+            .tooltip(Tooltip::text(eido_i18n::tr(cx, "task.reconnect_tip")))
+            .on_click(cx.listener(|this, _, window, cx| {
+                let thread = this.thread.clone();
+                let server_view = this.server_view.clone();
+                window.defer(cx, move |window, cx| {
+                    server_view.update(cx, |view, cx| view.reconnect_terminated_task(&thread, window, cx)).log_err();
+                });
+            }))
+    }
+
+    fn render_structured_thread_error(
+        &self,
+        original: SharedString,
+        data: &serde_json::Value,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) -> Div {
+        let kind = data.get("errorKind").and_then(serde_json::Value::as_str);
+        let terminated = self.agent_id.as_ref() == "eido-pi" && self.eido_connection_lost;
+        let reconnect = terminated && self.thread.read(cx).parent_session_id().is_none();
+        let recovery_hint = if reconnect { "task.error_session_terminated" } else { "task.error_child_session_terminated" };
+        let key = if kind == Some("session_terminated") {
+            if terminated { recovery_hint } else { "task.error_details_hint" }
+        } else {
+            ThreadError::structured_summary(data)
+        };
+        let mut description = v_flex()
+            .gap_1()
+            .child(Label::new(eido_i18n::tr(cx, key)).size(LabelSize::Small).color(Color::Muted))
+            .when(terminated && kind != Some("session_terminated"), |this| {
+                this.child(Label::new(eido_i18n::tr(cx, recovery_hint)).size(LabelSize::Small).color(Color::Muted))
+            })
+            .when(self.thread_error_from_delivery && !terminated, |this| {
+                this.child(Label::new(eido_i18n::tr(cx, "task.error_review_delivery")).size(LabelSize::Small).color(Color::Muted))
+            });
+        if let Some(project) = self.project.upgrade() {
+            description = description.child(error_details(
+                "request-error-details",
+                data,
+                self.thread_error_details_open,
+                cx.listener(|this, _, _, cx| {
+                    this.thread_error_details_open = !this.thread_error_details_open;
+                    cx.notify();
+                }),
+                &project,
+                window,
+                cx,
+            ));
+        }
+        let actions = h_flex().gap_0p5()
+            .when(reconnect, |this| this.child(self.reconnect_task_button("request-reconnect", cx)
+                .style(ButtonStyle::Tinted(TintColor::Accent))))
+            .when(!terminated && self.can_retry_request(cx), |this| this.child(self.request_retry_button(cx)
+                .style(ButtonStyle::Tinted(TintColor::Accent))))
+            .child(self.create_copy_button(original.to_string()));
+        let title = eido_i18n::tr(cx, if terminated { "task.connection_lost" } else { "task.request_failed" });
+        if self.agent_id.as_ref() == "eido-pi" {
+            request_error_surface(title, description, actions.child(self.dismiss_error_button(cx)), window, cx)
+        } else {
+            div().child(Callout::new()
+                .severity(Severity::Error)
+                .icon(IconName::XCircle)
+                .title(title)
+                .scrollable_description(false)
+                .description_slot(description)
+                .actions_slot(actions)
+                .dismiss_action(self.dismiss_error_button(cx))
+                .border_position(self.callout_border_position()))
+        }
     }
 
     fn render_markdown(
@@ -12985,6 +13234,7 @@ impl ThreadView {
             else if generating { Some(("Running", Color::Muted)) }
             else { match status {
                 acp_thread::EidoTurnStatus::Idle | acp_thread::EidoTurnStatus::Completed => None,
+                acp_thread::EidoTurnStatus::Failed if self.thread_error.is_some() || self.eido_connection_lost => None,
                 acp_thread::EidoTurnStatus::Failed => Some((status.label(), Color::Error)),
                 acp_thread::EidoTurnStatus::Interrupted => Some((status.label(), Color::Warning)),
                 _ => Some((status.label(), Color::Muted)),

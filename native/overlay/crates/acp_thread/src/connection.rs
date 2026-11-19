@@ -117,6 +117,10 @@ pub trait AgentConnection {
         false
     }
 
+    /// Unregister the exact client-side entity of a session the agent has
+    /// terminated, so an explicit load cannot return a stale cached thread.
+    fn forget_terminated_session(&self, _session_id: &acp::SessionId, _thread: gpui::EntityId) -> bool { false }
+
     /// Load an existing session by ID.
     fn load_session(
         self: Rc<Self>,

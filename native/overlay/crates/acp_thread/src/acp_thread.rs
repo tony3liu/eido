@@ -2300,6 +2300,7 @@ pub struct AcpThread {
     action_log: Entity<ActionLog>,
     _git_store_subscription: Subscription,
     eido_review_subscriptions: Vec<Subscription>,
+    eido_replaced: bool,
     review_write_error: Option<SharedString>,
     review_blocked_paths: HashSet<PathBuf>,
     review_copies: Vec<(action_log::ReviewCheckpoint, bool)>,
@@ -2502,7 +2503,7 @@ impl AcpThread {
         cx: &mut Context<Self>,
     ) -> Self {
         cx.on_release(|this,cx| {
-            if let Some(host)=cx.try_global::<EidoDocumentHost>() {
+            if !this.eido_replaced && let Some(host)=cx.try_global::<EidoDocumentHost>() {
                 let _=(host.0)(serde_json::json!({"version":1,"action":"release_session","sessionId":this.session_id.to_string()}));
             }
         }).detach();
@@ -2571,6 +2572,7 @@ impl AcpThread {
             action_log,
             _git_store_subscription,
             eido_review_subscriptions: vec![file_review_subscription],
+            eido_replaced: false,
             review_write_error: None,
             review_blocked_paths: HashSet::default(),
             review_copies: Vec::new(),
@@ -2622,6 +2624,26 @@ impl AcpThread {
         self.eido_review_subscriptions.push(cx.observe(&reviews, |_, _, cx| cx.notify()));
         self.file_reviews = reviews;
     }
+
+    /// Preserve the live edits, blocked paths and proposal journal when the same
+    /// root task gets a new ACP entity after a successful reconnect.
+    pub fn handoff_eido_reviews(previous: &Entity<Self>, replacement: &Entity<Self>, cx: &mut App) {
+        let (log, journal, copies, blocked, error) = previous.update(cx, |thread, _| {
+            thread.eido_replaced = true;
+            let error = thread.review_write_error.replace("This connection was replaced. Continue in the reconnected task.".into());
+            (thread.action_log.clone(), thread.file_reviews.clone(), thread.review_copies.clone(), thread.review_blocked_paths.clone(), error)
+        });
+        replacement.update(cx, |thread, cx| {
+            thread.action_log = log;
+            thread.share_file_reviews(journal, cx);
+            thread.review_copies = copies;
+            thread.review_blocked_paths = blocked;
+            thread.review_write_error = error;
+            cx.notify();
+        });
+    }
+
+    pub fn eido_replaced(&self) -> bool { self.eido_replaced }
 
     pub fn pending_review_count(&self, cx: &App) -> usize {
         self.action_log.read(cx).changed_buffers(cx).count() + self.file_reviews.read(cx).pending_count()

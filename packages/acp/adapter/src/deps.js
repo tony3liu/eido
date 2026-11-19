@@ -37,6 +37,7 @@ export async function resolveDeps(partial = {}) {
         sessionDir: partial.sessionDir,
         sleep,
         graceMs: partial.graceMs ?? 5_000,
+        turnCleanupTimeoutMs: partial.turnCleanupTimeoutMs ?? 15_000,
         mcpTimeoutMs,
         connectMcpClient: partial.connectMcpClient ??
             ((server, signal, binding) => connectDefaultMcpClient(server, signal, mcpTimeoutMs, sleep, binding)),

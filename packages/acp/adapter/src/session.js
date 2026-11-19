@@ -14,8 +14,17 @@ import { stopReasonFor } from "./stop-reason.js";
 import { translateEvent, toolDurationMeta } from "./translate.js";
 import { agentMessages, promptUsage, terminalAssistant, usageUpdate, } from "./usage.js";
 import { installPermissionWrapper } from "./permissions.js";
-import { ChildCleanupFailure } from "./child-process-registry.js";
 import { LOADED_TURN_ENDED_METHOD, } from "./loaded-turn.js";
+const FINISH_TOOL_RESOURCES = Symbol.for("eido.pi.finish-tool-resources");
+
+export function cleanupDeadline(deps, work, timeoutMs, onTimeout) {
+    const timer = new AbortController();
+    const expiry = deps.sleep(timeoutMs, timer.signal).then(() => { throw onTimeout(); });
+    return Promise.race([work, expiry]).finally(() => timer.abort());
+}
+function turnCleanupError(phase, reason) {
+    return adapterError("turn_cleanup_error", { details: { phase, reason } });
+}
 export class PiSession {
     sessionId;
     pi;
@@ -40,10 +49,14 @@ export class PiSession {
     activeTurn;
     steerChain = Promise.resolve();
     configReserved = false;
-    cleanupDirty = false;
     cleanupGeneration;
+    pendingChildDrain;
     resourceDisposePromise;
     bridgeClosePromise;
+    piStop;
+    toolCleanup = {};
+    execution;
+    disposePromise;
     /** The `_session/loaded_turn` extension's watch flag: set when a
      *  `loadedTurnStatus()` query answered `running` (a client is waiting
      *  for that turn's authoritative end), cleared — and the
@@ -304,6 +317,8 @@ export class PiSession {
         if (turn.completed)
             return;
         turn.cleanup ??= this.cleanupTurn("cancel-only");
+        if (turn.observingCleanup) return;
+        turn.observingCleanup = true;
         turn.cleanup.catch((error) => {
             if (!turn.completed)
                 this.turnError(turn, error);
@@ -323,115 +338,137 @@ export class PiSession {
         this.bridgeClosePromise ??= this.mcpBridge.close();
         this.bridgeClosePromise.catch(() => undefined);
     }
+    waitForCleanup(work, phase) {
+        return cleanupDeadline(this.deps, work.catch(() => {
+            throw turnCleanupError(phase, "failed");
+        }), this.deps.turnCleanupTimeoutMs ?? 15_000, () => turnCleanupError(phase, "timeout"));
+    }
+    captureChildDrain(signal) {
+        const capture = () => {
+            const { epoch, drain } = this.childRegistry.closeEpoch(signal);
+            this.pendingChildDrain = drain;
+            const clear = () => { if (this.pendingChildDrain === drain) this.pendingChildDrain = undefined; };
+            drain.then(clear, clear);
+            return drain.then(() => epoch);
+        };
+        // A deadline may reject before the registry observes its aborted
+        // signal. Retry only after the previous drain has actually settled.
+        return this.pendingChildDrain
+            ? this.pendingChildDrain.catch(() => undefined).then(() => {
+                signal.throwIfAborted();
+                return capture();
+            })
+            : capture();
+    }
+    finishToolResources(mode) {
+        const finish = this.pi[FINISH_TOOL_RESOURCES];
+        if (!finish) return Promise.resolve();
+        const state = this.toolCleanup;
+        const request = (key, phase, after = Promise.resolve()) => {
+            if (state[key]) return state[key];
+            const operation = after.then(() => finish(phase));
+            state[key] = operation;
+            operation.catch(() => {
+                if (state[key] === operation) state[key] = undefined;
+            });
+            return operation;
+        };
+        if (mode === "normal" || state.cancel) return state.cancel ?? request("normal", "normal");
+        if (state.normal) {
+            // Keep the ordinary close result, and only add the static preview
+            // omitted by a successful normal cleanup. Retry failures on recovery.
+            return request("cancel", "stop-static", state.normal);
+        }
+        return request("cancel", "cancel");
+    }
     cleanupTurn(mode) {
         const current = this.cleanupGeneration;
         if (current?.status === "pending") {
-            if (mode === "disposal" && current.mode === "cancel-only") {
+            if (mode === "disposal") {
                 current.mode = "disposal";
-                this.startDisposal();
+                this.closing = true;
             }
             return current.promise;
         }
         if (current?.status === "succeeded" && current.mode === "disposal") {
             return current.promise;
         }
-        const deadlineController = new AbortController();
-        const timerController = new AbortController();
-        const generation = {
-            mode,
-            status: "pending",
-            promise: Promise.resolve(),
-            deadlineController,
-            timerController,
-        };
+        const generation = { mode, status: "pending" };
         this.cleanupGeneration = generation;
-        const expiry = this.deps.sleep(this.deps.graceMs, timerController.signal).then(() => {
-            const failure = new ChildCleanupFailure(this.childRegistry.remainingChildren);
-            deadlineController.abort(failure);
-            throw failure;
+        const deadline = new AbortController();
+        // Close the spawn epoch before asking pi to abort. Even a zero-sized
+        // registry may still have a spawn lease to settle.
+        const drain = this.captureChildDrain(deadline.signal);
+        const childFailure = () => adapterError("child_cleanup_error", {
+            details: { remainingChildren: this.childRegistry.remainingChildren },
         });
-        expiry.catch(() => undefined);
-        // Closing the captured epoch is the synchronous admission barrier.  It
-        // must precede Pi abort, because abort can yield while a bash spawn is
-        // between its filesystem check and lease acquisition.
-        const captured = this.childRegistry.closeEpoch(deadlineController.signal);
-        captured.drain.catch(() => undefined);
-        if (mode === "disposal")
-            this.startDisposal();
-        else
-            this.mcpBridge.abortRefreshes();
+        const childDrain = cleanupDeadline(this.deps, drain.catch(() => {
+            throw childFailure();
+        }), this.deps.graceMs, () => {
+            const error = childFailure();
+            deadline.abort(error);
+            return error;
+        });
+        if (mode === "disposal") this.closing = true;
+        this.mcpBridge.abortRefreshes();
         const turn = this.activeTurn;
-        if (turn && !turn.controller.signal.aborted)
-            turn.controller.abort();
-        let clearQueuePi = Promise.resolve();
-        try {
-            this.pi.clearQueue();
-        }
-        catch (error) {
-            clearQueuePi = Promise.reject(error);
-        }
-        clearQueuePi.catch(() => undefined);
-        let abortPi;
-        try {
-            abortPi = this.pi.abort();
-        }
-        catch (error) {
-            abortPi = Promise.reject(error);
-        }
-        abortPi.catch(() => undefined);
-        // Keep the established abort-before-child-drain failure precedence. Queue
-        // clearing is invoked first, but its failure is considered only after both
-        // pre-existing cleanup operations.
-        const operations = Promise.allSettled([abortPi, captured.drain, clearQueuePi]);
-        generation.promise = new Promise((resolve, reject) => {
-            let claimed = false;
-            const fail = (error) => {
-                if (claimed)
-                    return;
-                claimed = true;
-                generation.status = "failed";
-                this.cleanupDirty = true;
-                generation.mode = "disposal";
-                this.startDisposal();
-                const remaining = error instanceof ChildCleanupFailure
-                    ? error.remainingChildren
-                    : this.childRegistry.remainingChildren;
-                generation.error = adapterError("child_cleanup_error", { details: { remainingChildren: remaining } });
-                timerController.abort();
-                reject(generation.error);
-            };
-            expiry.then(() => undefined, (error) => {
-                if (timerController.signal.aborted && !deadlineController.signal.aborted)
-                    return;
-                fail(error);
+        if (turn && !turn.controller.signal.aborted) turn.controller.abort();
+
+        // Share the actual stop, including one that settles after its deadline.
+        // Retrying recovery may wait for it again but cannot run an overlapping abort.
+        if (!this.piStop) {
+            let queueError;
+            try { this.pi.clearQueue(); }
+            catch { queueError = turnCleanupError("queue", "failed"); }
+            const stop = Promise.resolve().then(() => this.pi.abort()).then(async () => {
+                await this.execution;
+                await this.pi.waitForIdle?.();
             });
-            operations.then((results) => {
-                if (claimed)
-                    return;
-                const failure = results.find((result) => result.status === "rejected");
-                if (failure) {
-                    fail(failure.reason);
-                    return;
-                }
-                claimed = true;
+            this.piStop = stop.then(() => {
+                if (queueError) throw queueError;
+            }, () => { throw turnCleanupError("pi", "failed"); });
+            const attempt = this.piStop;
+            attempt.catch(() => { if (this.piStop === attempt) this.piStop = undefined; });
+        }
+        // On a child-drain failure retain this stop and never run tool cleanup
+        // concurrently with admitted work, even if the caller retries later.
+        const toolCleanup = cleanupDeadline(this.deps, this.piStop, this.deps.turnCleanupTimeoutMs ?? 15_000,
+            () => turnCleanupError("pi", "timeout")).then(() =>
+            this.waitForCleanup(this.finishToolResources("cancel"), "resources"));
+        generation.promise = Promise.all([childDrain, toolCleanup])
+            .then(([epoch]) => {
                 generation.status = "succeeded";
-                this.cleanupDirty = false;
-                timerController.abort();
                 if (generation.mode === "cancel-only" && this.cleanupGeneration === generation) {
-                    this.childRegistry.commitRotation(captured.epoch);
-                    if (turn?.completed) {
+                    this.childRegistry.commitRotation(epoch);
+                    if (!turn || turn.completed) {
                         this.cleanupGeneration = undefined;
                         this.mcpBridge.resumeRefreshes();
-                    }
-                    else {
+                    } else {
                         generation.resumeRefreshesOnSettlement = true;
                     }
                 }
-                resolve();
+            }, (error) => {
+                generation.status = "failed";
+                this.closing = true;
+                generation.mode = "disposal";
+                throw error;
             });
-        });
         generation.promise.catch(() => undefined);
         return generation.promise;
+    }
+    async closeTurnResources(turn) {
+        if (turn.cleanup) return turn.cleanup;
+        try {
+            await this.waitForCleanup(this.finishToolResources("normal"), "resources");
+        } catch (error) {
+            if (turn.cleanup) return turn.cleanup;
+            this.closing = true;
+            void this.cleanupWedged();
+            throw error;
+        }
+        // A cancel may arrive while normal tool cleanup or notification
+        // draining is in progress. Settlement still waits for its barrier.
+        if (turn.cleanup) await turn.cleanup;
     }
     turnError(turn, error) {
         if (turn.completed || turn.errorSettlementStarted)
@@ -458,7 +495,7 @@ export class PiSession {
     }
     async cleanupWedged() {
         try {
-            await this.onWedged(this.sessionId, this, true);
+            await this.onWedged(this.sessionId, this);
         }
         catch (error) {
             console.error("pi-acp wedged-session cleanup error:", error);
@@ -468,19 +505,21 @@ export class PiSession {
         if (turn.completed)
             return;
         try {
-            if (this.childRegistry.childCleanupFailed)
+            if (this.childRegistry.childCleanupFailed) {
                 turn.cleanup = this.cleanupTurn("disposal");
-            else if (turn.piAborted)
-                turn.cleanup ??= this.cleanupTurn("cancel-only");
+                this.abortTurn(turn);
+            } else if (turn.piAborted) {
+                this.abortTurn(turn);
+            }
             const messages = agentMessages(this.pi).slice(turn.startMessageIndex);
-            if (turn.cleanup)
-                await turn.cleanup;
+            await this.closeTurnResources(turn);
             turn.diagnosticOpen = false;
             this.enqueue(usageUpdate(this.pi));
             await this.drain();
+            if (turn.cleanup) await turn.cleanup;
             if (turn.completed)
                 return;
-            if (turn.commandError) throw adapterError("command_error");
+            if (turn.commandError && !turn.controller.signal.aborted) throw adapterError("command_error");
             if (turn.imageTurn) {
                 this.discardOrphanedSteering();
                 this.finish(turn, {response:{stopReason:turn.controller.signal.aborted ? "cancelled" : "end_turn"}});
@@ -499,32 +538,23 @@ export class PiSession {
         }
     }
     async handlePiRejected(turn, error) {
-        if (turn.completed)
-            return;
-        if (!turn.controller.signal.aborted && !turn.piAborted) {
+        if (turn.completed) return;
+        try {
+            if (turn.piAborted) this.abortTurn(turn);
+            await this.closeTurnResources(turn);
             turn.diagnosticOpen = false;
-            try {
-                await this.drain();
+            if (turn.controller.signal.aborted)
+                this.enqueue(usageUpdate(this.pi));
+            await this.drain();
+            if (turn.cleanup) await turn.cleanup;
+            if (turn.controller.signal.aborted) {
+                const messages = agentMessages(this.pi).slice(turn.startMessageIndex);
+                this.finish(turn, { response: { stopReason: "cancelled", usage: promptUsage(messages) } });
+            } else {
                 this.discardOrphanedSteering();
                 this.finish(turn, { error: turn.commandError ? adapterError("command_error") : isRequestError(error) ? error : classifyPreflight(error) });
             }
-            catch {
-                this.notificationFailure();
-            }
-            return;
-        }
-        try {
-            if (turn.piAborted)
-                turn.cleanup ??= this.cleanupTurn("cancel-only");
-            if (turn.cleanup)
-                await turn.cleanup;
-            const messages = agentMessages(this.pi).slice(turn.startMessageIndex);
-            turn.diagnosticOpen = false;
-            this.enqueue(usageUpdate(this.pi));
-            await this.drain();
-            this.finish(turn, { response: { stopReason: "cancelled", usage: promptUsage(messages) } });
-        }
-        catch (settlementError) {
+        } catch (settlementError) {
             if (this.pumpFailure !== undefined)
                 this.notificationFailure();
             else
@@ -578,6 +608,9 @@ export class PiSession {
             startMessageIndex,
         };
         this.activeTurn = turn;
+        this.toolCleanup = {};
+        this.piStop = undefined;
+        this.execution = undefined;
         this.publishTurnState();
         const requestSignal = opts.requestSignal;
         if (requestSignal) {
@@ -590,7 +623,12 @@ export class PiSession {
             }
         }
         this.runTurnTask(turn, (async () => {
-            turn.releaseBoundary = await this.mcpBridge.acquireTurnBoundary();
+            const release = await this.mcpBridge.acquireTurnBoundary();
+            if (turn.completed) {
+                release();
+                return;
+            }
+            turn.releaseBoundary = release;
             if (turn.controller.signal.aborted) {
                 try {
                     if (turn.cleanup)
@@ -610,33 +648,30 @@ export class PiSession {
                 }
                 return;
             }
-            let piPromise;
-            try {
-                piPromise = (async () => {
-                    const commands = this.pi[Symbol.for("eido.pi.commands")];
-                    if (commands && await commands.run(text, converted.images, this)) { await this.pi[Symbol.for("eido.pi.ui.state")]?.flush(); return; }
-                    if (turn.imageTurn) {
-                        appendEidoEntry(this.manager, "eido.image.input.v1", {text});
-                        const image = await this.deps.eidoImages.runDirect(this.pi, {
-                            text, images: converted.images, signal: turn.controller.signal, operationId: turn.eidoId,
-                        });
-                        if (!image) throw adapterError("invalid_model");
-                        if (!turn.controller.signal.aborted) {
-                            this.manager.appendCustomMessageEntry("eido.image.result.v1", image.content, true, {path:image.path});
-                            persistSession(this.manager);
-                            for (const content of image.content) this.enqueue({sessionUpdate:"agent_message_chunk",content});
-                        }
-                        return;
+            const piPromise = Promise.resolve().then(async () => {
+                turn.controller.signal.throwIfAborted();
+                const commands = this.pi[Symbol.for("eido.pi.commands")];
+                if (commands && await commands.run(text, converted.images, this)) { await this.pi[Symbol.for("eido.pi.ui.state")]?.flush(); return; }
+                if (turn.imageTurn) {
+                    appendEidoEntry(this.manager, "eido.image.input.v1", {text});
+                    const image = await this.deps.eidoImages.runDirect(this.pi, {
+                        text, images: converted.images, signal: turn.controller.signal, operationId: turn.eidoId,
+                    });
+                    if (!image) throw adapterError("invalid_model");
+                    if (!turn.controller.signal.aborted) {
+                        this.manager.appendCustomMessageEntry("eido.image.result.v1", image.content, true, {path:image.path});
+                        persistSession(this.manager);
+                        for (const content of image.content) this.enqueue({sessionUpdate:"agent_message_chunk",content});
                     }
-                    const result = await this.pi.prompt(text, { images: converted.images });
-                    await this.pi[Symbol.for("eido.pi.ui.state")]?.flush();
-                    return result;
-                })();
-            }
-            catch (error) {
-                await this.handlePiRejected(turn, error);
-                return;
-            }
+                    return;
+                }
+                const result = await this.pi.prompt(text, { images: converted.images });
+                await this.pi[Symbol.for("eido.pi.ui.state")]?.flush();
+                return result;
+            });
+            // Track the actual host command/prompt, not its settlement handler,
+            // which in turn needs to await cancellation cleanup.
+            this.execution = piPromise.then(() => undefined, () => undefined);
             await piPromise.then(() => this.handlePiResolved(turn), (error) => this.handlePiRejected(turn, error));
         })());
         return result;
@@ -695,42 +730,26 @@ export class PiSession {
         }
         void this.cleanupWedged();
     }
-    async dispose() {
-        if (this.disposed && !this.cleanupDirty && this.childRegistry.remainingChildren === 0 && !this.childRegistry.childCleanupFailed)
-            return;
+    dispose() {
+        if (this.disposePromise) return this.disposePromise;
+        const operation = this.disposeGeneration();
+        this.disposePromise = operation;
+        operation.catch(() => {
+            if (this.disposePromise === operation) this.disposePromise = undefined;
+        });
+        return operation;
+    }
+    async disposeGeneration() {
         const cleanup = this.cleanupTurn("disposal");
         const turn = this.activeTurn;
-        let cleanupError;
         if (turn) {
             this.abortTurn(turn);
             await turn.settlement;
-            try {
-                await cleanup;
-            }
-            catch (error) {
-                cleanupError = error;
-            }
         }
-        else {
-            try {
-                await cleanup;
-            }
-            catch (error) {
-                cleanupError = error;
-            }
-        }
-        await this.disposeResources();
-        if (cleanupError)
-            throw cleanupError;
-    }
-    async disposeAfterCleanupFailure() {
-        this.startDisposal();
-        await this.disposeResources();
+        await cleanup;
+        await this.waitForCleanup(this.disposeResources(), "disposal");
     }
     get remainingChildren() { return this.childRegistry.remainingChildren; }
-    get cleanupRetryRequired() {
-        return this.cleanupDirty || this.childRegistry.remainingChildren > 0 || this.childRegistry.childCleanupFailed;
-    }
     async disposeResources() {
         this.resourceDisposePromise ??= (async () => {
             if (this.disposed)
@@ -751,16 +770,10 @@ export class PiSession {
             await this.mcpBridge.drainRefreshes().catch((error) => {
                 console.error("pi-acp MCP refresh drain error:", error);
             });
-            const results = await Promise.allSettled([
+            await Promise.all([
                 shutdownPiSession(this.pi),
                 this.bridgeClosePromise ?? Promise.resolve(),
             ]);
-            if (results[0]?.status === "rejected") {
-                console.error("pi-acp session dispose error:", results[0].reason);
-            }
-            if (results[1]?.status === "rejected") {
-                console.error("pi-acp MCP disposal error:", results[1].reason);
-            }
         })();
         return this.resourceDisposePromise;
     }
@@ -768,7 +781,7 @@ export class PiSession {
         if (this.closing || this.disposed)
             return;
         this.closing = true;
-        void this.onWedged(this.sessionId, this, false).catch((error) => {
+        void this.onWedged(this.sessionId, this).catch((error) => {
             console.error("pi-acp poisoned-session cleanup error:", error);
         });
     }
