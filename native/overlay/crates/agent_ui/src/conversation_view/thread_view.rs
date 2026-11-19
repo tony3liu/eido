@@ -55,13 +55,82 @@ use super::*;
 
 mod file_navigation;
 
-fn eido_tool_duration_label(duration: std::time::Duration) -> String {
-    if duration.as_secs() == 0 {
-        if duration.as_millis() == 0 { "Took <1ms".into() }
-        else { format!("Took {}ms", duration.as_millis()) }
+fn eido_tool_duration_label(duration: Duration, cx: &App) -> SharedString {
+    let elapsed = if duration.as_secs() == 0 {
+        if duration.as_millis() == 0 { "<1ms".into() } else { format!("{}ms", duration.as_millis()) }
     } else {
-        format!("Took {}", duration_alt_display(duration))
+        duration_alt_display(duration)
+    };
+    eido_i18n::tr_args(cx, "task.tool_elapsed", &[("time", elapsed)])
+}
+
+fn is_json_result(text: &str) -> bool {
+    let text = text.trim();
+    (text.starts_with('{') && text.ends_with('}') || text.starts_with('[') && text.ends_with(']'))
+        && serde_json::from_str::<serde_json::Value>(text).is_ok()
+}
+
+// Use a display-only Markdown entity so the transcript, copy/export of the
+// conversation and plugin payloads retain their original text.
+#[derive(IntoElement)]
+struct ToolCodeBlock {
+    id: SharedString,
+    text: SharedString,
+    language: &'static str,
+    view: WeakEntity<ThreadView>,
+}
+
+impl RenderOnce for ToolCodeBlock {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let Some(view) = self.view.upgrade() else { return Empty.into_any_element() };
+        let languages = view.read(cx).project.upgrade().map(|project| project.read(cx).languages().clone());
+        // A command may itself print a Markdown fence. Keep all of it literal.
+        let ticks = self.text.split(|ch| ch != '`').map(str::len).max().unwrap_or(0);
+        let fence = "`".repeat(3.max(ticks + 1));
+        let source: SharedString = format!("{fence}{}\n{}\n{fence}", self.language, self.text).into();
+        let markdown = window.use_keyed_state(self.id, cx, |_, cx| Markdown::new(source.clone(), languages, None, cx));
+        if markdown.read(cx).source() != &source {
+            markdown.update(cx, |markdown, cx| markdown.reset(source, cx));
+        }
+        view.read(cx).render_markdown(markdown, MarkdownStyle::themed(MarkdownFont::Agent, window, cx), cx).into_any_element()
     }
+}
+
+fn shell_record(tool: &ToolCall) -> Option<&serde_json::Value> {
+    if tool.tool_name.as_deref() != Some("bash") || !matches!(tool.status, ToolCallStatus::Completed | ToolCallStatus::Failed | ToolCallStatus::Canceled)
+        || !matches!(tool.content.as_slice(), [ToolCallContent::ContentBlock(acp_thread::ContentBlock::Markdown { .. })]) {
+        return None;
+    }
+    let record = tool.raw_output.as_ref()?.get("eidoShell")?;
+    (record.get("version")?.as_u64()? == 1 && record.get("command")?.is_string()
+        && record.get("checks")?.as_array()?.len() <= 1 && record.get("changes")?.is_array()).then_some(record)
+}
+
+fn shell_result_label(tool: &ToolCall, record: &serde_json::Value, cx: &App) -> SharedString {
+    let check = &record["checks"][0];
+    let key = if record["cancelled"] == true || matches!(tool.status, ToolCallStatus::Canceled) {
+        "task.shell_cancelled"
+    } else if check["timedOut"] == true {
+        "task.shell_timed_out"
+    } else if let Some(code) = check["exitCode"].as_i64().filter(|code| *code != 0) {
+        return eido_i18n::tr_args(cx, "task.shell_exit", &[("code", code.to_string())]);
+    } else if matches!(tool.status, ToolCallStatus::Failed) {
+        "task.shell_failed"
+    } else if check["exitCode"].as_i64() == Some(0) {
+        "task.shell_completed"
+    } else {
+        "task.shell_result"
+    };
+    eido_i18n::tr(cx, key)
+}
+
+fn shell_output_preview(text: &str) -> &str {
+    let mut lines = 1;
+    for (count, (byte, ch)) in text.char_indices().enumerate() {
+        if count == 1200 || lines > 8 { return &text[..byte]; }
+        if ch == '\n' { lines += 1; }
+    }
+    text
 }
 
 const DATA_RETENTION_LEARN_MORE_URL: &str = "https://support.claude.com/en/articles/15425996-data-retention-practices-for-mythos-class-models";
@@ -613,6 +682,7 @@ pub struct ThreadView {
     pub list_state: ListState,
     pub session_capabilities: SharedSessionCapabilities,
     pub expanded_tool_call_raw_inputs: HashSet<acp::ToolCallId>,
+    expanded_shell_outputs: HashSet<acp::ToolCallId>,
     collapsed_sandbox_authorization_details: HashSet<acp::ToolCallId>,
     collapsed_sandbox_network_details: HashSet<acp::ToolCallId>,
     /// Sandbox escalation prompts whose "surprising Unicode" warning the user
@@ -1087,6 +1157,7 @@ impl ThreadView {
             last_token_limit_telemetry: None,
             thread_feedback: Default::default(),
             expanded_tool_call_raw_inputs: HashSet::default(),
+            expanded_shell_outputs: HashSet::default(),
             collapsed_sandbox_authorization_details: HashSet::default(),
             collapsed_sandbox_network_details: HashSet::default(),
             acknowledged_confusable_warnings: HashSet::default(),
@@ -9171,7 +9242,8 @@ impl ThreadView {
 
         let has_image_content = tool_call.content.iter().any(|c| c.image().is_some());
 
-        let should_show_raw_input = is_eido || (!is_terminal_tool && !is_edit && !has_image_content);
+        let should_show_raw_input = tool_call.raw_input.is_some()
+            && (is_eido || (!is_terminal_tool && !is_edit && !has_image_content));
 
         let has_content = !tool_call.content.is_empty()
             || (should_show_raw_input && tool_call.raw_input.is_some());
@@ -9312,6 +9384,9 @@ impl ThreadView {
                 {
                     self.render_diff_loading(cx)
                 }
+                _ if is_eido && let Some(record) = shell_record(tool_call) => {
+                    self.render_eido_shell_result(entry_ix, tool_call, record, window, cx)
+                }
                 ToolCallStatus::Pending
                 | ToolCallStatus::InProgress
                 | ToolCallStatus::Completed
@@ -9450,7 +9525,7 @@ impl ThreadView {
                         window,
                         cx,
                     )).when_some(tool_call.duration, |this, duration| {
-                        this.child(Label::new(eido_tool_duration_label(duration))
+                        this.child(Label::new(eido_tool_duration_label(duration, cx))
                             .size(LabelSize::XSmall).color(Color::Muted))
                     })
                 } else {
@@ -9516,7 +9591,7 @@ impl ThreadView {
                                             }))
                                     ))
                                     .when_some(tool_call.duration, |this, duration| {
-                                        this.child(Label::new(eido_tool_duration_label(duration))
+                                        this.child(Label::new(eido_tool_duration_label(duration, cx))
                                             .size(LabelSize::XSmall).color(Color::Muted))
                                     })
                                     .when(is_collapsible || failed_or_canceled, |this| {
@@ -11122,7 +11197,14 @@ impl ThreadView {
                     )
                     .child(tool_icon),
             )
-            .child(if file_navigation {
+            .child(if is_eido && let Some(record) = shell_record(tool_call) {
+                let command = record["command"].as_str().unwrap_or_default();
+                h_flex().flex_1().min_w_0().gap_2().overflow_hidden()
+                    .child(Label::new(shell_result_label(tool_call, record, cx)))
+                    .child(Label::new(command.lines().next().unwrap_or_default().to_owned())
+                        .buffer_font(cx).size(LabelSize::Small).color(Color::Muted).truncate())
+                    .into_any_element()
+            } else if file_navigation {
                 let operation = tool_call.tool_name.as_deref()
                     .unwrap_or_else(|| tool_call.label.read(cx).source().trim());
                 let detail = if operation == "grep" {
@@ -11638,6 +11720,73 @@ impl ThreadView {
             .into_any()
     }
 
+    fn render_eido_shell_result(
+        &self, entry_ix: usize, tool: &ToolCall, record: &serde_json::Value,
+        window: &Window, cx: &Context<Self>,
+    ) -> AnyElement {
+        let check = &record["checks"][0];
+        let output = check["output"].as_str().unwrap_or_default();
+        let preview = shell_output_preview(output);
+        let show_full = self.expanded_shell_outputs.contains(&tool.id);
+        let details = self.expanded_tool_call_raw_inputs.contains(&tool.id);
+        let caption = |key| Label::new(eido_i18n::tr(cx, key)).size(LabelSize::Small).color(Color::Muted);
+        let toggle = |key: &'static str, expanded: bool, raw: bool| {
+            let id = tool.id.clone();
+            Button::new((key, entry_ix), eido_i18n::tr(cx, key))
+                .label_size(LabelSize::Small)
+                .start_icon(Icon::new(if expanded { IconName::ChevronDown } else { IconName::ChevronRight }).size(IconSize::Small))
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    cx.stop_propagation();
+                    let entries = if raw { &mut this.expanded_tool_call_raw_inputs } else { &mut this.expanded_shell_outputs };
+                    if !entries.remove(&id) { entries.insert(id.clone()); }
+                    this.list_state.remeasure_items(entry_ix..entry_ix + 1);
+                    this.refresh_thread_search(window, cx);
+                    cx.notify();
+                }))
+        };
+        let changes = record["changes"].as_array().map(Vec::as_slice).unwrap_or_default();
+        let error = record["error"].as_str().or_else(|| check["error"].as_str())
+            .or_else(|| changes.iter().find_map(|change| change["reason"].as_str()));
+        let mut body = v_flex().w_full().min_w_0().gap_1().ml(rems(0.4)).px_3p5().py_1();
+        if let Some(error) = error.filter(|s| !s.is_empty()) {
+            body = body.child(Label::new(error.to_owned()).color(Color::Error));
+        }
+        if !output.is_empty() {
+            let shown = if show_full { output } else { preview };
+            body = body.child(caption("task.shell_output")).child(ToolCodeBlock {
+                id: format!("shell-output-{}", tool.id).into(),
+                language: if is_json_result(output) { "json" } else { "text" },
+                text: shown.to_owned().into(), view: cx.weak_entity(),
+            });
+            if preview.len() < output.len() {
+                body = body.child(h_flex().child(toggle(if show_full { "task.less_output" } else { "task.more_output" }, show_full, false)));
+            }
+        } else {
+            body = body.child(caption("task.shell_no_output"));
+        }
+        if check["outputTruncated"] == true {
+            body = body.child(caption("task.output_truncated"));
+        }
+        if !changes.is_empty() {
+            body = body.child(Label::new(eido_i18n::tr_args(cx, "task.shell_changes", &[("count", changes.len().to_string())]))
+                .size(LabelSize::Small));
+        }
+        body = body.child(h_flex().child(toggle("task.run_details", details, true)));
+        if details {
+            if let Some(input) = tool.raw_input_markdown.as_ref() {
+                body = body.child(caption("task.parameters"))
+                    .child(self.render_markdown(input.clone(), MarkdownStyle::themed(MarkdownFont::Agent, window, cx), cx));
+            }
+            if let [ToolCallContent::ContentBlock(acp_thread::ContentBlock::Markdown { markdown })] = tool.content.as_slice() {
+                body = body.child(caption("task.raw_result")).child(ToolCodeBlock {
+                    id: format!("shell-record-{}", tool.id).into(),
+                    text: markdown.read(cx).source().clone(), language: "json", view: cx.weak_entity(),
+                });
+            }
+        }
+        body.into_any_element()
+    }
+
     fn render_markdown_output(
         &self,
         markdown: Entity<Markdown>,
@@ -11649,6 +11798,16 @@ impl ThreadView {
         cx: &Context<Self>,
     ) -> AnyElement {
         let markdown_style = MarkdownStyle::themed(MarkdownFont::Agent, window, cx);
+        let source = markdown.read(cx).source();
+        if self.agent_id.as_ref() == "eido-pi" && is_json_result(source) {
+            return v_flex().w_full().min_w_0().gap_1()
+                .map(|body| if card_layout { body.p_2() } else { body.ml(rems(0.4)).px_3p5() })
+                .child(Label::new(eido_i18n::tr(cx, "task.result")).size(LabelSize::Small).color(Color::Muted))
+                .child(ToolCodeBlock {
+                    id: format!("tool-result-{}-{context_ix}", tool_call.id).into(),
+                    text: source.clone(), language: "json", view: cx.weak_entity(),
+                }).into_any_element();
+        }
         let output = self
             .render_numbered_read_file_output(
                 markdown.clone(),
