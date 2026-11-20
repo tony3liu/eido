@@ -28,6 +28,7 @@ import {createImageGeneration} from './image-generation.ts';
 import {customImagePolicy, installCustomImagePolicy, installCustomModelCatalog} from './custom-model-policy.ts';
 
 import {installResponsesCompat} from './responses-compat.ts';
+import {installProviderPacing} from './provider-pacing.ts';
 import {createCatalogAliases} from './catalog-aliases.ts';
 
 export async function startEidoAgent(agentDir: string, sessionDir: string, stream?: Stream, modelRuntime?: ModelRuntime, options: {catalogAliases?:false|{timeoutMs?:number}} = {}) {
@@ -36,6 +37,7 @@ export async function startEidoAgent(agentDir: string, sessionDir: string, strea
   });
   const imagePolicy = await customImagePolicy(agentDir);
   const disposeCatalog = installCustomModelCatalog(runtime, imagePolicy);
+  const disposePacing = installProviderPacing(runtime);
   const responsesCompat = installResponsesCompat(runtime, imagePolicy);
   // Pi resolves credentials through this public method for ordinary requests and
   // direct summaries alike. Check both sides of async credential resolution so
@@ -294,7 +296,7 @@ export async function startEidoAgent(agentDir: string, sessionDir: string, strea
   const dispose = server.agent.dispose.bind(server.agent);
   server.agent.dispose = async () => {
     stopWatching(); await refresh;
-    try { await dispose(); } finally { responsesCompat.dispose(); disposeCatalog(); if (runtime.getAuth === guardedGetAuth) runtime.getAuth = originalGetAuth; }
+    try { await dispose(); } finally { responsesCompat.dispose(); disposePacing(); disposeCatalog(); if (runtime.getAuth === guardedGetAuth) runtime.getAuth = originalGetAuth; }
   };
   const close = server.connection.close.bind(server.connection);
   server.connection.close = () => { stopWatching(); return close(); };

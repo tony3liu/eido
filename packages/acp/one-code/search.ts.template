@@ -1,17 +1,62 @@
 import search from '../extensions/request/tool-search/index.ts';
-import {DEFER_CHANNEL, WITHHOLD_CHANNEL} from '../extensions/lib/request/deferred.ts';
+import {DEFER_CHANNEL, WITHHOLD_CHANNEL, searchTools, selectedRequests} from '../extensions/lib/request/deferred.ts';
 
 export default function(pi) {
-  const permitted = tool => {
-    const query = {name: tool.name, allowed: tool.exposure !== 'hidden' && tool.exposure !== 'codemode'};
+  const authorized = tool => {
+    if (tool.exposure === 'hidden') return false;
+    const query = {name: tool.name, allowed: true};
     pi.events.emit('eido:one-code-tool', query);
     return query.allowed;
   };
+  const permitted = tool => tool.exposure !== 'codemode' && authorized(tool);
   const catalog = () => pi.getAllTools().filter(permitted);
   const all = () => {sync(); return catalog();};
   const allowed = name => all().some(tool => tool.name === name);
   const view = {...pi, getAllTools: all, getActiveTools: () => pi.getActiveTools().filter(allowed),
-    setActiveTools: names => pi.setActiveTools([...new Set([...pi.getActiveTools().filter(name => !allowed(name)), ...names.filter(allowed)])])};
+    setActiveTools: names => pi.setActiveTools([...new Set([...pi.getActiveTools().filter(name => !allowed(name)), ...names.filter(allowed)])]),
+    registerTool(tool) {
+      if (tool.name !== 'tool_search') return pi.registerTool(tool);
+      pi.registerTool({...tool,
+        description: 'Find tools usable in this task. Use short capability keywords or select:<exact names>. Results say whether tools are loaded, already callable, available through codemode, or unavailable.',
+        async execute(id, params, ...args) {
+          const tools = pi.getAllTools().filter(authorized);
+          const active = new Set(pi.getActiveTools());
+          const codemodeActive = active.has('codemode') && tools.some(item => item.sourceInfo.path === 'builtin:codemode');
+          const viaCode = tool => tool.exposure === 'codemode' && codemodeActive;
+          const available = tools.filter(tool => tool.exposure === 'codemode' ? viaCode(tool)
+            : active.has(tool.name) || tool.exposure === 'deferred');
+          const selected = selectedRequests(params.query);
+          const query = selected ? `select:${selected.map(({name, asWritten}) => {
+            if (available.some(tool => tool.name.toLowerCase() === name)) return asWritten;
+            // The bridge registers mcp__server__tool. Accept its common short
+            // spelling only when it resolves to a single tool in this task.
+            const alias = available.filter(tool => tool.name.toLowerCase().startsWith('mcp__')
+              && tool.name.toLowerCase().slice(5).replaceAll('__', '_') === name);
+            return alias.length === 1 ? alias[0].name : asWritten;
+          }).join(',')}` : params.query;
+          const selectedForLoader = selectedRequests(query)
+            ?.filter(({name}) => !available.some(tool => tool.name.toLowerCase() === name && viaCode(tool)));
+          const loaderQuery = selectedForLoader ? `select:${selectedForLoader.map(item => item.asWritten).join(',')}` : query;
+          const result = await tool.execute(id, {...params, query: loaderQuery}, ...args);
+          if (result.details?.refused?.length || (!selected && result.details?.matches?.length)) return result;
+          const candidates = available.filter(tool => (active.has(tool.name) || viaCode(tool)) && (selected || tool.name !== 'tool_search'))
+            .map(tool => ({name: tool.name, description: tool.description ?? '', keywords: []}));
+          const hits = searchTools(query, candidates, params.max_results ?? 5).map(tool => tool.name);
+          const direct = hits.filter(name => active.has(name) && available.some(tool => tool.name === name && tool.exposure !== 'codemode'));
+          const codemode = hits.filter(name => !direct.includes(name));
+          const codeHint = codemode.length ? `Available through codemode: ${codemode.join(', ')}. Use codemode to call them.` : '';
+          if (result.details?.matches?.length) {
+            return codeHint ? {...result, content: [...result.content, {type: 'text', text: codeHint}],
+              details: {...result.details, codemode}} : result;
+          }
+          const text = [
+            direct.length ? `Already callable: ${direct.join(', ')}. Call these tools directly.` : '',
+            codeHint,
+            !hits.length ? 'No tools in this task match that query. Repeating it will not load a missing tool. For MCP tools, check that the server is enabled and connected in Extensions. Slash commands are not tools.' : '',
+          ].filter(Boolean).join('\n');
+          return {content: [{type: 'text', text}], details: {...result.details, matches: direct, codemode}, isError: false};
+        }});
+    }};
   let deferred = new Set(), syncing = false;
   const sync = () => {
     if (syncing) return;
