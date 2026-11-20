@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="native/branding/eido-readme.svg" alt="Eido — AI workspace, 0.0.4" width="100%">
+  <img src="native/branding/eido-readme.svg" alt="Eido — AI workspace, 0.0.5" width="100%">
 </p>
 
 <h1 align="center">A workspace for getting things done with AI.</h1>
@@ -26,22 +26,20 @@
 
 Eido is a native AI workspace built on [Zed](https://github.com/zed-industries/zed) and the official, unmodified [pi](https://github.com/earendil-works/pi) agent. Start with an outcome, bring in relevant context, and work through the result. The conversation is central; native files, code editing, and review are available when the task needs them.
 
-**Eido 0.0.4 is available for Apple Silicon Macs running macOS 13 or later.** It bundles **pi 1.5.2**.
+**Eido 0.0.5 is available for Apple Silicon Macs running macOS 13 or later.** It bundles **pi 1.5.2**.
 
 <p>
-  <a href="https://github.com/tony3liu/eido/releases/download/v0.0.4/Eido-0.0.4-macos-arm64.dmg"><strong>Download for Mac · Apple Silicon</strong></a> ·
-  <a href="https://github.com/tony3liu/eido/releases/tag/v0.0.4">Release notes and checksums</a>
+  <a href="https://github.com/tony3liu/eido/releases/download/v0.0.5/Eido-0.0.5-macos-arm64.dmg"><strong>Download for Mac · Apple Silicon</strong></a> ·
+  <a href="https://github.com/tony3liu/eido/releases/tag/v0.0.5">Release notes and checksums</a>
 </p>
 
-## What's new in 0.0.4
+## What's new in 0.0.5
 
-- **Cancel and keep working.** After a normal cancellation, send the next message in the same task. If the connection is lost, reconnect to restore the task, draft and pending reviews without replaying a request.
-- **Keep requirement drafts while reading sources.** In the research panel, open a citation or another saved source, then choose **Return to Draft** to resume editing your title, requirement and acceptance criteria.
-- **Readable error and tool results.** Error notices stay above the composer, summarize what happened and keep formatted technical details collapsed. Structured tool output uses consistent code formatting, and shell results show a shorter summary.
-- **File review and split view.** Pending changes are easier to find in the native review, stale read offsets recover from the editor snapshot, and opening split view collapses the task sidebar.
-- **Model compatibility.** Custom connections handle more Responses endpoints, preserve the transcript when switching API formats, and show the thinking levels advertised by each model.
+- **Resume after temporary model throttling.** Eido honors provider retry timing, spaces requests to the same service after HTTP 429, and keeps the current turn and completed tool results. Backoff can be cancelled.
+- **Find tools that can actually be used.** Search distinguishes tools that are already callable, available through codemode, or ready to load. A search with no matches explains the result without showing a tool execution failure.
+- **Read documents outside the workspace.** Open Markdown and common plain text documents by path and browse skill folders without registering them first. Each task can also access its own scratchpad.
 
-English/Simplified Chinese and the official unmodified pi 1.5.2 remain available. Research & Documents remains an experimental preview, disabled by default.
+English and Simplified Chinese remain available. Research & Documents remains an experimental preview, disabled by default.
 
 ## Work in one place
 
@@ -59,7 +57,7 @@ Browser Use and Computer Use extend tasks to websites and desktop applications. 
 
 ## Download and install
 
-1. Download [Eido-0.0.4-macos-arm64.dmg](https://github.com/tony3liu/eido/releases/download/v0.0.4/Eido-0.0.4-macos-arm64.dmg).
+1. Download [Eido-0.0.5-macos-arm64.dmg](https://github.com/tony3liu/eido/releases/download/v0.0.5/Eido-0.0.5-macos-arm64.dmg).
 2. Quit an older Eido instance, open the disk image, and drag **Eido** into **Applications**.
 3. Launch Eido and configure your model and authentication in global settings.
 
@@ -104,7 +102,7 @@ Eido keeps native editing and review while expanding beyond coding. This is stil
 
 ## Feedback
 
-[Open an issue](https://github.com/tony3liu/eido/issues) with your goal, expected and actual behavior, a small reproduction, and **Eido 0.0.4** plus your macOS version. Remove credentials and private project content from screenshots and logs.
+[Open an issue](https://github.com/tony3liu/eido/issues) with your goal, expected and actual behavior, a small reproduction, and **Eido 0.0.5** plus your macOS version. Remove credentials and private project content from screenshots and logs.
 
 ## Acknowledgments and licensing
 
@@ -133,5 +131,5 @@ If you fork, modify, or distribute Eido, you must comply with the licenses that 
 
 <p align="center">
   <strong>Understand. Create. Evolve.</strong><br>
-  <sub>Eido · 0.0.4 · macOS</sub>
+  <sub>Eido · 0.0.5 · macOS</sub>
 </p>
